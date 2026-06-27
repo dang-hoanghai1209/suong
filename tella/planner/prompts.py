@@ -37,10 +37,16 @@ _THEME_TONE: dict[Theme, str] = {
         "no European cathedrals)."
     ),
     "cinematic": (
-        "DOCUMENTARY tone, third-person narrator or omniscient. Like a "
-        "Netflix mini-doc. Concrete details, sensory imagery, dramatic but "
-        "not melodramatic. Imagery: photorealistic, film grain, dramatic "
-        "lighting, teal-orange color grade. Real human faces. NO cartoon."
+        "Vivid STORYTELLER narration, third-person, cinematic and immersive "
+        "— concrete sensory detail, dramatic but not melodramatic, like a "
+        "well-narrated film. Works for ANY subject: real events, fables, "
+        "myths, fiction. Imagery: photorealistic, cinematic lighting, film "
+        "grain, shallow depth of field, teal-orange color grade. CRITICAL: "
+        "depict the story's ACTUAL subjects faithfully. If the story is "
+        "about animals, creatures, or objects, render THEM as the characters "
+        "(a tortoise is a tortoise, a hare is a hare) — NEVER replace them "
+        "with human stand-ins. Only use human characters when the story is "
+        "actually about people."
     ),
     "playful": (
         "FRIENDLY upbeat narrator, expressive intonation. Like a children's "
@@ -115,26 +121,41 @@ _CHARACTER_LOCK_BLOCK = """\
 CHARACTER + SETTING LOCK (because media_source == ai_image):
 
 ⚠️  AI image generators have NO MEMORY across scenes. If you write
-    different image_prompts for the same character, FLUX renders a
-    different face each time — viewer confusion. To prevent that you
-    MUST emit a TOP-LEVEL ``character_brief`` + ``setting_brief``
-    object the planner can prepend to every scene image_prompt.
+    different image_prompts for the same character, the model renders a
+    different look each time — viewer confusion. To prevent that you MUST
+    emit a TOP-LEVEL ``characters`` cast + ``setting_brief``, and on EACH
+    scene list which cast members appear (``character_names``). The planner
+    prepends the matching identities to that scene's image_prompt.
 
-character_brief shape:
-  {
-    "identity": "<10-15 word physical description: age, gender, hair, "
-                 "outfit/clothing, distinguishing features. Specific enough "
-                 "that FLUX renders the same person every time.>",
-    "role":     "protagonist"
-  }
+characters shape (1-4 recurring subjects — include EVERY character the story
+keeps coming back to, not just one):
+  [
+    {
+      "name":     "<short label you will reuse in scenes, e.g. 'the hare', "
+                  "'the tortoise', 'Lan'>",
+      "identity": "<10-20 word description. For a PERSON: age, gender, hair, "
+                  "outfit, features. For an ANIMAL/CREATURE/OBJECT: describe "
+                  "THAT animal/thing precisely (species, colour, markings, "
+                  "any clothing/props) — do NOT turn it into a human.>",
+      "role":     "protagonist | antagonist | mentor | supporting"
+    }
+  ]
 
-  Example identity strings:
-    - "70 yo Vietnamese Buddhist monk, kind round face, long flowing white
-       beard, saffron orange robes with dark brown sash, wooden prayer beads"
-    - "30 yo Korean software engineer, short black hair, round glasses,
-       charcoal hoodie over white t-shirt, focused expression"
-    - "8 yo girl with curly brown hair, freckles, yellow raincoat, holding
-       a stuffed rabbit, curious wide eyes"
+  IMPORTANT: if the story is about animals (a fable, a children's tale),
+  the characters ARE the animals. "the tortoise" identity = a real tortoise,
+  "the hare" identity = a real hare — never a human athlete or person.
+
+  Example casts:
+    - Fable: [
+        {"name":"the tortoise","identity":"a small green tortoise, domed
+          brown shell, wrinkled friendly face, slow steady eyes","role":"protagonist"},
+        {"name":"the hare","identity":"a sleek brown hare, long ears, lean
+          legs, cocky smirk, bright alert eyes","role":"antagonist"}
+      ]
+    - Single human: [
+        {"name":"Mai","identity":"70 yo Vietnamese woman, kind round face,
+          silver hair in a bun, simple brown ao dai","role":"protagonist"}
+      ]
 
 setting_brief shape:
   {
@@ -144,19 +165,21 @@ setting_brief shape:
     "time_of_day": "<e.g. 'golden hour' | 'blue hour' | 'midnight' | 'noon'>"
   }
 
-Each scene image_prompt should describe the ACTION / CAMERA only — the
-planner downstream prepends character_brief.identity + setting_brief.location
-automatically. So:
-  ✗ "Old monk meditating near lotus pond, watercolor"
-  ✓ "Meditating in lotus pose by the pond, low-angle close-up"
+PER-SCENE: set ``character_names`` to the subset of cast names that appear in
+that scene (e.g. ["the hare"], or ["the hare","the tortoise"] for both, or
+[] for a pure scenery/establishing shot). Each scene image_prompt describes
+ONLY the ACTION / CAMERA — the planner prepends the named characters'
+identities + the setting automatically. So:
+  ✗ "A cocky hare napping under a tree, cinematic"   (don't restate identity)
+  ✓ "napping under a broad oak, low-angle, dappled light"  + character_names ["the hare"]
 """
 
 
 _STOCK_MODE_BLOCK = """\
 STOCK MODE (because media_source != ai_image):
 
-Set ``character_brief: null`` and ``setting_brief: null`` — stock content
-is random, character/setting locking is impossible.
+Set ``characters: []``, ``character_brief: null`` and ``setting_brief: null``
+— stock content is random, character/setting locking is impossible.
 
 Instead, emit per-scene ``stock_query`` keywords (2-4 ENGLISH words) that
 Pexels can search productively:
@@ -181,10 +204,11 @@ PER-SCENE FIELDS (every scene needs ALL of these):
                      woman/man" not "girl/boy" when adult; add "fully
                      clothed, modest, family friendly" if any character.
   - stock_query    : 2-4 ENGLISH keywords for Pexels search
+  - character_names: list of cast names appearing in this scene (ai_image
+                     mode). [] for a scenery shot. Omit / [] in stock modes.
   - asset_count    : 1, 2, or 3 — how many visuals the composer should
                      show during this scene. Use 1 for static reflective
                      scenes; use 2-3 for action / montage / contrast.
-  - bullets        : ALWAYS [] (Tella scenes don't render bullet lists)
   - kind           : "scene" (cover + outro are composer-side, not planner)
 """
 
@@ -290,9 +314,13 @@ HARD RULES (NEVER violate):
      summarize, expand, translate, or add filler. Each scene's voice_script
      MUST be a contiguous slice of the user's input (with at most light
      whitespace cleanup).
-  2. Split the script into 5-15 scenes at natural breath/topic boundaries —
-     usually one sentence or one short paragraph per scene. Aim for scenes
-     of 8-25 spoken seconds each (Vietnamese reads at ~14 chars/sec).
+  2. Split the script into AS MANY scenes as the story needs — do NOT force
+     a fixed count. Break at natural breath/topic boundaries, usually one
+     sentence or one short paragraph per scene. Target 8-18 spoken seconds
+     per scene (Vietnamese reads at ~14 chars/sec, English ~15 chars/sec).
+     NEVER let a single scene exceed ~3 sentences / ~25 seconds — split a
+     long passage into multiple scenes so no scene drones on. A long story
+     legitimately yields 20-40 scenes; a short one yields 5-8.
   3. The CONCATENATED voice_script across all scenes, joined with single
      spaces, MUST reproduce the user's input (ignoring punctuation cleanup
      + whitespace normalization).
@@ -305,9 +333,11 @@ HARD RULES (NEVER violate):
   6. Title: pull a short title (4-8 words) from the first scene's content,
      or coin one that captures the script's theme. Keep it in the user's
      language.
-  7. If media_source = ai_image: still emit character_brief + setting_brief
-     so character lock works. Build them from the dominant subjects /
-     locations across the script.
+  7. If media_source = ai_image: still emit the ``characters`` cast +
+     ``setting_brief`` so character lock works, and set each scene's
+     ``character_names`` to who appears in it. Build the cast from the
+     recurring subjects across the script — if it is an animal fable, the
+     cast members ARE the animals (describe them as animals, never humans).
 
 WHAT YOU MAY DO:
 

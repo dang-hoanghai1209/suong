@@ -191,6 +191,7 @@ async def plan_story(
 
         # Stock modes: planner should null briefs, but enforce defensively.
         if media_source != "ai_image":
+            data["characters"] = []
             data["character_brief"] = None
             data["setting_brief"] = None
 
@@ -355,6 +356,7 @@ async def plan_story_from_script(
         data["voice_name"] = voice_name
 
         if media_source != "ai_image":
+            data["characters"] = []
             data["character_brief"] = None
             data["setting_brief"] = None
 

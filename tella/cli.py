@@ -262,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
                 run_pipeline(
                     topic=choice.topic,
                     target_lang=choice.target_lang,
-                    theme=choice.theme,
+                    theme="cinematic",  # wizard has no theme step; AI image = cinematic
                     media_source=choice.media_source,
                     duration_mode=choice.duration_mode,
                     aspect_ratio=choice.aspect_ratio,
@@ -271,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
                     voice_gender=choice.voice_gender,
                     out_root=out_root,
                     job_id=None,
+                    user_script=choice.user_script,
                 )
             )
         except KeyboardInterrupt:

@@ -12,14 +12,19 @@ You type:        "the lighthouse keeper who learned to rest"
 Tella gives you: video.mp4   (1080×1920 or 1920×1080, narrated, ready to post)
 ```
 
+- **Two ways in**: type a **topic** (Tella writes the story) or drop a **`.txt`
+  file** (Tella narrates *your* story word-for-word)
 - **9:16** vertical (TikTok / Reels / Shorts) or **16:9** horizontal (YouTube)
-- Visuals from **AI image** (cinematic FLUX art), **stock photo**, or **stock video**
-- **Consistent characters** — in AI image mode the same protagonist + setting
-  are locked across every scene (no "different face each shot" problem)
-- **4 themes**: cinematic · parable · mindfulness · playful
-- **Two lengths**: short (~60–120s) or detailed (~4–6 min)
+- Visuals from **AI image** (cinematic art), **stock photo**, or **stock video**
+- **Consistent characters** — in AI image mode every recurring character *and*
+  the setting are locked across scenes. A two-character fable keeps both
+  characters consistent (a tortoise stays a tortoise, a hare stays a hare),
+  instead of collapsing into one face
+- **Length**: topic mode is short (~60–120s) or detailed (~4–6 min); a dropped
+  story runs as long as it needs, split into scenes automatically
 - **8 narration languages**: English, Vietnamese, Japanese, Korean, Chinese,
-  German, French, Spanish — give it a topic in any language, pick the output language
+  German, French, Spanish — for a topic, pick the output language; for a `.txt`
+  file the language is auto-detected
 - Free narration via Edge TTS (no key needed); optional Google Chirp 3 HD upgrade
 
 ---
@@ -57,45 +62,60 @@ With no arguments you get the guided wizard:
 
 ```
 ============================================================
-  Tella - turn a topic into a narrated story video
+  Tella - turn a topic (or your own story) into a video
 ============================================================
 
-Step 1/7 - What is the story about?
-Topic: the lighthouse keeper who learned to rest
+Step 1 - Your story
+  Type a TOPIC for Tella to write about, e.g.
+     the tortoise and the hare
+  OR drop a .txt file here (your own finished story) and press Enter.
+Topic or file: the tortoise and the hare
 
-Step 2/7 - Narration language
-  * 1) English      2) Tieng Viet   3) Japanese  ...
-Choose [1]:
+Step 2 - Narration language
+  * 1) Tieng Viet   2) English   3) Japanese  ...
+Choose [1]: 2
 
-Step 3/7 - Aspect ratio
+Step 3 - Aspect ratio
   * 1) Vertical short  (TikTok / Reels / YouTube Shorts)
     2) Horizontal      (YouTube / landscape)
 Choose [1]:
 
-Step 4/7 - Where do the visuals come from?
-  * 1) AI image  - cinematic FLUX art, characters stay consistent across scenes
+Step 4 - Where do the visuals come from?
+  * 1) AI image  - cinematic art, characters stay consistent across scenes
     2) Stock photo - real Pexels photographs, fast
     3) Stock video - real Pexels video clips, most motion
 Choose [1]:
 
-Step 5/7 - How long?   ...
-Step 6/7 - Theme       ...
-Step 7/7 - Narrator voice ...
+Step 5 - How long?        (short ~90s / detailed 4-6 min)
+Step 6 - Narrator voice   (male / female)
 
 ------------------------------------------------------------
   Ready to render:
-    Topic     : the lighthouse keeper who learned to rest
+    Topic     : the tortoise and the hare
     Language  : English
     Aspect    : 9:16
     Visuals   : AI image
     Length    : Short
-    Theme     : Cinematic
     Voice     : Male voice
 ------------------------------------------------------------
 Start? [Y/n]:
 ```
 
 The finished MP4 lands in `out/<timestamp>_<slug>/video.mp4`.
+
+### Bring your own story (drop a `.txt`)
+
+At Step 1, instead of a topic, drag a `.txt` file into the window (or paste its
+path) and press Enter. Tella then:
+
+- narrates **your exact words** — it doesn't rewrite the story, only splits it
+  into scenes and adds visuals + timing;
+- **cleans the text for narration** first — ellipses (`...`), repeated `!!!`,
+  smart quotes, stray dashes and markdown are normalised so the voice doesn't
+  stumble on them;
+- **auto-detects the language** and picks a matching voice;
+- runs **as long as the story needs** — there's no fixed length; it splits into
+  as many scenes as the pacing calls for, so no single scene drones on.
 
 ---
 
@@ -129,13 +149,17 @@ python -m tella \
 
 ## How visuals work
 
-**AI image** (`ai_image`) — the planner first writes a one-shot
-**character brief** and **setting brief** (e.g. *"small slender fox with
-rust-colored fur, dark blue scarf, Studio Ghibli style"* in *"an ancient
-misty forest of glowing mushrooms, blue hour"*). Those briefs are prepended
-to every scene's image prompt, so Cloudflare Workers AI (FLUX) renders the
-**same character in the same world across all scenes**. This is what keeps a
-story visually coherent instead of looking like eight unrelated pictures.
+**AI image** (`ai_image`) — the planner first writes a **cast** of character
+briefs and a **setting brief** (e.g. *"the tortoise: a small green tortoise,
+domed brown shell, slow steady eyes"* and *"the hare: a sleek brown hare, long
+ears, cocky smirk"* in *"a sun-drenched forest path, golden hour"*). Each scene
+declares which cast members appear in it, and those identities + the setting
+are prepended to that scene's image prompt — so Cloudflare Workers AI (FLUX)
+renders the **same characters in the same world across all scenes**. A
+multi-character story keeps *every* character consistent, and the cast is drawn
+faithfully (an animal stays an animal — it is never swapped for a human
+stand-in). This is what keeps a story visually coherent instead of looking like
+a pile of unrelated pictures.
 
 **Stock photo / video** (`stock_photo`, `stock_video`) — pulls real Pexels
 media per scene. Character locking isn't possible with random stock, so Tella
@@ -144,11 +168,15 @@ instead. Fast, realistic, and free.
 
 ---
 
-## Themes
+## Themes (advanced)
+
+The wizard always uses **cinematic** — a versatile filmic look that renders the
+story's real subjects. If you want a different tone/style, pass `--theme` on the
+CLI:
 
 | Theme | Tone | Imagery |
 |---|---|---|
-| `cinematic` | Documentary, dramatic-but-restrained | Photorealistic, film grain, teal-orange grade |
+| `cinematic` (default) | Vivid storyteller, filmic | Photorealistic, film grain, teal-orange grade |
 | `parable` | Meditative third-person fable | Watercolor, Studio-Ghibli-inspired |
 | `mindfulness` | Calm dharma-talk reflection | Recurring monk character, warm watercolor |
 | `playful` | Upbeat children's-book read-aloud | Vibrant cartoon, bold colors |

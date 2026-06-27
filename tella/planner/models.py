@@ -35,20 +35,36 @@ SceneKind = Literal["cover", "scene", "outro"]
 
 
 class CharacterBrief(BaseModel):
-    """One-shot character identity locked across all scenes (AI image mode only)."""
+    """One character's locked identity (AI image mode only).
+
+    A story can have several of these (the "cast"). Each scene lists which
+    cast members appear in it by ``name`` so the right identities get
+    prepended to that scene's image prompt — this keeps a turtle a turtle
+    and a rabbit a rabbit across every shot, instead of collapsing a
+    multi-character fable into one stand-in.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
+    name: str = Field(
+        "",
+        max_length=60,
+        description="Short label used to reference this character from a "
+        "scene's character_names, e.g. 'the rabbit', 'the turtle', 'Lan'. "
+        "Use the SAME spelling in scene.character_names.",
+    )
     identity: str = Field(
         ...,
         min_length=10,
         max_length=280,
-        description="10-15 word physical description: age, gender, hair, "
-        "outfit, distinguishing features. Copied verbatim into every "
-        "scene's image_prompt so FLUX renders the same face / clothes "
-        "across the video.",
+        description="10-20 word physical description: species/age/gender, "
+        "colours, outfit, distinguishing features. Copied verbatim into "
+        "every scene's image_prompt where this character appears so the "
+        "image model renders the same subject across the video. If the "
+        "character is an animal or object, describe THAT — never swap it "
+        "for a human stand-in.",
     )
-    role: Literal["protagonist", "antagonist", "mentor", "narrator"] = "protagonist"
+    role: Literal["protagonist", "antagonist", "mentor", "narrator", "supporting"] = "protagonist"
 
 
 class SettingBrief(BaseModel):
@@ -77,6 +93,11 @@ class Scene(BaseModel):
     # ``stock_query`` = 2-4 English keywords for Pexels.
     image_prompt: str = Field("", max_length=600)
     stock_query: str = Field("", max_length=80)
+
+    # Which cast members (by CharacterBrief.name) appear in this scene.
+    # character_lock prepends those identities to image_prompt. Empty = an
+    # establishing / scenery shot with no recurring character.
+    character_names: list[str] = Field(default_factory=list)
 
     # 1-3 assets per scene. 1 = static Ken Burns; 2-3 = mini-montage with
     # crossfades inside the scene window.
@@ -119,11 +140,16 @@ class TellaScenePlan(BaseModel):
     voice_name: str = ""
 
     # Character + setting locking — populated by planner for ai_image mode,
-    # set to None for stock modes.
+    # emptied for stock modes.
+    #
+    # ``characters`` is the cast (0-4 recurring subjects). ``character_brief``
+    # is kept for backward compatibility / single-protagonist stories; when
+    # ``characters`` is non-empty it takes precedence.
+    characters: list[CharacterBrief] = Field(default_factory=list, max_length=4)
     character_brief: CharacterBrief | None = None
     setting_brief: SettingBrief | None = None
 
-    scenes: list[Scene] = Field(..., min_length=3, max_length=24)
+    scenes: list[Scene] = Field(..., min_length=3, max_length=40)
 
     # Channel branding (composer pulls from channel preset).
     channel_name: str = ""

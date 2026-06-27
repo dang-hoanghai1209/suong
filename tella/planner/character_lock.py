@@ -1,13 +1,15 @@
 """Character + setting brief injection into scene image prompts.
 
-When media_source == ai_image, the planner emits a top-level
-``character_brief`` + ``setting_brief``. This module prepends them onto
-every scene's ``image_prompt`` so FLUX renders the SAME character + place
-across all scenes.
+When media_source == ai_image, the planner emits a ``characters`` cast +
+``setting_brief``. Each scene names which cast members appear in it; this
+module prepends those characters' identities (plus the locked setting) onto
+the scene's ``image_prompt`` so the image model renders the SAME subjects +
+place across all scenes — a two-character fable keeps both characters
+consistent instead of collapsing into one.
 
-When media_source == stock_photo or stock_video, the briefs are ``None``
-and we leave the per-scene prompts alone (Pexels content is random, no
-character locking possible).
+When media_source == stock_photo or stock_video, the cast is empty and we
+leave the per-scene prompts alone (stock content is random, no character
+locking possible).
 """
 from __future__ import annotations
 
@@ -38,16 +40,31 @@ def apply_lock(plan: TellaScenePlan, *, style_suffix: str = "") -> TellaScenePla
                     scene.image_prompt = f"{scene.image_prompt.rstrip(', ')}{style_suffix}"
         return plan
 
-    cb = plan.character_brief
+    # Build the cast: prefer the multi-character list; fall back to the
+    # single legacy character_brief so older plans still lock.
+    cast = list(plan.characters)
+    if not cast and plan.character_brief is not None:
+        cast = [plan.character_brief]
+
     sb = plan.setting_brief
-    if cb is None or sb is None:
+    if not cast or sb is None:
         logger.warning(
-            "ai_image mode but character_brief/setting_brief missing — "
-            "leaving image_prompts as-is. Planner likely failed to emit briefs."
+            "ai_image mode but cast/setting_brief missing — leaving "
+            "image_prompts as-is. Planner likely failed to emit briefs."
         )
         return plan
 
-    identity = cb.identity.strip().rstrip(".,;")
+    # name (lowercased) → identity string. Unnamed characters fall back to
+    # positional keys so a scene can still reference them.
+    by_name: dict[str, str] = {}
+    for i, c in enumerate(cast):
+        identity = c.identity.strip().rstrip(".,;")
+        key = (c.name or "").strip().lower()
+        if key:
+            by_name[key] = identity
+        by_name.setdefault(f"__pos_{i}", identity)
+    all_identities = [c.identity.strip().rstrip(".,;") for c in cast]
+
     location = sb.location.strip().rstrip(".,;")
     setting_extras = []
     if sb.era and sb.era.lower() != "timeless":
@@ -58,19 +75,35 @@ def apply_lock(plan: TellaScenePlan, *, style_suffix: str = "") -> TellaScenePla
 
     for scene in plan.scenes:
         action = (scene.image_prompt or "").strip().rstrip(".,;")
-        parts = [identity, location]
+
+        # Resolve which characters appear in this scene. If the planner named
+        # them, use those; if it named none but the story has a single
+        # character, default to that one; otherwise leave the scene
+        # character-free (pure scenery).
+        wanted = [n.strip().lower() for n in scene.character_names if n.strip()]
+        identities: list[str] = []
+        for n in wanted:
+            if n in by_name:
+                identities.append(by_name[n])
+        if not identities:
+            if not scene.character_names and len(all_identities) == 1:
+                identities = list(all_identities)
+            # else: scenery shot — no character prepended
+
+        parts = [*identities, location]
         if setting_tail:
             parts.append(setting_tail)
         if action:
             parts.append(action)
-        prompt = ", ".join(parts)
+        prompt = ", ".join(p for p in parts if p)
         if style_suffix:
             prompt = f"{prompt}{style_suffix}"
         scene.image_prompt = prompt
 
     logger.info(
-        "character_lock applied to %d scenes (identity=%r, location=%r)",
-        len(plan.scenes), identity[:60], location[:60],
+        "character_lock applied to %d scenes (cast=%d: %s; location=%r)",
+        len(plan.scenes), len(cast),
+        ", ".join((c.name or "?") for c in cast)[:80], location[:60],
     )
     return plan
 

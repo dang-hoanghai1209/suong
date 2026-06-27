@@ -1,22 +1,30 @@
 """Interactive wizard — the no-argument ``python -m tella`` experience.
 
-Mirrors the friendly "answer a few questions" flow so a non-technical user
-on a desktop can just run ``RUN.bat`` / ``./RUN.sh`` and get a video without
-ever touching CLI flags. Power users can still pass flags (see ``tella.cli``)
-to skip the wizard entirely.
+A non-technical user runs ``RUN.bat`` / ``./RUN.sh`` and answers a few
+questions. Two ways to start a video:
+
+  * type a TOPIC  → Tella writes the story, then renders it
+  * drop a .txt   → Tella narrates YOUR story verbatim (cleaned for TTS),
+                    splitting it into as many scenes as the story needs
+
+The visual style for AI images is always cinematic, so there is no theme
+step. Power users can still pass CLI flags (see ``tella.cli``) to override
+anything, including ``--theme``.
 
 All prompts are ASCII-only on purpose: Windows ``cmd.exe`` defaults to the
-cp1252 code page and chokes on box-drawing / check-mark glyphs. We force
-UTF-8 for the *content* (topic text, narration) but keep the UI plain.
+cp1252 code page and chokes on box-drawing / check-mark glyphs.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 
-# Languages the planner + translator support (ISO-639-1).
+from tella.ingest.lang_detect import detect_language
+from tella.ingest.script_cleaner import clean_script_text
+
 _LANGS: list[tuple[str, str]] = [
-    ("en", "English"),
     ("vi", "Tieng Viet"),
+    ("en", "English"),
     ("ja", "Japanese"),
     ("ko", "Korean"),
     ("zh", "Chinese"),
@@ -31,7 +39,7 @@ _ASPECTS: list[tuple[str, str]] = [
 ]
 
 _MEDIA: list[tuple[str, str]] = [
-    ("ai_image", "AI image  - cinematic FLUX art, characters stay consistent across scenes"),
+    ("ai_image", "AI image  - cinematic art, characters stay consistent across scenes"),
     ("stock_photo", "Stock photo - real Pexels photographs, fast"),
     ("stock_video", "Stock video - real Pexels video clips, most motion"),
 ]
@@ -41,59 +49,64 @@ _DURATIONS: list[tuple[str, str]] = [
     ("detailed", "Detailed - 12-20 scenes, about 4-6 minutes"),
 ]
 
-_THEMES: list[tuple[str, str]] = [
-    ("cinematic", "Cinematic   - documentary tone, photorealistic, dramatic lighting"),
-    ("parable", "Parable     - meditative fable, watercolor / Ghibli imagery"),
-    ("mindfulness", "Mindfulness - calm dharma-talk reflection, recurring monk character"),
-    ("playful", "Playful     - upbeat children's-book tone, vibrant cartoon"),
-]
-
 _GENDERS: list[tuple[str, str]] = [
     ("male", "Male voice"),
     ("female", "Female voice"),
 ]
 
+_LANG_NAME = dict(_LANGS)
+
 
 @dataclass
 class WizardResult:
-    topic: str
+    # mode == "topic": Tella writes the story from `topic`.
+    # mode == "script": Tella narrates `user_script` verbatim.
+    mode: str
     target_lang: str
     aspect_ratio: str
     media_source: str
     duration_mode: str
-    theme: str
     voice_gender: str
+    topic: str = ""
+    user_script: str | None = None
 
 
 def _print_header() -> None:
     print()
     print("=" * 60)
-    print("  Tella - turn a topic into a narrated story video")
+    print("  Tella - turn a topic (or your own story) into a video")
     print("=" * 60)
 
 
-def _ask_text(prompt: str) -> str:
-    """Prompt for free text. Re-asks until non-empty. Ctrl+C aborts."""
-    while True:
-        try:
-            value = input(prompt).strip()
-        except (EOFError, KeyboardInterrupt):
-            raise KeyboardInterrupt
-        if value:
-            return value
-        print("  (please type something)")
+def _looks_like_text_file(raw: str) -> str | None:
+    """If ``raw`` is a path to an existing .txt/.md file, return it, else None.
 
-
-def _ask_choice(
-    title: str,
-    options: list[tuple[str, str]],
-    default_index: int = 0,
-) -> str:
-    """Render a numbered menu and return the chosen option *value*.
-
-    Empty input picks ``default_index``. Out-of-range / non-numeric input
-    re-asks. Returns the option's first tuple element (the machine value).
+    Handles the way a dragged file lands in a terminal: an absolute path,
+    sometimes wrapped in single or double quotes, sometimes with a trailing
+    space.
     """
+    candidate = raw.strip().strip('"').strip("'").strip()
+    if not candidate:
+        return None
+    if os.path.isfile(candidate) and candidate.lower().endswith((".txt", ".md")):
+        return candidate
+    return None
+
+
+def _read_story_file(path: str) -> str:
+    """Read a story file with a forgiving encoding chain, then clean it."""
+    for enc in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+        try:
+            with open(path, "r", encoding=enc) as f:
+                return clean_script_text(f.read())
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    # Last resort: read bytes and replace undecodable chars.
+    with open(path, "rb") as f:
+        return clean_script_text(f.read().decode("utf-8", errors="replace"))
+
+
+def _ask_choice(title: str, options: list[tuple[str, str]], default_index: int = 0) -> str:
     print()
     print(title)
     for i, (_value, label) in enumerate(options, start=1):
@@ -113,58 +126,82 @@ def _ask_choice(
         print(f"  (enter a number 1-{len(options)})")
 
 
+def _label(options: list[tuple[str, str]], value: str) -> str:
+    for v, lbl in options:
+        if v == value:
+            return lbl.split(" - ")[0].strip() if " - " in lbl else lbl.strip()
+    return value
+
+
 def run_wizard() -> WizardResult:
     """Walk the user through every choice and return their selections."""
     _print_header()
 
-    topic = _ask_text(
-        "\nStep 1/7 - What is the story about?\n"
-        "  (a topic in any language, e.g. \"the lighthouse keeper who learned to rest\")\n"
-        "Topic: "
-    )
+    # ── Step 1 — story input (topic text OR a dropped .txt path) ────────
+    print()
+    print("Step 1 - Your story")
+    print("  Type a TOPIC for Tella to write about, e.g.")
+    print('     the tortoise and the hare')
+    print("  OR drop a .txt file here (your own finished story) and press Enter.")
+    while True:
+        try:
+            raw = input("Topic or file: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raise KeyboardInterrupt
+        if raw:
+            break
+        print("  (please type a topic, or drop a .txt file)")
 
-    target_lang = _ask_choice(
-        "Step 2/7 - Narration language",
-        _LANGS,
-        default_index=0,
-    )
+    file_path = _looks_like_text_file(raw)
+    if file_path:
+        user_script = _read_story_file(file_path)
+        if len(user_script) < 30:
+            print("  (that file looks empty after cleaning — switching to topic mode)")
+            file_path = None
 
-    aspect_ratio = _ask_choice(
-        "Step 3/7 - Aspect ratio",
-        _ASPECTS,
-        default_index=0,
-    )
+    if file_path:
+        mode = "script"
+        target_lang = detect_language(user_script)
+        words = len(user_script.split())
+        print(f"\n  Loaded story: {os.path.basename(file_path)}")
+        print(f"  Detected language: {_LANG_NAME.get(target_lang, target_lang)}")
+        print(f"  ~{words} words -> Tella will split it into scenes automatically.")
+        # Length follows the story; pick the heavier model/token budget for
+        # anything beyond a very short piece.
+        duration_mode = "detailed" if words > 220 else "short"
 
-    media_source = _ask_choice(
-        "Step 4/7 - Where do the visuals come from?",
-        _MEDIA,
-        default_index=0,
-    )
+        aspect_ratio = _ask_choice("Step 2 - Aspect ratio", _ASPECTS, 0)
+        media_source = _ask_choice("Step 3 - Where do the visuals come from?", _MEDIA, 0)
+        voice_gender = _ask_choice("Step 4 - Narrator voice", _GENDERS, 0)
 
-    duration_mode = _ask_choice(
-        "Step 5/7 - How long?",
-        _DURATIONS,
-        default_index=0,
-    )
+        print()
+        print("-" * 60)
+        print("  Ready to render (your story, narrated verbatim):")
+        print(f"    Source    : {os.path.basename(file_path)} ({words} words)")
+        print(f"    Language  : {_LANG_NAME.get(target_lang, target_lang)} (auto-detected)")
+        print(f"    Aspect    : {aspect_ratio}")
+        print(f"    Visuals   : {_label(_MEDIA, media_source)}")
+        print(f"    Voice     : {_label(_GENDERS, voice_gender)}")
+        print("-" * 60)
+        _confirm()
+        return WizardResult(
+            mode="script",
+            target_lang=target_lang,
+            aspect_ratio=aspect_ratio,
+            media_source=media_source,
+            duration_mode=duration_mode,
+            voice_gender=voice_gender,
+            user_script=user_script,
+            topic=os.path.splitext(os.path.basename(file_path))[0],
+        )
 
-    theme = _ask_choice(
-        "Step 6/7 - Visual + narration theme",
-        _THEMES,
-        default_index=0,
-    )
-
-    voice_gender = _ask_choice(
-        "Step 7/7 - Narrator voice",
-        _GENDERS,
-        default_index=0,
-    )
-
-    # ── Review ──────────────────────────────────────────────────────────
-    def _label(options: list[tuple[str, str]], value: str) -> str:
-        for v, lbl in options:
-            if v == value:
-                return lbl.split(" - ")[0].strip() if " - " in lbl else lbl.strip()
-        return value
+    # ── Topic mode ──────────────────────────────────────────────────────
+    topic = raw
+    target_lang = _ask_choice("Step 2 - Narration language", _LANGS, 0)
+    aspect_ratio = _ask_choice("Step 3 - Aspect ratio", _ASPECTS, 0)
+    media_source = _ask_choice("Step 4 - Where do the visuals come from?", _MEDIA, 0)
+    duration_mode = _ask_choice("Step 5 - How long?", _DURATIONS, 0)
+    voice_gender = _ask_choice("Step 6 - Narrator voice", _GENDERS, 0)
 
     print()
     print("-" * 60)
@@ -174,25 +211,27 @@ def run_wizard() -> WizardResult:
     print(f"    Aspect    : {aspect_ratio}")
     print(f"    Visuals   : {_label(_MEDIA, media_source)}")
     print(f"    Length    : {_label(_DURATIONS, duration_mode)}")
-    print(f"    Theme     : {_label(_THEMES, theme)}")
     print(f"    Voice     : {_label(_GENDERS, voice_gender)}")
     print("-" * 60)
+    _confirm()
+    return WizardResult(
+        mode="topic",
+        target_lang=target_lang,
+        aspect_ratio=aspect_ratio,
+        media_source=media_source,
+        duration_mode=duration_mode,
+        voice_gender=voice_gender,
+        topic=topic,
+    )
+
+
+def _confirm() -> None:
     try:
         go = input("Start? [Y/n]: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         raise KeyboardInterrupt
     if go in ("n", "no"):
         raise KeyboardInterrupt
-
-    return WizardResult(
-        topic=topic,
-        target_lang=target_lang,
-        aspect_ratio=aspect_ratio,
-        media_source=media_source,
-        duration_mode=duration_mode,
-        theme=theme,
-        voice_gender=voice_gender,
-    )
 
 
 __all__ = ["WizardResult", "run_wizard"]
