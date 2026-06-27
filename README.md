@@ -12,6 +12,16 @@ You type:        "the lighthouse keeper who learned to rest"
 Tella gives you: video.mp4   (1080×1920 or 1920×1080, narrated, ready to post)
 ```
 
+## Live demo
+
+There's a hosted quick demo at **https://app.khuetran.com/tella** if you just
+want to see what Tella does without installing anything.
+
+⚠️ The demo runs on a small shared web VPS, so **rendering there is slow** — it's
+only a quick preview of the features. Running this repo **on your own machine is
+much faster** (your own CPU + your own free API keys, no shared queue). For real
+use, clone and run locally.
+
 - **Two ways in**: type a **topic** (Tella writes the story) or drop a **`.txt`
   file** (Tella narrates *your* story word-for-word)
 - **9:16** vertical (TikTok / Reels / Shorts) or **16:9** horizontal (YouTube)
@@ -269,6 +279,11 @@ hundredths of a cent per video.
 | Vietnamese diacritics garbled in the terminal | RUN.bat/RUN.sh already set `PYTHONUTF8=1`; run through those wrappers |
 
 ---
+
+## Author
+
+Made by **Khue Tran** — [khuetran.com](https://khuetran.com).
+Live demo: [app.khuetran.com/tella](https://app.khuetran.com/tella).
 
 ## License
 
