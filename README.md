@@ -20,6 +20,8 @@ Tella gives you: video.mp4   (1080×1920 or 1920×1080, narrated, ready to post)
   (kid-friendly illustration)
 - **Reading pace adapts to the topic** — children's tales narrate slowly and
   warmly, explainers narrate at a clear steady clip
+- **Optional channel branding** — show a small channel name on every scene
+  (the wizard asks; leave blank for a clean, unbranded video)
 - **Consistent characters** — in AI image mode every recurring character *and*
   the setting are locked across scenes. A two-character fable keeps both
   characters consistent (a tortoise stays a tortoise, a hare stays a hare),

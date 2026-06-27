@@ -86,6 +86,7 @@ class WizardResult:
     voice_gender: str
     theme: str = "cinematic"
     voice_pace_name: str | None = None
+    channel_name: str = ""
     topic: str = ""
     user_script: str | None = None
 
@@ -145,6 +146,14 @@ def _ask_choice(title: str, options: list[tuple[str, str]], default_index: int =
         print(f"  (enter a number 1-{len(options)})")
 
 
+def _ask_optional_text(prompt: str) -> str:
+    """Prompt for optional free text. Empty input returns ""."""
+    try:
+        return input(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        raise KeyboardInterrupt
+
+
 def _label(options: list[tuple[str, str]], value: str) -> str:
     for v, lbl in options:
         if v == value:
@@ -195,6 +204,9 @@ def run_wizard() -> WizardResult:
         if media_source == "ai_image":
             style = _ask_choice("Step 4 - AI image style", _STYLES, 0)
         voice_gender = _ask_choice("Step 5 - Narrator voice", _GENDERS, 0)
+        channel_name = _ask_optional_text(
+            "\nStep 6 - Channel name to show on the video (Enter to skip): "
+        )
 
         theme = _resolve_theme(media_source, style)
         voice_pace_name = pace_name_for(user_script, theme)
@@ -208,6 +220,7 @@ def run_wizard() -> WizardResult:
         print(f"    Visuals   : {_label(_MEDIA, media_source)}"
               + (f" / {style}" if style else ""))
         print(f"    Voice     : {_label(_GENDERS, voice_gender)} ({voice_pace_name})")
+        print(f"    Channel   : {channel_name or '(none)'}")
         print("-" * 60)
         _confirm()
         return WizardResult(
@@ -219,6 +232,7 @@ def run_wizard() -> WizardResult:
             voice_gender=voice_gender,
             theme=theme,
             voice_pace_name=voice_pace_name,
+            channel_name=channel_name,
             user_script=user_script,
             topic=os.path.splitext(os.path.basename(file_path))[0],
         )
@@ -233,6 +247,9 @@ def run_wizard() -> WizardResult:
         style = _ask_choice("Step 5 - AI image style", _STYLES, 0)
     duration_mode = _ask_choice("Step 6 - How long?", _DURATIONS, 0)
     voice_gender = _ask_choice("Step 7 - Narrator voice", _GENDERS, 0)
+    channel_name = _ask_optional_text(
+        "\nStep 8 - Channel name to show on the video (Enter to skip): "
+    )
 
     theme = _resolve_theme(media_source, style)
     voice_pace_name = pace_name_for(topic, theme)
@@ -247,6 +264,7 @@ def run_wizard() -> WizardResult:
           + (f" / {style}" if style else ""))
     print(f"    Length    : {_label(_DURATIONS, duration_mode)}")
     print(f"    Voice     : {_label(_GENDERS, voice_gender)} ({voice_pace_name})")
+    print(f"    Channel   : {channel_name or '(none)'}")
     print("-" * 60)
     _confirm()
     return WizardResult(
@@ -258,6 +276,7 @@ def run_wizard() -> WizardResult:
         voice_gender=voice_gender,
         theme=theme,
         voice_pace_name=voice_pace_name,
+        channel_name=channel_name,
         topic=topic,
     )
 

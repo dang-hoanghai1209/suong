@@ -32,12 +32,16 @@ logger = logging.getLogger("tella.render.text_overlay")
 # whether drawtext is available or not).
 TITLE_FONT_SIZE = 60
 CAPTION_FONT_SIZE = 42
+BRAND_FONT_SIZE = 36
 TITLE_MAX_LINES = 2
 CAPTION_MAX_LINES = 4
 TEXT_BOX_PADDING = 22
+BRAND_BOX_PADDING = 14
 TEXT_BOX_OPACITY = 0.55
+BRAND_BOX_OPACITY = 0.45
 CAPTION_BOTTOM_PADDING = 60
 TITLE_TOP_PADDING = 50
+BRAND_TOP_PADDING = 24
 LINE_SPACING = 8
 
 
@@ -149,6 +153,27 @@ def _draw_text_box(
     return box_y + box_h
 
 
+def _draw_brand_row(
+    draw: ImageDraw.ImageDraw,
+    *,
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    safe_left: int,
+    top_y: int,
+) -> int:
+    """Draw a small left-aligned channel-brand pill. Returns its bottom y."""
+    w, h = _measure(font, text)
+    pad = BRAND_BOX_PADDING
+    box_x = safe_left
+    box_y = top_y
+    box_w = w + 2 * pad
+    box_h = h + 2 * pad
+    alpha = max(0, min(255, int(BRAND_BOX_OPACITY * 255)))
+    draw.rectangle((box_x, box_y, box_x + box_w, box_y + box_h), fill=(0, 0, 0, alpha))
+    draw.text((box_x + pad, box_y + pad), text, font=font, fill=(255, 255, 255, 235))
+    return box_y + box_h
+
+
 def render_overlay_png(
     *,
     title: str | None,
@@ -161,13 +186,17 @@ def render_overlay_png(
     safe_right: int,
     font_file: Path,
     out_path: Path,
+    channel_name: str | None = None,
+    channel_handle: str | None = None,
 ) -> Path | None:
-    """Render an RGBA PNG with title at top + caption at bottom (safe zone).
+    """Render an RGBA PNG with an optional channel brand row at the very top,
+    the scene title below it, and the caption at the bottom (all inside the
+    safe zone).
 
-    Returns ``out_path`` on success, or ``None`` when both title and
-    caption are empty (caller can skip the overlay filter entirely).
+    Returns ``out_path`` on success, or ``None`` when there is nothing to
+    draw (caller can skip the overlay filter entirely).
     """
-    if not title and not caption:
+    if not title and not caption and not channel_name:
         return None
 
     canvas = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
@@ -176,6 +205,24 @@ def render_overlay_png(
     safe_w = safe_right - safe_left
     # Effective wrap width = safe zone minus the box padding on both sides.
     wrap_w = max(40, safe_w - 2 * TEXT_BOX_PADDING)
+
+    # ── Channel brand row (top), if any ────────────────────────────────
+    title_top = safe_top + TITLE_TOP_PADDING
+    if channel_name:
+        brand_text = channel_name.strip()
+        handle = (channel_handle or "").strip()
+        if handle:
+            brand_text = f"{brand_text}  ·  {handle}"
+        brand_font = ImageFont.truetype(str(font_file), BRAND_FONT_SIZE)
+        brand_bottom = _draw_brand_row(
+            draw,
+            text=brand_text,
+            font=brand_font,
+            safe_left=safe_left,
+            top_y=safe_top + BRAND_TOP_PADDING,
+        )
+        # Push the title below the brand row so they never collide.
+        title_top = max(title_top, brand_bottom + BRAND_TOP_PADDING)
 
     if title:
         title_font = ImageFont.truetype(str(font_file), TITLE_FONT_SIZE)
@@ -186,7 +233,7 @@ def render_overlay_png(
                 lines=title_lines,
                 font=title_font,
                 canvas_w=canvas_w,
-                top_y=safe_top + TITLE_TOP_PADDING,
+                top_y=title_top,
                 pad=TEXT_BOX_PADDING,
                 opacity=TEXT_BOX_OPACITY,
                 line_spacing=LINE_SPACING,

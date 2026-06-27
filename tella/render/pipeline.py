@@ -177,6 +177,8 @@ async def _render_scene(
     font_file: Path,
     scene_index: int,
     ken_burns_max_scale: float,
+    channel_name: str | None = None,
+    channel_handle: str | None = None,
 ) -> Path:
     is_video = _is_video_asset(asset_path)
 
@@ -184,7 +186,7 @@ async def _render_scene(
     # sidesteps ffmpeg's drawtext filter which isn't compiled into
     # ffmpeg-static on production VPS.
     overlay_png: Path | None = None
-    if title_text or caption_text:
+    if title_text or caption_text or channel_name:
         overlay_png = render_overlay_png(
             title=title_text,
             caption=caption_text,
@@ -196,6 +198,8 @@ async def _render_scene(
             safe_right=safe_right,
             font_file=font_file,
             out_path=work_dir / f"scene_{scene_index:02d}_overlay.png",
+            channel_name=channel_name,
+            channel_handle=channel_handle,
         )
 
     bg_filter = _build_bg_filter(
@@ -329,6 +333,12 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
     theme_spec = load_theme(plan.theme)
     ken_burns_max_scale = max(1.01, float(theme_spec.ken_burns.end_scale))
 
+    # Channel brand row — shown on every scene unless demo mode / blank.
+    brand_name = (plan.channel_name or "").strip() if not plan.demo_mode else ""
+    brand_handle = (plan.channel_handle or "").strip() if not plan.demo_mode else ""
+    if brand_name:
+        logger.info("brand row: %r %s", brand_name, brand_handle or "")
+
     body_scenes = [s for s in plan.scenes if s.kind == "scene"]
     scene_mp4s: list[Path] = []
 
@@ -375,6 +385,8 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
             font_file=font_file,
             scene_index=scene.scene_index,
             ken_burns_max_scale=ken_burns_max_scale,
+            channel_name=brand_name or None,
+            channel_handle=brand_handle or None,
         )
         scene_mp4s.append(out_mp4)
         logger.info(
