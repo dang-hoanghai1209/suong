@@ -1,0 +1,21 @@
+{
+  "name": "parable",
+  "display_name": "Parable",
+  "description": "Warm watercolor, Studio Ghibli inspired, golden hour. Meditative narrator. Best for moral / religious / contemplative stories.",
+  "image_style_suffix": ", watercolor illustration, Studio Ghibli inspired, warm golden hour lighting, peaceful atmosphere, soft brushstrokes, no text, no caption, fully clothed, modest, family friendly",
+  "color_palette": {
+    "primary": "#c2410c",
+    "accent": "#fbbf24",
+    "bg": "#1c1917",
+    "text": "#fef3c7"
+  },
+  "font_family": "serif",
+  "voice_pace_default": "slow",
+  "voice_gender_default": "male",
+  "transition": "fade",
+  "ken_burns": {
+    "start_scale": 1.0,
+    "end_scale": 1.08,
+    "easing": "linear"
+  }
+}

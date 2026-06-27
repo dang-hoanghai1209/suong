@@ -1,0 +1,49 @@
+# ─── Python ───
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# ─── Env / secrets ───
+.env
+.env.local
+*.pem
+*.key
+service-account*.json
+
+# ─── Render output ───
+out/
+*.mp4
+*.mp3
+.tts_cache/
+channels/*/jobs/
+
+# ─── OS ───
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Editor ───
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─── Tella local artifacts ───
+scratch/
+debug/
+
+# ─── Private build notes (kept local, never published) ───
+CLAUDE_CONTEXT.md
+STATE.md
+DECISIONS.md
+BRIEF.md
+SESSIONS/

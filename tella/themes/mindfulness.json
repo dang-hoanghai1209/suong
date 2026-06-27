@@ -1,0 +1,21 @@
+{
+  "name": "mindfulness",
+  "display_name": "Mindfulness",
+  "description": "Đạo lý + tu tâm. Chú tiểu watercolor, Buddhist warm tone, narrator chậm tĩnh tâm. Best for nội dung mindfulness/spiritual theo style Vibe Code kiếm cơm — sự nghiệp / tình cảm / sức khoẻ / sự tự tin / tiền bạc / hạnh phúc / chữa lành.",
+  "image_style_suffix": ", a young Buddhist novice monk character with a wide conical bamboo hat and saffron-brown robe, eyes gently closed in meditation, padmasana sitting pose, watercolor cartoon illustration, Studio Ghibli inspired, warm cream and gold palette, Buddhist peaceful contemplative atmosphere, soft brushstrokes, golden hour lighting, lotus and serene nature elements, no text, no caption, fully clothed, modest, family friendly, same monk character throughout, identical face features, identical robe coloring",
+  "color_palette": {
+    "primary": "#c97b3f",
+    "accent": "#f0c46a",
+    "bg": "#faf3e0",
+    "text": "#5c3a1e"
+  },
+  "font_family": "serif",
+  "voice_pace_default": "slow",
+  "voice_gender_default": "male",
+  "transition": "fade",
+  "ken_burns": {
+    "start_scale": 1.0,
+    "end_scale": 1.06,
+    "easing": "linear"
+  }
+}

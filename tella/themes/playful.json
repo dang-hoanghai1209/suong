@@ -1,0 +1,21 @@
+{
+  "name": "playful",
+  "display_name": "Playful",
+  "description": "Vibrant cartoon, bold colors, expressive illustration. Friendly upbeat narrator. Best for children's stories, whimsical tales, comedy.",
+  "image_style_suffix": ", vibrant cartoon illustration, bold primary colors, expressive characters, whimsical style, family friendly, no text, no caption",
+  "color_palette": {
+    "primary": "#ec4899",
+    "accent": "#facc15",
+    "bg": "#1e1b4b",
+    "text": "#fce7f3"
+  },
+  "font_family": "sans-serif",
+  "voice_pace_default": "fast",
+  "voice_gender_default": "female",
+  "transition": "crossfade",
+  "ken_burns": {
+    "start_scale": 1.05,
+    "end_scale": 1.15,
+    "easing": "linear"
+  }
+}

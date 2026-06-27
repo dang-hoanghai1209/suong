@@ -1,0 +1,21 @@
+{
+  "name": "cinematic",
+  "display_name": "Cinematic",
+  "description": "Photorealistic, film grain, dramatic teal-orange grade. Documentary tone narrator. Best for real events, biopics, dramatic retellings.",
+  "image_style_suffix": ", cinematic photography, film grain, dramatic lighting, teal and orange color grading, shallow depth of field, 35mm lens, photorealistic, no text",
+  "color_palette": {
+    "primary": "#f97316",
+    "accent": "#06b6d4",
+    "bg": "#0c1e26",
+    "text": "#f1f5f9"
+  },
+  "font_family": "sans-serif",
+  "voice_pace_default": "medium",
+  "voice_gender_default": "male",
+  "transition": "crossfade",
+  "ken_burns": {
+    "start_scale": 1.0,
+    "end_scale": 1.12,
+    "easing": "linear"
+  }
+}

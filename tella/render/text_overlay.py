@@ -1,0 +1,224 @@
+"""Render title + caption to a transparent RGBA PNG using Pillow.
+
+Why this exists: the ffmpeg-static binary on production VPS ships
+WITHOUT the ``drawtext`` filter compiled in (despite
+``--enable-libfreetype`` in the configure string). The Lingora render
+chain works around it by overlaying a pre-rendered PNG watermark
+through the ``overlay`` filter. Tella does the same for its title +
+caption layers.
+
+This module produces one transparent PNG per scene; the render
+pipeline then composites it on top of the Ken Burns / clip background
+via ``overlay=0:0``.
+
+Layout (matches the safe zone constants in
+:mod:`tella.composer.safe_zone`):
+
+  - Title : rendered top, anchored at ``safe.top + TITLE_TOP_PADDING``
+  - Caption: rendered bottom, anchored ``safe.bottom - CAPTION_BOTTOM_PADDING``
+  - Both boxed in semi-transparent black with `TEXT_BOX_PADDING` margin
+  - Both wrapped to fit the safe-zone width
+"""
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+from PIL import Image, ImageDraw, ImageFont
+
+logger = logging.getLogger("tella.render.text_overlay")
+
+# Mirror the constants from pipeline.py (kept in sync so behaviour matches
+# whether drawtext is available or not).
+TITLE_FONT_SIZE = 60
+CAPTION_FONT_SIZE = 42
+TITLE_MAX_LINES = 2
+CAPTION_MAX_LINES = 4
+TEXT_BOX_PADDING = 22
+TEXT_BOX_OPACITY = 0.55
+CAPTION_BOTTOM_PADDING = 60
+TITLE_TOP_PADDING = 50
+LINE_SPACING = 8
+
+
+def _measure(font: ImageFont.FreeTypeFont, text: str) -> tuple[int, int]:
+    """Return (width, ascent+descent) for ``text`` at ``font``."""
+    # bbox: (left, top, right, bottom) of ink
+    bbox = font.getbbox(text)
+    return bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+
+def _wrap_pixel(
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    max_width_px: int,
+    max_lines: int,
+) -> list[str]:
+    """Pixel-accurate word wrap. Falls back to char-by-char for CJK."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    words = text.split()
+    if any(_measure(font, w)[0] > max_width_px for w in words):
+        # A single token is too long (likely CJK with no spaces) — wrap by char.
+        chars = list(text)
+        lines: list[str] = []
+        cur = ""
+        for ch in chars:
+            cand = cur + ch
+            if _measure(font, cand)[0] <= max_width_px:
+                cur = cand
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = ch
+                if len(lines) >= max_lines:
+                    break
+        if cur and len(lines) < max_lines:
+            lines.append(cur)
+        return lines
+
+    lines: list[str] = []
+    cur = ""
+    for w in words:
+        cand = (cur + " " + w).strip() if cur else w
+        if _measure(font, cand)[0] <= max_width_px:
+            cur = cand
+        else:
+            if cur:
+                lines.append(cur)
+            cur = w
+            if len(lines) >= max_lines:
+                break
+    if cur and len(lines) < max_lines:
+        lines.append(cur)
+
+    if len(lines) >= max_lines:
+        # Mark truncation on the last line with an ellipsis if there's
+        # still text left (poor approximation but signals "more").
+        last = lines[-1]
+        if not last.endswith("…") and len(last) > 4:
+            lines[-1] = last[:-1].rstrip() + "…"
+    return lines
+
+
+def _draw_text_box(
+    draw: ImageDraw.ImageDraw,
+    *,
+    lines: list[str],
+    font: ImageFont.FreeTypeFont,
+    canvas_w: int,
+    top_y: int,
+    pad: int,
+    opacity: float,
+    line_spacing: int,
+) -> int:
+    """Draw a centered text block with a semi-transparent dark box.
+
+    Returns the bottom y-coordinate of the rendered block (after the box).
+    """
+    if not lines:
+        return top_y
+
+    # Measure block dimensions.
+    line_heights = []
+    line_widths = []
+    for line in lines:
+        w, h = _measure(font, line)
+        line_widths.append(w)
+        line_heights.append(h)
+    block_w = max(line_widths)
+    block_h = sum(line_heights) + line_spacing * max(0, len(lines) - 1)
+
+    box_w = block_w + 2 * pad
+    box_h = block_h + 2 * pad
+    box_x = (canvas_w - box_w) // 2
+    box_y = top_y
+
+    alpha = max(0, min(255, int(opacity * 255)))
+    draw.rectangle(
+        (box_x, box_y, box_x + box_w, box_y + box_h),
+        fill=(0, 0, 0, alpha),
+    )
+
+    cur_y = box_y + pad
+    for line, w, h in zip(lines, line_widths, line_heights, strict=True):
+        x = (canvas_w - w) // 2
+        draw.text((x, cur_y), line, font=font, fill=(255, 255, 255, 255))
+        cur_y += h + line_spacing
+    return box_y + box_h
+
+
+def render_overlay_png(
+    *,
+    title: str | None,
+    caption: str | None,
+    canvas_w: int,
+    canvas_h: int,
+    safe_top: int,
+    safe_bottom: int,
+    safe_left: int,
+    safe_right: int,
+    font_file: Path,
+    out_path: Path,
+) -> Path | None:
+    """Render an RGBA PNG with title at top + caption at bottom (safe zone).
+
+    Returns ``out_path`` on success, or ``None`` when both title and
+    caption are empty (caller can skip the overlay filter entirely).
+    """
+    if not title and not caption:
+        return None
+
+    canvas = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+
+    safe_w = safe_right - safe_left
+    # Effective wrap width = safe zone minus the box padding on both sides.
+    wrap_w = max(40, safe_w - 2 * TEXT_BOX_PADDING)
+
+    if title:
+        title_font = ImageFont.truetype(str(font_file), TITLE_FONT_SIZE)
+        title_lines = _wrap_pixel(title, title_font, wrap_w, TITLE_MAX_LINES)
+        if title_lines:
+            _draw_text_box(
+                draw,
+                lines=title_lines,
+                font=title_font,
+                canvas_w=canvas_w,
+                top_y=safe_top + TITLE_TOP_PADDING,
+                pad=TEXT_BOX_PADDING,
+                opacity=TEXT_BOX_OPACITY,
+                line_spacing=LINE_SPACING,
+            )
+
+    if caption:
+        cap_font = ImageFont.truetype(str(font_file), CAPTION_FONT_SIZE)
+        cap_lines = _wrap_pixel(caption, cap_font, wrap_w, CAPTION_MAX_LINES)
+        if cap_lines:
+            # Measure block height to anchor the box at the bottom of the
+            # safe zone.
+            heights = [_measure(cap_font, line)[1] for line in cap_lines]
+            block_h = sum(heights) + LINE_SPACING * max(0, len(cap_lines) - 1)
+            box_h = block_h + 2 * TEXT_BOX_PADDING
+            top_y = safe_bottom - CAPTION_BOTTOM_PADDING - box_h
+            _draw_text_box(
+                draw,
+                lines=cap_lines,
+                font=cap_font,
+                canvas_w=canvas_w,
+                top_y=max(safe_top, top_y),
+                pad=TEXT_BOX_PADDING,
+                opacity=TEXT_BOX_OPACITY,
+                line_spacing=LINE_SPACING,
+            )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(out_path, "PNG")
+    logger.info("overlay PNG saved %s (%d KB)", out_path.name, out_path.stat().st_size // 1024)
+    return out_path
+
+
+__all__ = [
+    "render_overlay_png",
+]
