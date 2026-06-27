@@ -65,6 +65,22 @@ def apply_lock(plan: TellaScenePlan, *, style_suffix: str = "") -> TellaScenePla
         by_name.setdefault(f"__pos_{i}", identity)
     all_identities = [c.identity.strip().rstrip(".,;") for c in cast]
 
+    # FLUX only understands English. If the planner leaked non-Latin text
+    # (e.g. Vietnamese) into an identity or the location, the image model
+    # renders random, inconsistent output — warn loudly so it's visible.
+    def _looks_non_english(s: str) -> bool:
+        return any(ord(ch) > 0x024F for ch in s)  # beyond Latin Extended-A/B
+
+    suspect = [i for i in all_identities if _looks_non_english(i)]
+    if _looks_non_english(sb.location):
+        suspect.append(sb.location)
+    if suspect:
+        logger.warning(
+            "character_lock: non-English visual prompt detected (FLUX needs "
+            "English) — images may be inconsistent. Offending text: %r",
+            suspect[0][:80],
+        )
+
     location = sb.location.strip().rstrip(".,;")
     setting_extras = []
     if sb.era and sb.era.lower() != "timeless":

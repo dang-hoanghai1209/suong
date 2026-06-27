@@ -120,6 +120,13 @@ truncate mid-thought. Voice copy reads like spoken word, not text.
 _CHARACTER_LOCK_BLOCK = """\
 CHARACTER + SETTING LOCK (because media_source == ai_image):
 
+🌐  CRITICAL — WRITE EVERY VISUAL FIELD IN ENGLISH. ``characters[].identity``,
+    ``setting_brief.location`` (and era/mood/time_of_day), and every scene's
+    ``image_prompt`` MUST be in ENGLISH even when the narration language is
+    Vietnamese/Japanese/etc. The image model (FLUX) was trained on English
+    and produces random, inconsistent garbage when given non-English text.
+    ONLY ``title`` and ``voice_script`` use the target language.
+
 ⚠️  AI image generators have NO MEMORY across scenes. If you write
     different image_prompts for the same character, the model renders a
     different look each time — viewer confusion. To prevent that you MUST
@@ -132,11 +139,13 @@ keeps coming back to, not just one):
   [
     {
       "name":     "<short label you will reuse in scenes, e.g. 'the hare', "
-                  "'the tortoise', 'Lan'>",
-      "identity": "<10-20 word description. For a PERSON: age, gender, hair, "
-                  "outfit, features. For an ANIMAL/CREATURE/OBJECT: describe "
-                  "THAT animal/thing precisely (species, colour, markings, "
-                  "any clothing/props) — do NOT turn it into a human.>",
+                  "'the tortoise', 'Lan'. May be in any language.>",
+      "identity": "<ENGLISH ONLY. 10-20 word description. For a PERSON: age, "
+                  "gender, hair, outfit, features. For an ANIMAL/CREATURE/"
+                  "OBJECT: describe THAT animal/thing precisely (species, "
+                  "colour, markings, any clothing/props) — do NOT turn it "
+                  "into a human. WRITE IN ENGLISH even for non-English "
+                  "narration.>",
       "role":     "protagonist | antagonist | mentor | supporting"
     }
   ]
@@ -157,9 +166,9 @@ keeps coming back to, not just one):
           silver hair in a bun, simple brown ao dai","role":"protagonist"}
       ]
 
-setting_brief shape:
+setting_brief shape (ALL fields in ENGLISH):
   {
-    "location":    "<short location description, 4-15 words>",
+    "location":    "<ENGLISH. short location description, 4-15 words>",
     "era":         "<period, e.g. '1960s' or '19th century' or 'timeless'>",
     "mood":        "<single word: meditative | tense | warm | cold | hopeful | …>",
     "time_of_day": "<e.g. 'golden hour' | 'blue hour' | 'midnight' | 'noon'>"
@@ -218,8 +227,10 @@ PER-SCENE FIELDS (every scene needs ALL of these):
 _GLOBAL_RULES = """\
 GLOBAL RULES:
 
-  * voice_script + title use TARGET_LANG. image_prompt + stock_query are
-    ALWAYS English (FLUX + Pexels both need English).
+  * ONLY voice_script + title use TARGET_LANG. EVERYTHING visual is ALWAYS
+    English — image_prompt, stock_query, characters[].identity, and all
+    setting_brief fields. FLUX + Pexels only understand English; non-English
+    visual prompts produce random, inconsistent images.
   * EACH scene introduces a DIFFERENT beat — no repetition between scenes.
   * If TARGET_LANG = "vi", title MUST have full Vietnamese diacritics
     (sắc, huyền, hỏi, ngã, nặng, mũ) — diacritic-less Vietnamese is

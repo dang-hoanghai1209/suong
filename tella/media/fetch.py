@@ -35,6 +35,11 @@ logger = logging.getLogger("tella.media.fetch")
 # ai_image keeps us under the limit while still rendering quickly.
 MAX_CONCURRENT = 3
 
+# One stable seed per video keeps the AI-generated character looking the
+# same across scenes (FLUX has no cross-call memory; a fixed seed + the
+# locked identity text is the best text-only consistency lever we have).
+_VIDEO_SEED = 73501
+
 # Generation dims fed to the AI image provider. Smaller than the 1080×1920 /
 # 1920×1080 final canvas on purpose — the renderer upscales/crops, and a
 # smaller image costs fewer CF Neurons so a free account lasts far longer.
@@ -97,7 +102,11 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                         out,
                         width=width,
                         height=height,
-                        seed=1000 + scene.scene_index,
+                        # Fixed seed across every scene of a video: with the
+                        # same character identity text prepended, a stable seed
+                        # makes FLUX render the SAME character look throughout.
+                        # The per-scene action text still varies composition.
+                        seed=_VIDEO_SEED,
                     )
                     scene.image_filenames = [f"assets/{out.name}"]
                 except Exception as exc:
