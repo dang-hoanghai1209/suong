@@ -20,8 +20,9 @@ Tella gives you: video.mp4   (1080×1920 or 1920×1080, narrated, ready to post)
   (kid-friendly illustration)
 - **Reading pace adapts to the topic** — children's tales narrate slowly and
   warmly, explainers narrate at a clear steady clip
-- **Optional channel branding** — show a small channel name on every scene
-  (the wizard asks; leave blank for a clean, unbranded video)
+- **Optional channel branding** — show a small channel name (and a circular
+  avatar) on every scene. Save channels under `channels/` and pick one in the
+  wizard, type a fresh name, or leave it off for a clean, unbranded video
 - **Consistent characters** — in AI image mode every recurring character *and*
   the setting are locked across scenes. A two-character fable keeps both
   characters consistent (a tortoise stays a tortoise, a hare stays a hare),
@@ -178,6 +179,22 @@ keeps coherence with consistent color grading, transitions, and overlay style
 instead. Fast, realistic, and free.
 
 ---
+
+## Channels (branding)
+
+To brand your videos, save a channel once and pick it in the wizard. Create a
+folder under `channels/`:
+
+```
+channels/
+  my-brand/
+    channel.json     ->  {"name": "My Brand"}
+    avatar.png        ->  optional square logo/face (shown as a small circle)
+```
+
+The wizard lists saved channels alongside "type a new name" and "no channel".
+Only the **name** is shown on screen (no handle/slug). An example channel ships
+under `channels/example/`.
 
 ## Themes (advanced)
 

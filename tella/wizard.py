@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+from tella.channels import list_channels
 from tella.ingest.genre_pace import pace_name_for
 from tella.ingest.lang_detect import detect_language
 from tella.ingest.script_cleaner import clean_script_text
@@ -87,6 +88,7 @@ class WizardResult:
     theme: str = "cinematic"
     voice_pace_name: str | None = None
     channel_name: str = ""
+    channel_avatar: str = ""
     topic: str = ""
     user_script: str | None = None
 
@@ -154,6 +156,29 @@ def _ask_optional_text(prompt: str) -> str:
         raise KeyboardInterrupt
 
 
+def _ask_channel(step_label: str) -> tuple[str, str]:
+    """Pick a saved channel, type a new name, or none. Returns (name, avatar_path).
+
+    Saved channels live under ``channels/`` (see :mod:`tella.channels`).
+    """
+    saved = list_channels()
+    options: list[tuple[str, str]] = [("__none__", "No channel (clean video, no name)")]
+    for c in saved:
+        options.append((c.slug, c.name + ("   [has avatar]" if c.avatar_path else "")))
+    options.append(("__new__", "Type a new channel name"))
+
+    pick = _ask_choice(step_label, options, default_index=0)
+    if pick == "__none__":
+        return "", ""
+    if pick == "__new__":
+        name = _ask_optional_text("  Channel name (Enter to skip): ")
+        return name, ""
+    for c in saved:
+        if c.slug == pick:
+            return c.name, (c.avatar_path or "")
+    return "", ""
+
+
 def _label(options: list[tuple[str, str]], value: str) -> str:
     for v, lbl in options:
         if v == value:
@@ -204,9 +229,7 @@ def run_wizard() -> WizardResult:
         if media_source == "ai_image":
             style = _ask_choice("Step 4 - AI image style", _STYLES, 0)
         voice_gender = _ask_choice("Step 5 - Narrator voice", _GENDERS, 0)
-        channel_name = _ask_optional_text(
-            "\nStep 6 - Channel name to show on the video (Enter to skip): "
-        )
+        channel_name, channel_avatar = _ask_channel("Step 6 - Channel branding")
 
         theme = _resolve_theme(media_source, style)
         voice_pace_name = pace_name_for(user_script, theme)
@@ -220,7 +243,8 @@ def run_wizard() -> WizardResult:
         print(f"    Visuals   : {_label(_MEDIA, media_source)}"
               + (f" / {style}" if style else ""))
         print(f"    Voice     : {_label(_GENDERS, voice_gender)} ({voice_pace_name})")
-        print(f"    Channel   : {channel_name or '(none)'}")
+        print(f"    Channel   : {channel_name or '(none)'}"
+              + ("  + avatar" if channel_avatar else ""))
         print("-" * 60)
         _confirm()
         return WizardResult(
@@ -233,6 +257,7 @@ def run_wizard() -> WizardResult:
             theme=theme,
             voice_pace_name=voice_pace_name,
             channel_name=channel_name,
+            channel_avatar=channel_avatar,
             user_script=user_script,
             topic=os.path.splitext(os.path.basename(file_path))[0],
         )
@@ -247,9 +272,7 @@ def run_wizard() -> WizardResult:
         style = _ask_choice("Step 5 - AI image style", _STYLES, 0)
     duration_mode = _ask_choice("Step 6 - How long?", _DURATIONS, 0)
     voice_gender = _ask_choice("Step 7 - Narrator voice", _GENDERS, 0)
-    channel_name = _ask_optional_text(
-        "\nStep 8 - Channel name to show on the video (Enter to skip): "
-    )
+    channel_name, channel_avatar = _ask_channel("Step 8 - Channel branding")
 
     theme = _resolve_theme(media_source, style)
     voice_pace_name = pace_name_for(topic, theme)
@@ -264,7 +287,8 @@ def run_wizard() -> WizardResult:
           + (f" / {style}" if style else ""))
     print(f"    Length    : {_label(_DURATIONS, duration_mode)}")
     print(f"    Voice     : {_label(_GENDERS, voice_gender)} ({voice_pace_name})")
-    print(f"    Channel   : {channel_name or '(none)'}")
+    print(f"    Channel   : {channel_name or '(none)'}"
+          + ("  + avatar" if channel_avatar else ""))
     print("-" * 60)
     _confirm()
     return WizardResult(
@@ -277,6 +301,7 @@ def run_wizard() -> WizardResult:
         theme=theme,
         voice_pace_name=voice_pace_name,
         channel_name=channel_name,
+        channel_avatar=channel_avatar,
         topic=topic,
     )
 

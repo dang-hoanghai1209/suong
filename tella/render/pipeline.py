@@ -178,7 +178,7 @@ async def _render_scene(
     scene_index: int,
     ken_burns_max_scale: float,
     channel_name: str | None = None,
-    channel_handle: str | None = None,
+    channel_avatar: str | None = None,
 ) -> Path:
     is_video = _is_video_asset(asset_path)
 
@@ -199,7 +199,7 @@ async def _render_scene(
             font_file=font_file,
             out_path=work_dir / f"scene_{scene_index:02d}_overlay.png",
             channel_name=channel_name,
-            channel_handle=channel_handle,
+            channel_avatar=channel_avatar,
         )
 
     bg_filter = _build_bg_filter(
@@ -334,10 +334,11 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
     ken_burns_max_scale = max(1.01, float(theme_spec.ken_burns.end_scale))
 
     # Channel brand row — shown on every scene unless demo mode / blank.
+    # Name only (no handle/slug) plus an optional circular avatar.
     brand_name = (plan.channel_name or "").strip() if not plan.demo_mode else ""
-    brand_handle = (plan.channel_handle or "").strip() if not plan.demo_mode else ""
+    brand_avatar = (plan.channel_avatar or "").strip() if not plan.demo_mode else ""
     if brand_name:
-        logger.info("brand row: %r %s", brand_name, brand_handle or "")
+        logger.info("brand row: %r avatar=%s", brand_name, bool(brand_avatar))
 
     body_scenes = [s for s in plan.scenes if s.kind == "scene"]
     scene_mp4s: list[Path] = []
@@ -386,7 +387,7 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
             scene_index=scene.scene_index,
             ken_burns_max_scale=ken_burns_max_scale,
             channel_name=brand_name or None,
-            channel_handle=brand_handle or None,
+            channel_avatar=brand_avatar or None,
         )
         scene_mp4s.append(out_mp4)
         logger.info(

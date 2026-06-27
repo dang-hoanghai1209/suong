@@ -151,9 +151,11 @@ class TellaScenePlan(BaseModel):
 
     scenes: list[Scene] = Field(..., min_length=3, max_length=40)
 
-    # Channel branding (composer pulls from channel preset).
+    # Channel branding (composer pulls from channel preset). Only the name
+    # is shown on screen; avatar is an optional image path.
     channel_name: str = ""
     channel_handle: str = ""
+    channel_avatar: str = ""
     demo_mode: bool = False
 
     total_duration: float = 0.0

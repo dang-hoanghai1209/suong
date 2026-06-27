@@ -156,11 +156,11 @@ async def run_pipeline(
     # CHANNEL_NAME / CHANNEL_HANDLE / DEMO_MODE. A blank name or DEMO_MODE=1
     # means no brand row (the standalone wizard sets these env vars too).
     _ch_name = (os.environ.get("CHANNEL_NAME") or "").strip()
-    _ch_handle = (os.environ.get("CHANNEL_HANDLE") or "").strip()
+    _ch_avatar = (os.environ.get("CHANNEL_AVATAR") or "").strip()
     _demo = os.environ.get("DEMO_MODE", "").strip() == "1" or not _ch_name
     plan.demo_mode = _demo
     plan.channel_name = "" if _demo else _ch_name
-    plan.channel_handle = "" if _demo else _ch_handle
+    plan.channel_avatar = "" if _demo else _ch_avatar
 
     plan_json = job_dir / "plan.json"
     plan_json.write_text(
@@ -269,6 +269,7 @@ def main(argv: list[str] | None = None) -> int:
         # worker uses, so run_pipeline picks it up uniformly.
         if choice.channel_name:
             os.environ["CHANNEL_NAME"] = choice.channel_name
+            os.environ["CHANNEL_AVATAR"] = choice.channel_avatar or ""
             os.environ["DEMO_MODE"] = "0"
         else:
             os.environ["DEMO_MODE"] = "1"

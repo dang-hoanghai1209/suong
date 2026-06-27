@@ -153,24 +153,59 @@ def _draw_text_box(
     return box_y + box_h
 
 
+def _circular_avatar(path: str, size: int) -> Image.Image | None:
+    """Load an avatar image and crop it to a circle of ``size`` px. None on error."""
+    try:
+        with Image.open(path) as im:
+            im = im.convert("RGBA")
+            # Center-crop to square first.
+            w, h = im.size
+            side = min(w, h)
+            im = im.crop(((w - side) // 2, (h - side) // 2,
+                          (w - side) // 2 + side, (h - side) // 2 + side))
+            im = im.resize((size, size), Image.LANCZOS)
+            mask = Image.new("L", (size, size), 0)
+            ImageDraw.Draw(mask).ellipse((0, 0, size, size), fill=255)
+            im.putalpha(mask)
+            return im
+    except (OSError, ValueError) as exc:
+        logger.warning("avatar load failed (%s): %s", path, exc)
+        return None
+
+
 def _draw_brand_row(
+    canvas: Image.Image,
     draw: ImageDraw.ImageDraw,
     *,
     text: str,
     font: ImageFont.FreeTypeFont,
     safe_left: int,
     top_y: int,
+    avatar_path: str | None = None,
 ) -> int:
-    """Draw a small left-aligned channel-brand pill. Returns its bottom y."""
+    """Draw a left-aligned brand pill: optional circular avatar + channel
+    name (name only — no handle/slug). Returns the pill's bottom y."""
     w, h = _measure(font, text)
     pad = BRAND_BOX_PADDING
+    avatar_size = h + 2 * pad - 8  # avatar fills the pill height minus a hair
+    avatar = _circular_avatar(avatar_path, avatar_size) if avatar_path else None
+    gap = 12 if avatar else 0
+
     box_x = safe_left
     box_y = top_y
-    box_w = w + 2 * pad
+    box_w = pad + (avatar_size + gap if avatar else 0) + w + pad
     box_h = h + 2 * pad
     alpha = max(0, min(255, int(BRAND_BOX_OPACITY * 255)))
-    draw.rectangle((box_x, box_y, box_x + box_w, box_y + box_h), fill=(0, 0, 0, alpha))
-    draw.text((box_x + pad, box_y + pad), text, font=font, fill=(255, 255, 255, 235))
+    draw.rounded_rectangle(
+        (box_x, box_y, box_x + box_w, box_y + box_h),
+        radius=box_h // 2, fill=(0, 0, 0, alpha),
+    )
+
+    cur_x = box_x + pad
+    if avatar:
+        canvas.paste(avatar, (cur_x, box_y + (box_h - avatar_size) // 2), avatar)
+        cur_x += avatar_size + gap
+    draw.text((cur_x, box_y + pad), text, font=font, fill=(255, 255, 255, 240))
     return box_y + box_h
 
 
@@ -187,11 +222,12 @@ def render_overlay_png(
     font_file: Path,
     out_path: Path,
     channel_name: str | None = None,
-    channel_handle: str | None = None,
+    channel_avatar: str | None = None,
 ) -> Path | None:
     """Render an RGBA PNG with an optional channel brand row at the very top,
     the scene title below it, and the caption at the bottom (all inside the
-    safe zone).
+    safe zone). The brand row shows the channel NAME (no handle/slug) and,
+    if provided, a circular avatar image to its left.
 
     Returns ``out_path`` on success, or ``None`` when there is nothing to
     draw (caller can skip the overlay filter entirely).
@@ -209,17 +245,15 @@ def render_overlay_png(
     # ── Channel brand row (top), if any ────────────────────────────────
     title_top = safe_top + TITLE_TOP_PADDING
     if channel_name:
-        brand_text = channel_name.strip()
-        handle = (channel_handle or "").strip()
-        if handle:
-            brand_text = f"{brand_text}  ·  {handle}"
         brand_font = ImageFont.truetype(str(font_file), BRAND_FONT_SIZE)
         brand_bottom = _draw_brand_row(
+            canvas,
             draw,
-            text=brand_text,
+            text=channel_name.strip(),
             font=brand_font,
             safe_left=safe_left,
             top_y=safe_top + BRAND_TOP_PADDING,
+            avatar_path=channel_avatar,
         )
         # Push the title below the brand row so they never collide.
         title_top = max(title_top, brand_bottom + BRAND_TOP_PADDING)
