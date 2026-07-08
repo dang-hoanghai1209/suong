@@ -54,6 +54,151 @@ from tella.tts.synth_all import synthesize_all
 logger = logging.getLogger("tella.cli")
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("invalid %s=%r; using %.2f", name, raw, default)
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("invalid %s=%r; using %d", name, raw, default)
+        return default
+
+
+def _edge_rate_to_speed(edge_rate: str) -> float:
+    raw = (edge_rate or "0%").strip().rstrip("%")
+    try:
+        return round(1.0 + int(raw) / 100.0, 3)
+    except ValueError:
+        return 1.0
+
+
+def _requested_tts_provider() -> str:
+    return (os.environ.get("TELLA_TTS_PROVIDER") or "edge").strip().lower() or "edge"
+
+
+def _tts_language_for_plan(plan) -> str:
+    raw = (os.environ.get("TELLA_TTS_LANGUAGE") or "").strip().lower()
+    return plan.language if raw in {"", "auto"} else raw
+
+
+def _selected_reference_paths_from_metadata(job_dir: Path) -> list[str]:
+    meta_path = job_dir / "references" / "references.json"
+    if not meta_path.is_file():
+        return []
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    refs = data if isinstance(data, list) else data.get("references", [])
+    if not isinstance(refs, list):
+        return []
+    return [
+        str(item.get("image_path", "")).replace("\\", "/")
+        for item in refs
+        if isinstance(item, dict) and item.get("selected") and item.get("image_path")
+    ]
+
+
+def _current_minimalist_visual_mode() -> str:
+    raw = (os.environ.get("TELLA_MINIMALIST_VISUAL_MODE") or "").strip().lower()
+    if raw in {"reference", "ai_scene", "curated_sprite", "rig"}:
+        return raw
+    if (os.environ.get("TELLA_MINIMALIST_USE_AI_SCENES") or "").strip() == "1":
+        return "ai_scene"
+    return "curated_sprite"
+
+
+def _ensure_visual_metadata(plan, job_dir: Path) -> None:
+    if plan.theme != "minimalist_emotional" or plan.media_source != "ai_image":
+        return
+    visual_mode = _current_minimalist_visual_mode()
+    selected_refs = _selected_reference_paths_from_metadata(job_dir)
+    provider_for_mode = {
+        "reference": (os.environ.get("TELLA_IMAGE_PROVIDER") or "cloudflare").strip().lower() or "cloudflare",
+        "ai_scene": "cloudflare",
+        "curated_sprite": "local",
+        "rig": "local",
+    }
+    for scene in (s for s in plan.scenes if s.kind == "scene"):
+        scene.visual_mode = scene.visual_mode or visual_mode
+        scene.provider = scene.provider or provider_for_mode.get(scene.visual_mode, "")
+        if scene.visual_mode == "reference":
+            scene.used_reference_conditioning = bool(scene.used_reference_conditioning)
+            if not scene.reference_paths:
+                scene.reference_paths = selected_refs
+        elif scene.visual_mode in {"curated_sprite", "rig"}:
+            scene.used_reference_conditioning = False
+            scene.reference_paths = []
+
+
+def _ensure_tts_metadata(plan, job_dir: Path) -> None:
+    audio_path = Path(plan.narration_audio_path) if plan.narration_audio_path else job_dir / "assets" / "narration.mp3"
+    if not plan.narration_audio_path and audio_path.is_file():
+        plan.narration_audio_path = str(audio_path)
+        plan.narration_audio_filename = f"assets/{audio_path.name}"
+
+    requested_provider = _requested_tts_provider()
+    provider = plan.tts_provider or requested_provider
+    language = plan.tts_language or _tts_language_for_plan(plan)
+    codec = plan.tts_codec or (os.environ.get("TELLA_TTS_CODEC") or "mp3").strip().lower() or "mp3"
+    sample_rate = plan.tts_sample_rate or _env_int("TELLA_TTS_SAMPLE_RATE", 24000)
+    requested_speed = _env_float(
+        "TELLA_TTS_SPEED",
+        0.92 if requested_provider in {"cloudflare_grok", "xai"} and plan.theme == "minimalist_emotional" else _edge_rate_to_speed(plan.voice_edge_rate),
+    )
+    effective_speed = plan.tts_speed or (
+        _edge_rate_to_speed(plan.voice_edge_rate) if provider == "edge" and not os.environ.get("TELLA_TTS_SPEED") else requested_speed
+    )
+    if not plan.tts_voice:
+        env_voice = (os.environ.get("TELLA_TTS_VOICE") or "").strip()
+        plan.tts_voice = env_voice or (plan.voice_name if provider == "edge" else "ara")
+
+    plan.tts_provider = provider
+    plan.tts_language = language
+    plan.tts_speed = effective_speed
+    plan.tts_codec = codec
+    plan.tts_sample_rate = sample_rate
+    plan.tts_fallback_reason = plan.tts_fallback_reason or ""
+
+    metadata = {
+        **(plan.tts_metadata or {}),
+        "requested_provider": (plan.tts_metadata or {}).get("requested_provider", requested_provider),
+        "requested_tts_speed": (plan.tts_metadata or {}).get("requested_tts_speed", requested_speed),
+        "tts_provider": plan.tts_provider,
+        "tts_voice": plan.tts_voice,
+        "tts_language": plan.tts_language,
+        "tts_speed": plan.tts_speed,
+        "tts_codec": plan.tts_codec,
+        "tts_sample_rate": plan.tts_sample_rate,
+        "narration_audio_path": plan.narration_audio_path,
+        "narration_duration": plan.narration_duration,
+        "fallback_used": plan.tts_fallback_used,
+        "fallback_reason": plan.tts_fallback_reason,
+    }
+    plan.tts_metadata = metadata
+    (job_dir / "tts_metadata.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _ensure_run_metadata(plan, job_dir: Path) -> None:
+    _ensure_tts_metadata(plan, job_dir)
+    _ensure_visual_metadata(plan, job_dir)
+
+
 def _slugify(text: str, max_len: int = 40) -> str:
     """Folder-safe slug, diacritic-stripped for readability.
 
@@ -189,7 +334,7 @@ async def run_pipeline(
 
     # ── 3 + 4. Media + TTS in parallel ─────────────────────────────────
     logger.info("step 3/6 — fetch %d assets (%s)", len(plan.scenes), plan.media_source)
-    logger.info("step 4/6 — synthesize edge TTS in parallel")
+    logger.info("step 4/6 — synthesize TTS narration in parallel")
     await asyncio.gather(
         fetch_assets(plan, job_dir),
         synthesize_all(
@@ -202,7 +347,9 @@ async def run_pipeline(
 
     # ── 5. Compose timing ──────────────────────────────────────────────
     logger.info("step 5/6 — compose timing")
+    _ensure_run_metadata(plan, job_dir)
     compose_timing(plan)
+    _ensure_run_metadata(plan, job_dir)
 
     # Re-write plan with timing populated for debugging.
     plan_json.write_text(
@@ -213,6 +360,11 @@ async def run_pipeline(
     # ── 6. Render MP4 ──────────────────────────────────────────────────
     logger.info("step 6/6 — render (ffmpeg)")
     final = await render(plan, job_dir)
+    _ensure_run_metadata(plan, job_dir)
+    plan_json.write_text(
+        json.dumps(plan.model_dump(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     logger.info("DONE — %s (%.2fs total)", final, plan.total_duration)
     return final
 
@@ -220,7 +372,7 @@ async def run_pipeline(
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="tella",
-        description="Tella — Người kể chuyện · creative storytelling video tool",
+        description="Tella - creative storytelling video tool",
     )
     p.add_argument("--topic", required=True, help="Story topic (any language)")
     p.add_argument(
@@ -229,7 +381,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--theme", default="cinematic",
-        choices=["parable", "cinematic", "playful", "mindfulness"],
+        choices=[
+            "parable",
+            "cinematic",
+            "playful",
+            "mindfulness",
+            "minimalist_emotional",
+        ],
     )
     p.add_argument(
         "--media", default="ai_image", dest="media_source",

@@ -50,6 +50,23 @@ def compose_timing(plan: TellaScenePlan) -> TellaScenePlan:
         cursor = round(cursor + scene.duration, 2)
 
     plan.total_duration = round(cursor, 2)
+    plan.scene_timing_map = [
+        {
+            "scene_index": scene.scene_index,
+            "start": scene.start,
+            "duration": scene.duration,
+        }
+        for scene in body_scenes
+    ]
+    plan.subtitle_segments = [
+        {
+            "scene_index": scene.scene_index,
+            "start": scene.start,
+            "end": round(scene.start + scene.duration, 2),
+            "text": scene.voice_script,
+        }
+        for scene in body_scenes
+    ]
     logger.info(
         "compose_timing: %d scenes, total=%.2fs",
         len(body_scenes), plan.total_duration,

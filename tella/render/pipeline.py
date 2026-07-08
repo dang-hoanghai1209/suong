@@ -22,8 +22,8 @@ Text overlays (all positioned inside the safe zone):
   - Title  : top, larger font, scene title in TARGET_LANG
   - Caption: bottom, smaller font, narration text wrapped to fit width
 
-Concat: simple cut between scenes (no crossfade in v1; xfade can land
-in a refinement session).
+Concat: simple cut by default; themes that declare ``transition:
+crossfade`` use ffmpeg ``xfade`` for soft scene boundaries.
 
 Font: Windows-friendly default (Arial). Override via env
 ``TELLA_FONT_FILE`` if you have something prettier on PATH.
@@ -127,6 +127,18 @@ def _is_video_asset(path: Path) -> bool:
     return path.suffix.lower() in (".mp4", ".mov", ".webm", ".mkv")
 
 
+def _env_float(name: str, default: float, low: float, high: float) -> float:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("invalid %s=%r; using %.2f", name, raw, default)
+        return default
+    return max(low, min(high, value))
+
+
 def _write_text_file(path: Path, text: str) -> Path:
     """Write text to a temp file ffmpeg's drawtext ``textfile=`` can read.
 
@@ -162,6 +174,7 @@ def _build_bg_filter(
         zoom_step = (ken_burns_max_scale - 1.0) / max(1, total_frames - 1)
         chains.append(
             f"zoompan=z='min(zoom+{zoom_step:.6f},{ken_burns_max_scale})':"
+            f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
             f"d={total_frames}:s={canvas_w}x{canvas_h}:fps={OUTPUT_FPS}"
         )
     else:
@@ -304,6 +317,75 @@ async def _concat_scenes(
     return out_path
 
 
+async def _concat_scenes_xfade(
+    scene_mp4s: list[Path],
+    scene_durations: list[float],
+    out_path: Path,
+    *,
+    transition_duration: float = 0.4,
+) -> Path:
+    """Concatenate VIDEO-ONLY scene MP4s with soft xfade transitions."""
+    if len(scene_mp4s) == 1:
+        shutil.copyfile(scene_mp4s[0], out_path)
+        return out_path
+
+    min_scene_duration = (
+        min(scene_durations) if scene_durations else transition_duration
+    )
+    xfade_duration = min(transition_duration, max(0.1, min_scene_duration / 3.0))
+
+    cmd = ["ffmpeg", "-y", "-loglevel", "error"]
+    for p in scene_mp4s:
+        cmd += ["-i", str(p)]
+
+    padded_durations = list(scene_durations)
+    for i in range(len(padded_durations) - 1):
+        padded_durations[i] += xfade_duration
+
+    filters: list[str] = []
+    for i in range(len(scene_mp4s)):
+        chain = f"[{i}:v]setpts=PTS-STARTPTS"
+        if i < len(scene_mp4s) - 1:
+            chain += f",tpad=stop_mode=clone:stop_duration={xfade_duration:.3f}"
+        filters.append(f"{chain}[v{i}]")
+
+    cumulative_duration = padded_durations[0]
+    previous_label = "v0"
+    for i in range(1, len(scene_mp4s)):
+        offset = max(0.0, cumulative_duration - xfade_duration)
+        out_label = f"xf{i}"
+        filters.append(
+            f"[{previous_label}][v{i}]"
+            f"xfade=transition=fade:duration={xfade_duration:.3f}:offset={offset:.3f}"
+            f"[{out_label}]"
+        )
+        cumulative_duration = cumulative_duration + padded_durations[i] - xfade_duration
+        previous_label = out_label
+
+    cmd += [
+        "-filter_complex", ";".join(filters),
+        "-map", f"[{previous_label}]",
+        "-r", str(OUTPUT_FPS),
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "26",
+        "-pix_fmt", "yuv420p",
+        "-an",
+        "-movflags", "+faststart",
+        str(out_path),
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        msg = stderr.decode("utf-8", errors="replace")
+        raise RuntimeError(f"ffmpeg xfade concat failed:\n{msg[-1500:]}")
+    return out_path
+
+
 async def _mux_audio(
     silent_video: Path, audio: Path, out_path: Path,
 ) -> Path:
@@ -372,6 +454,21 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
 
     theme_spec = load_theme(plan.theme)
     ken_burns_max_scale = max(1.01, float(theme_spec.ken_burns.end_scale))
+    xfade_duration = 0.4
+    if plan.theme == "minimalist_emotional":
+        ken_burns_max_scale = _env_float(
+            "TELLA_MINIMALIST_ZOOM_MAX",
+            min(1.03, ken_burns_max_scale),
+            1.01,
+            1.08,
+        )
+        xfade_duration = _env_float(
+            "TELLA_MINIMALIST_XFADE_DURATION",
+            0.8,
+            0.1,
+            1.5,
+        )
+    use_crossfade = theme_spec.transition.strip().lower() == "crossfade"
 
     # Channel brand row — shown on every scene unless demo mode / blank.
     # Name only (no handle/slug) plus an optional circular avatar.
@@ -403,7 +500,9 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
         asset_path = job_dir / scene.image_filenames[0]
         out_mp4 = work_dir / f"scene_{scene.scene_index:02d}.mp4"
 
-        title_lines = wrap(scene.title, title_cpl, max_lines=TITLE_MAX_LINES)
+        title_lines = [] if plan.theme == "minimalist_emotional" else wrap(
+            scene.title, title_cpl, max_lines=TITLE_MAX_LINES
+        )
         caption_lines = wrap(scene.voice_script, caption_cpl, max_lines=CAPTION_MAX_LINES)
         title_text = "\n".join(title_lines) if title_lines else None
         caption_text = "\n".join(caption_lines) if caption_lines else None
@@ -435,8 +534,17 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
 
     # Stage 2: concat the video-only scenes → silent_video.mp4
     silent_video = work_dir / "silent_video.mp4"
-    await _concat_scenes(scene_mp4s, silent_video, work_dir)
-    logger.info("concat done → %s (silent)", silent_video.name)
+    if use_crossfade and len(scene_mp4s) > 1:
+        await _concat_scenes_xfade(
+            scene_mp4s,
+            [max(0.1, s.duration) for s in body_scenes],
+            silent_video,
+            transition_duration=xfade_duration,
+        )
+        logger.info("xfade concat done → %s (silent)", silent_video.name)
+    else:
+        await _concat_scenes(scene_mp4s, silent_video, work_dir)
+        logger.info("concat done → %s (silent)", silent_video.name)
 
     # Stage 3: mux the single continuous narration onto the silent video.
     final_path = job_dir / "video.mp4"
