@@ -20,11 +20,15 @@ The continuous-narration model (CEO 2026-06-29):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 from pathlib import Path
 
 from tella.planner.models import TellaScenePlan
 from tella.tts import edge, google
+from tella.tts.providers import EdgeTTSProvider, TTSResult, get_tts_provider
+from tella.tts.text import normalize_narration_for_tts
 
 logger = logging.getLogger("tella.tts.synth_all")
 
@@ -48,7 +52,7 @@ async def _ffprobe_duration(path: Path) -> float:
         return 0.0
 
 
-def _join_voice_scripts(scenes) -> str:
+def _join_voice_scripts(scenes, *, add_terminal_punctuation: bool = True) -> str:
     """Concatenate per-scene voice_script into one TTS input.
 
     Joins with a space — Edge/Google TTS treat sentence-end punctuation as
@@ -63,7 +67,7 @@ def _join_voice_scripts(scenes) -> str:
             continue
         # Ensure each scene ends with terminal punctuation so the TTS
         # engine plays a natural beat between them.
-        if text[-1] not in ".!?…":
+        if add_terminal_punctuation and text[-1] not in ".!?…":
             text = text + "."
         parts.append(text)
     return " ".join(parts)
@@ -92,6 +96,103 @@ def _distribute_durations(scenes, total_duration: float) -> None:
             d = round(total_duration * chars[i] / total_chars, 2)
             scene.audio_duration = d
             running = round(running + d, 2)
+
+
+def _env_bool(name: str) -> bool:
+    return (os.environ.get(name) or "").strip() == "1"
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("invalid %s=%r; using %d", name, raw, default)
+        return default
+
+
+def _env_float(name: str, default: float) -> tuple[float, bool]:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default, False
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("invalid %s=%r; using %.2f", name, raw, default)
+        return default, False
+    return max(0.25, min(4.0, value)), True
+
+
+def _edge_rate_to_speed(edge_rate: str) -> float:
+    raw = (edge_rate or "0%").strip().rstrip("%")
+    try:
+        return round(1.0 + int(raw) / 100.0, 3)
+    except ValueError:
+        return 1.0
+
+
+def _resolve_tts_settings(plan: TellaScenePlan, requested_provider: str) -> dict:
+    provider = requested_provider or "edge"
+    env_voice = (os.environ.get("TELLA_TTS_VOICE") or "").strip()
+    env_language = (os.environ.get("TELLA_TTS_LANGUAGE") or "").strip().lower()
+    language = plan.language if env_language in {"", "auto"} else env_language
+    codec = (os.environ.get("TELLA_TTS_CODEC") or "mp3").strip().lower() or "mp3"
+    sample_rate = _env_int("TELLA_TTS_SAMPLE_RATE", 24000)
+
+    default_speed = _edge_rate_to_speed(plan.voice_edge_rate)
+    if provider in {"cloudflare_grok", "xai"} and plan.theme == "minimalist_emotional":
+        default_speed = 0.92
+    speed, speed_from_env = _env_float("TELLA_TTS_SPEED", default_speed)
+
+    if provider == "edge":
+        voice = env_voice or plan.voice_name
+    else:
+        voice = env_voice or "ara"
+
+    return {
+        "provider": provider,
+        "voice": voice,
+        "language": language,
+        "speed": speed,
+        "speed_from_env": speed_from_env,
+        "codec": codec,
+        "sample_rate": sample_rate,
+    }
+
+
+async def _synthesize_edge_fallback(
+    text: str,
+    out: Path,
+    plan: TellaScenePlan,
+    *,
+    language: str,
+    sample_rate: int,
+    fallback_from: str = "",
+) -> TTSResult:
+    return await EdgeTTSProvider().synthesize(
+        text,
+        out,
+        voice=plan.voice_name,
+        language=language,
+        speed=_edge_rate_to_speed(plan.voice_edge_rate),
+        codec="mp3",
+        sample_rate=sample_rate,
+        metadata={
+            "edge_rate": plan.voice_edge_rate,
+            "fallback_from": fallback_from,
+        },
+    )
+
+
+def _save_tts_metadata(job_dir: Path, metadata: dict) -> Path:
+    out = Path(job_dir) / "tts_metadata.json"
+    out.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return out
 
 
 async def synthesize_all(
@@ -123,15 +224,68 @@ async def synthesize_all(
     if not body_scenes:
         return
 
-    full_text = _join_voice_scripts(body_scenes)
+    raw_text = _join_voice_scripts(
+        body_scenes,
+        add_terminal_punctuation=plan.theme != "minimalist_emotional",
+    )
+    requested_provider = (os.environ.get("TELLA_TTS_PROVIDER") or "").strip().lower()
+    settings = _resolve_tts_settings(plan, requested_provider)
+    full_text = normalize_narration_for_tts(
+        raw_text,
+        settings["provider"],
+        plan.theme,
+    )
     if not full_text.strip():
         return
 
     out = assets_dir / "narration.mp3"
-    used_provider = "edge"
+    result: TTSResult | None = None
+    fallback_used = False
+    fallback_reason = ""
     google_enabled = bool(google_tts_api_key) and bool(google_tts_voice)
 
-    if google_enabled and not google.is_dead():
+    if requested_provider:
+        try:
+            edge_metadata = {}
+            if settings["provider"] == "edge" and not settings["speed_from_env"]:
+                edge_metadata["edge_rate"] = plan.voice_edge_rate
+            provider = get_tts_provider(settings["provider"])
+            result = await provider.synthesize(
+                full_text,
+                out,
+                voice=settings["voice"],
+                language=settings["language"],
+                speed=settings["speed"],
+                codec=settings["codec"],
+                sample_rate=settings["sample_rate"],
+                metadata={
+                    **edge_metadata,
+                    "requested_provider": requested_provider,
+                    "normalized_text_chars": len(full_text),
+                },
+            )
+        except Exception as exc:
+            fallback_reason = str(exc)[:500]
+            if settings["provider"] == "edge" or _env_bool("TELLA_STRICT_TTS_PROVIDER"):
+                raise RuntimeError(
+                    f"TTS provider {settings['provider']} failed: {exc}"
+                ) from exc
+            fallback_used = True
+            logger.warning(
+                "TTS provider=%s failed; falling back to Edge TTS: %s",
+                settings["provider"],
+                fallback_reason,
+            )
+            result = await _synthesize_edge_fallback(
+                full_text,
+                out,
+                plan,
+                language=settings["language"],
+                sample_rate=settings["sample_rate"],
+                fallback_from=settings["provider"],
+            )
+
+    if result is None and google_enabled and not google.is_dead():
         ok = await google.synth_google(
             text=full_text,
             voice_name=google_tts_voice,
@@ -140,30 +294,89 @@ async def synthesize_all(
             out_path=out,
         )
         if ok:
-            used_provider = "google"
+            result = TTSResult(
+                audio_path=out,
+                provider="google",
+                voice=google_tts_voice,
+                language=settings["language"],
+                metadata={
+                    "requested_provider": "legacy_google",
+                    "edge_rate": plan.voice_edge_rate,
+                    "normalized_text_chars": len(full_text),
+                },
+            )
 
-    if used_provider == "edge":
-        await edge.synthesize(
+    if result is None:
+        result = await EdgeTTSProvider().synthesize(
             full_text,
-            plan.voice_name,
             out,
-            rate=plan.voice_edge_rate,
+            voice=settings["voice"] if requested_provider == "edge" else plan.voice_name,
+            language=settings["language"],
+            speed=settings["speed"],
+            codec="mp3",
+            sample_rate=settings["sample_rate"],
+            metadata={
+                "edge_rate": plan.voice_edge_rate,
+                "requested_provider": requested_provider or "edge",
+                "normalized_text_chars": len(full_text),
+            },
         )
 
     total_duration = await _ffprobe_duration(out)
+    result.duration = total_duration
     _distribute_durations(body_scenes, total_duration)
+    effective_speed = (
+        _edge_rate_to_speed(str(result.metadata.get("edge_rate", plan.voice_edge_rate)))
+        if result.provider == "edge"
+        else float(settings["speed"])
+    )
+    effective_codec = str(result.metadata.get("codec") or settings["codec"])
 
     plan.narration_audio_filename = f"assets/{out.name}"
+    plan.narration_audio_path = str(out)
+    plan.narration_duration = round(total_duration, 2)
+    plan.tts_provider = result.provider
+    plan.tts_voice = result.voice
+    plan.tts_language = result.language
+    plan.tts_speed = effective_speed
+    plan.tts_codec = effective_codec
+    plan.tts_sample_rate = int(settings["sample_rate"])
+    plan.tts_fallback_used = fallback_used
+    plan.tts_fallback_reason = fallback_reason
+
+    tts_metadata = {
+        "requested_provider": requested_provider or "edge",
+        "requested_tts_speed": float(settings["speed"]),
+        "tts_provider": result.provider,
+        "tts_voice": result.voice,
+        "tts_language": result.language,
+        "tts_speed": effective_speed,
+        "tts_codec": effective_codec,
+        "tts_sample_rate": int(settings["sample_rate"]),
+        "narration_audio_path": str(out),
+        "narration_duration": round(total_duration, 2),
+        "fallback_used": fallback_used,
+        "fallback_reason": fallback_reason,
+        "normalized_text_chars": len(full_text),
+        "raw_text_chars": len(raw_text),
+        "provider_metadata": result.metadata,
+    }
+    plan.tts_metadata = tts_metadata
+    _save_tts_metadata(job_dir, tts_metadata)
+
     # Clear any stale per-scene audio_filename from older runs of this plan.
     for s in body_scenes:
         s.audio_filename = ""
 
     logger.info(
-        "synthesize_all: 1 combined narration (%.2fs, provider=%s, voice=%s @ %s) "
+        "synthesize_all: 1 combined narration (%.2fs, provider=%s, voice=%s, language=%s, speed=%.2f, fallback=%s) "
         "distributed across %d scenes",
         total_duration,
-        f"google:{google_tts_voice}" if used_provider == "google" else "edge",
-        plan.voice_name, plan.voice_edge_rate,
+        result.provider,
+        result.voice,
+        result.language,
+        float(settings["speed"]),
+        fallback_used,
         len(body_scenes),
     )
 

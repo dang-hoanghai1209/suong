@@ -24,6 +24,7 @@ is given):
   ``cinematic``    ``medium``
   ``playful``      ``slow``
   ``mindfulness``  ``slow``
+  ``minimalist_emotional`` ``slow``
   ===============  ==============
 
 Power user override: any ``"[+-]\\d{1,3}%"`` string passed via
@@ -62,6 +63,7 @@ THEME_DEFAULT_PACE: dict[str, VoicePace] = {
     # Was 'fast' originally for comedy/whimsy but those are edge cases now.
     "playful": SLOW,
     "mindfulness": SLOW,
+    "minimalist_emotional": SLOW,
 }
 
 # Themes Tella ships with — exported for the wizard's validation step.
@@ -86,7 +88,8 @@ def resolve_pace(
     Precedence: ``custom_edge_rate`` > ``override`` > theme default.
 
     Args:
-        theme:             one of ``parable / cinematic / playful / mindfulness``
+        theme:             one of ``parable / cinematic / playful / mindfulness /
+                           minimalist_emotional``
         override:          one of ``slow / medium / fast`` to pick a preset
                            explicitly, bypassing the theme default
         custom_edge_rate:  free-form Edge format (e.g. ``"+3%"``); converted
