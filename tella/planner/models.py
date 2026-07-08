@@ -17,7 +17,7 @@ the briefs (random stock content can't honour character locking).
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -28,7 +28,13 @@ Language = Literal["vi", "en", "ja", "ko", "zh", "de", "fr", "es"]
 AspectRatio = Literal["9:16", "16:9"]
 MediaSource = Literal["ai_image", "stock_photo", "stock_video"]
 DurationMode = Literal["short", "detailed"]
-Theme = Literal["parable", "cinematic", "playful", "mindfulness"]
+Theme = Literal[
+    "parable",
+    "cinematic",
+    "playful",
+    "mindfulness",
+    "minimalist_emotional",
+]
 VoicePaceName = Literal["slow", "medium", "fast", "custom"]
 VoiceGender = Literal["male", "female"]
 SceneKind = Literal["cover", "scene", "outro"]
@@ -78,6 +84,179 @@ class SettingBrief(BaseModel):
     time_of_day: str = Field("golden hour", max_length=80)
 
 
+class CharacterSpec(BaseModel):
+    """Job-scoped visual identity for one character."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    character_id: str = Field(..., max_length=80)
+    role: str = Field("main_character", max_length=80)
+    gender_or_presentation: str = Field("", max_length=120)
+    age_style: str = Field("", max_length=120)
+    body_style: str = Field("", max_length=160)
+    hair: str = Field("", max_length=200)
+    face: str = Field("", max_length=220)
+    outfit: str = Field("", max_length=220)
+    palette: str = Field("", max_length=220)
+    accessories: list[str] = Field(default_factory=list)
+    emotional_range: list[str] = Field(default_factory=list)
+    identity_lock_phrases: list[str] = Field(default_factory=list)
+    negative_identity_phrases: list[str] = Field(default_factory=list)
+    consistency_notes: str = Field("", max_length=500)
+
+
+class StyleBible(BaseModel):
+    """Visual style lock for a job."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    style_name: str = Field("minimalist_emotional_reference", max_length=120)
+    art_style_prompt: str = Field("", max_length=500)
+    palette_prompt: str = Field("", max_length=300)
+    linework_prompt: str = Field("", max_length=300)
+    rendering_prompt: str = Field("", max_length=300)
+    composition_prompt: str = Field("", max_length=400)
+    background_prompt: str = Field("", max_length=300)
+    motion_prompt: str = Field("", max_length=300)
+    negative_prompt: str = Field("", max_length=700)
+    aspect_ratio: AspectRatio = "9:16"
+    safety_margin_notes: str = Field("", max_length=300)
+
+
+class VisualBible(BaseModel):
+    """Job-scoped visual continuity bible."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    style_bible: StyleBible
+    character_specs: list[CharacterSpec] = Field(default_factory=list)
+    environment_locks: list[str] = Field(default_factory=list)
+    palette_locks: list[str] = Field(default_factory=list)
+    composition_locks: list[str] = Field(default_factory=list)
+    global_negative_prompt: str = Field("", max_length=1000)
+    continuity_rules: list[str] = Field(default_factory=list)
+
+
+class CharacterReference(BaseModel):
+    """Generated per-job reference image metadata."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    character_id: str = Field("", max_length=80)
+    reference_id: str = Field("", max_length=120)
+    image_path: str = Field("", max_length=300)
+    prompt_used: str = Field("", max_length=2000)
+    status: str = Field("", max_length=40)
+    score: float = 0.0
+    selected: bool = False
+    failure_reason: str = Field("", max_length=500)
+    provider: str = Field("", max_length=80)
+    seed: int | None = None
+    hash: str = Field("", max_length=80)
+
+
+class SceneVisualPlan(BaseModel):
+    """Prompt plan used to generate one scene visual."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    scene_index: int
+    visual_prompt: str = Field("", max_length=4000)
+    character_ids: list[str] = Field(default_factory=list)
+    character_reference_ids: list[str] = Field(default_factory=list)
+    previous_scene_reference_path: str = Field("", max_length=300)
+    action: str = Field("", max_length=500)
+    emotion_tag: str = Field("", max_length=80)
+    pose_action_description: str = Field("", max_length=500)
+    location: str = Field("", max_length=300)
+    props: list[str] = Field(default_factory=list)
+    continuity_notes: str = Field("", max_length=800)
+    negative_prompt: str = Field("", max_length=1500)
+    expected_character_count: int = 1
+    expected_object_count: int = 0
+
+
+class SceneQCResult(BaseModel):
+    """Lightweight QC result for one generated scene image."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    scene_index: int
+    passed: bool = False
+    final_passed: bool = False
+    model_passed: bool = False
+    model_qc_passed: bool = False
+    basic_qc_passed: bool = False
+    confidence: float = 0.0
+    score: float = 0.0
+    checks: dict[str, bool] = Field(default_factory=dict)
+    failure_reasons: list[str] = Field(default_factory=list)
+    repair_prompt: str = Field("", max_length=1500)
+    attempt_count: int = 0
+    qc_mode: str = Field("", max_length=20)
+    vision_available: bool = False
+    vision_model: str = Field("", max_length=120)
+    vision_qc_call_count: int = 0
+    qc_json_parse_attempt_count: int = 0
+    raw_response_path: str = Field("", max_length=300)
+    image_path: str = Field("", max_length=300)
+
+    shot_type: str = Field("", max_length=60)
+    body_visibility: str = Field("", max_length=80)
+    pose_type: str = Field("", max_length=80)
+    anatomy_expectation: str = Field("", max_length=500)
+
+    main_character_visible: bool = False
+    expected_character_count: int = 1
+    character_count: int = 0
+    head_count: int = 0
+    arm_count: int = 0
+    leg_count: int = 0
+    visible_foot_count: int = 0
+    visible_hand_count: int = 0
+    has_extra_limbs: bool = False
+    has_missing_limbs: bool = False
+    has_duplicate_face: bool = False
+    has_text_or_watermark: bool = False
+    bad_crop: bool = False
+    lower_body_visible: bool = False
+    legs_visible: bool = False
+
+    hairstyle_matches_spec: bool = True
+    outfit_matches_spec: bool = True
+    scene_matches_requested_action: bool = True
+    identity_soft_fail: bool = False
+    identity_hard_fail: bool = False
+    action_soft_fail: bool = False
+    action_hard_fail: bool = False
+    action_mismatch_severity: Literal["none", "minor", "major"] = "none"
+    action_mismatch_severity_history: list[str] = Field(default_factory=list)
+    hairstyle_mismatch_streak: int = 0
+    outfit_mismatch_streak: int = 0
+    action_mismatch_streak: int = 0
+    repeated_soft_fail_escalation_applied: bool = False
+    repeated_soft_fail_escalation_reasons: list[str] = Field(default_factory=list)
+    stopped_retry_loop_early_due_to_repeated_soft_fail: bool = False
+    soft_fail_on_final_attempt: bool = False
+    previous_attempt_identity_failures: list[str] = Field(default_factory=list)
+    repeated_identity_failures: list[str] = Field(default_factory=list)
+    escalation_applied: bool = False
+    escalation_reasons: list[str] = Field(default_factory=list)
+
+    anatomy_hard_fail: bool = False
+    deterministic_override_applied: bool = False
+    deterministic_override_reasons: list[str] = Field(default_factory=list)
+    final_attempt_hard_fail_reasons: list[str] = Field(default_factory=list)
+    final_attempt_soft_fail_reasons: list[str] = Field(default_factory=list)
+    loop_stop_reason: str = Field("", max_length=300)
+    loop_stop_reasons_all: list[str] = Field(default_factory=list)
+    hard_fail_priority_reason: str = Field("", max_length=300)
+    scene_image_attempt_count: int = 0
+    remaining_scene_attempts: int = 0
+    regeneration_reasons: list[str] = Field(default_factory=list)
+    original_reference_paths: list[str] = Field(default_factory=list)
+
+
 class Scene(BaseModel):
     """One scene = one TTS-narrated segment with 1-3 visual assets."""
 
@@ -89,9 +268,10 @@ class Scene(BaseModel):
     voice_script: str = Field(..., min_length=1, max_length=600)
 
     # Planner emits BOTH so composer can pick per media_source without
-    # re-asking Gemini. ``image_prompt`` = English FLUX prompt (15-30 words),
+    # re-asking Gemini. Planner emits ``image_prompt`` as a short English FLUX
+    # prompt; downstream character/style locking may expand it before save.
     # ``stock_query`` = 2-4 English keywords for Pexels.
-    image_prompt: str = Field("", max_length=600)
+    image_prompt: str = Field("", max_length=4000)
     stock_query: str = Field("", max_length=80)
 
     # Which cast members (by CharacterBrief.name) appear in this scene.
@@ -102,6 +282,105 @@ class Scene(BaseModel):
     # 1-3 assets per scene. 1 = static Ken Burns; 2-3 = mini-montage with
     # crossfades inside the scene window.
     asset_count: int = Field(1, ge=1, le=3)
+
+    # Media fetch status for debugging provider failures and local fallbacks.
+    asset_status: Literal[
+        "",
+        "done",
+        "reference_generated",
+        "local_composed",
+        "sanitized_retry",
+        "abstract_fallback",
+    ] = ""
+    asset_error: str = Field("", max_length=300)
+    pose_family: str = Field("", max_length=60)
+    primary_motif: str = Field("", max_length=60)
+    optional_secondary_motif: str = Field("", max_length=60)
+    composition_hint: str = Field("", max_length=240)
+    frame_safety_hint: str = Field("", max_length=300)
+    emotion_tag: str = Field("", max_length=60)
+    layout_template: str = Field("", max_length=80)
+    character_id: str = Field("", max_length=80)
+    character_mode: str = Field("", max_length=20)
+    character_source: str = Field("", max_length=40)
+    sprite_path: str = Field("", max_length=240)
+    rig_parts_used: list[str] = Field(default_factory=list)
+    is_placeholder_sprite: bool = False
+    is_placeholder_rig: bool = False
+    selected_expression: str = Field("", max_length=60)
+    head_base_path: str = Field("", max_length=240)
+    face_path: str = Field("", max_length=240)
+    is_placeholder_head: bool = False
+    is_placeholder_face: bool = False
+    socket_alignment_fallback: bool = False
+    compatible_motif_used: bool = False
+    focal_anchor: str = Field("", max_length=80)
+    character_bbox: str = Field("", max_length=80)
+    motif_bbox: str = Field("", max_length=80)
+    asset_hash: str = Field("", max_length=80)
+    visual_mode: str = Field("", max_length=40)
+    provider: str = Field("", max_length=80)
+    used_reference_conditioning: bool = False
+    reference_paths: list[str] = Field(default_factory=list)
+    previous_scene_reference_path: str = Field("", max_length=300)
+    prompt_used: str = Field("", max_length=4000)
+    negative_prompt_used: str = Field("", max_length=1500)
+    attempt_count: int = 0
+    attempts_actually_ran: int = 0
+    max_attempts_allowed: int = 0
+    qc_passed: bool = False
+    final_passed: bool = False
+    model_qc_passed: bool = False
+    qc_mode: str = Field("", max_length=20)
+    qc_confidence: float = 0.0
+    qc_score: float = 0.0
+    qc_failure_reasons: list[str] = Field(default_factory=list)
+    repair_prompt: str = Field("", max_length=1500)
+    selected_attempt_path: str = Field("", max_length=300)
+    selected_best_failed_attempt: bool = False
+    selected_best_failed_attempt_reason: str = Field("", max_length=300)
+    best_attempt_ranking_summary: str = Field("", max_length=800)
+
+    shot_type: str = Field("", max_length=60)
+    body_visibility: str = Field("", max_length=80)
+    pose_type: str = Field("", max_length=80)
+    anatomy_expectation: str = Field("", max_length=500)
+
+    used_reference_conditioning_on_repair: bool = False
+    repair_reference_paths: list[str] = Field(default_factory=list)
+
+    deterministic_override_applied: bool = False
+    deterministic_override_reasons: list[str] = Field(default_factory=list)
+    identity_soft_fail: bool = False
+    identity_hard_fail: bool = False
+    action_soft_fail: bool = False
+    action_hard_fail: bool = False
+    action_mismatch_severity: Literal["none", "minor", "major"] = "none"
+    action_mismatch_severity_history: list[str] = Field(default_factory=list)
+    hairstyle_matches_spec: bool = True
+    outfit_matches_spec: bool = True
+    scene_matches_requested_action: bool = True
+    hairstyle_mismatch_streak: int = 0
+    outfit_mismatch_streak: int = 0
+    action_mismatch_streak: int = 0
+    repeated_soft_fail_escalation_applied: bool = False
+    repeated_soft_fail_escalation_reasons: list[str] = Field(default_factory=list)
+    stopped_retry_loop_early_due_to_repeated_soft_fail: bool = False
+    soft_fail_on_final_attempt: bool = False
+    previous_attempt_identity_failures: list[str] = Field(default_factory=list)
+    repeated_identity_failures: list[str] = Field(default_factory=list)
+    escalation_applied: bool = False
+    escalation_reasons: list[str] = Field(default_factory=list)
+    final_attempt_hard_fail_reasons: list[str] = Field(default_factory=list)
+    final_attempt_soft_fail_reasons: list[str] = Field(default_factory=list)
+    loop_stop_reason: str = Field("", max_length=300)
+    loop_stop_reasons_all: list[str] = Field(default_factory=list)
+    anatomy_hard_fail: bool = False
+    hard_fail_priority_reason: str = Field("", max_length=300)
+    scene_image_attempt_count: int = 0
+    remaining_scene_attempts: int = 0
+    regeneration_reasons: list[str] = Field(default_factory=list)
+    original_reference_paths: list[str] = Field(default_factory=list)
 
     # ── Filled by media + composer downstream ────────────────────
     image_filenames: list[str] = Field(default_factory=list)
@@ -165,6 +444,22 @@ class TellaScenePlan(BaseModel):
     # Per-scene ``audio_duration`` still drives visual timing — it's derived
     # from this file's total duration × scene char proportion.
     narration_audio_filename: str = ""
+    narration_audio_path: str = ""
+    narration_duration: float = 0.0
+    tts_provider: str = Field("", max_length=80)
+    tts_voice: str = Field("", max_length=120)
+    tts_language: str = Field("", max_length=20)
+    tts_speed: float = 1.0
+    tts_codec: str = Field("", max_length=20)
+    tts_sample_rate: int = 0
+    tts_fallback_used: bool = False
+    tts_fallback_reason: str = Field("", max_length=500)
+    tts_metadata: dict[str, Any] = Field(default_factory=dict)
+    scene_timing_map: list[dict[str, float | int]] = Field(default_factory=list)
+    subtitle_segments: list[dict[str, str | float | int]] = Field(default_factory=list)
+    total_vision_qc_calls: int = 0
+    total_scene_regeneration_attempts: int = 0
+    total_qc_json_parse_attempts: int = 0
 
     total_duration: float = 0.0
 
@@ -172,14 +467,20 @@ class TellaScenePlan(BaseModel):
 __all__ = [
     "AspectRatio",
     "CharacterBrief",
+    "CharacterReference",
+    "CharacterSpec",
     "DurationMode",
     "Language",
     "MediaSource",
     "Scene",
+    "SceneQCResult",
+    "SceneVisualPlan",
     "SceneKind",
     "SettingBrief",
     "TellaScenePlan",
     "Theme",
+    "StyleBible",
+    "VisualBible",
     "VoiceGender",
     "VoicePaceName",
 ]
