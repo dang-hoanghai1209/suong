@@ -1,0 +1,70 @@
+{
+  "character_id": "girl_v1",
+  "canvas": { "width": 600, "height": 900 },
+  "anchor": { "x": 300, "y": 850 },
+  "poses": {
+    "front_standing": {
+      "file": "poses/front_standing.png",
+      "emotion_tags": ["neutral", "calm", "acceptance"],
+      "compatible_motifs": ["any"]
+    },
+    "side_sitting": {
+      "file": "poses/side_sitting.png",
+      "emotion_tags": ["sadness", "tired", "loneliness", "reflection"],
+      "compatible_motifs": ["lamp", "empty_chair", "scribble_cloud", "small_flower", "small_window"]
+    },
+    "side_walking": {
+      "file": "poses/side_walking.png",
+      "emotion_tags": ["moving_on", "healing", "acceptance", "trying_again"],
+      "compatible_motifs": ["thin_path", "sunrise_circle", "tiny_bird", "seedling"]
+    },
+    "hugging_knees": {
+      "file": "poses/hugging_knees.png",
+      "emotion_tags": ["loneliness", "grief", "sadness", "tired"],
+      "compatible_motifs": ["empty_chair", "scribble_cloud", "thin_path", "lamp"]
+    },
+    "looking_up": {
+      "file": "poses/looking_up.png",
+      "emotion_tags": ["hope", "relief", "realization"],
+      "compatible_motifs": ["glowing_light", "little_star", "sunrise_circle", "tiny_bird"]
+    },
+    "looking_down": {
+      "file": "poses/looking_down.png",
+      "emotion_tags": ["tired", "regret", "reflection", "sadness"],
+      "compatible_motifs": ["small_flower", "paper_heart", "seedling", "lamp"]
+    },
+    "reaching_forward": {
+      "file": "poses/reaching_forward.png",
+      "emotion_tags": ["hope", "trying_again", "healing"],
+      "compatible_motifs": ["glowing_light", "paper_heart", "seedling", "little_star"]
+    },
+    "holding_paper_heart": {
+      "file": "poses/holding_paper_heart.png",
+      "emotion_tags": ["self_kindness", "acceptance", "healing"],
+      "compatible_motifs": ["paper_heart", "little_star", "glowing_light"]
+    },
+    "arms_open": {
+      "file": "poses/arms_open.png",
+      "emotion_tags": ["hope", "relief", "quiet_joy", "acceptance"],
+      "compatible_motifs": ["sunrise_circle", "little_star", "glowing_light", "tiny_bird"]
+    }
+  },
+  "motifs": {
+    "lamp": { "file": "motifs/lamp.png", "placement": "ground" },
+    "paper_heart": { "file": "motifs/paper_heart.png", "placement": "hands" },
+    "scribble_cloud": { "file": "motifs/scribble_cloud.png", "placement": "head" },
+    "small_flower": { "file": "motifs/small_flower.png", "placement": "ground" },
+    "glowing_light": { "file": "motifs/glowing_light.png", "placement": "sky" },
+    "empty_chair": { "file": "motifs/empty_chair.png", "placement": "ground" },
+    "thin_path": { "file": "motifs/thin_path.png", "placement": "ground" },
+    "sunrise_circle": { "file": "motifs/sunrise_circle.png", "placement": "sky" },
+    "tiny_bird": { "file": "motifs/tiny_bird.png", "placement": "sky" },
+    "small_window": { "file": "motifs/small_window.png", "placement": "background" },
+    "little_star": { "file": "motifs/little_star.png", "placement": "sky" },
+    "seedling": { "file": "motifs/seedling.png", "placement": "ground" }
+  },
+  "backgrounds": {
+    "taupe_plain": { "file": "backgrounds/taupe_plain.png" },
+    "taupe_horizon_lines": { "file": "backgrounds/taupe_horizon_lines.png" }
+  }
+}

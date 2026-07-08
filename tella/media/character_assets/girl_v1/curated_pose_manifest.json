@@ -1,0 +1,91 @@
+{
+  "character_id": "girl_v1",
+  "canvas": { "width": 600, "height": 900 },
+  "anchor": { "x": 300, "y": 850 },
+  "poses": {
+    "standing_calm": {
+      "file": "curated_poses/standing_calm.png",
+      "emotion_tags": ["neutral", "calm", "reflection"],
+      "expression": "neutral",
+      "compatible_motifs": ["lamp", "small_flower", "little_star", "glowing_light"],
+      "layout_hints": ["character_center_motif_right", "character_center_motif_above"]
+    },
+    "standing_lonely": {
+      "file": "curated_poses/standing_lonely.png",
+      "emotion_tags": ["loneliness", "sadness", "grief"],
+      "expression": "sad",
+      "compatible_motifs": ["empty_chair", "scribble_cloud", "small_window"],
+      "layout_hints": ["character_left_motif_right", "character_center_motif_above"]
+    },
+    "sitting_sad": {
+      "file": "curated_poses/sitting_sad.png",
+      "emotion_tags": ["sadness", "tired", "reflection"],
+      "expression": "sad",
+      "compatible_motifs": ["lamp", "small_flower", "empty_chair", "small_window"],
+      "layout_hints": ["side_sitting_with_motif_right"]
+    },
+    "hugging_knees_sad": {
+      "file": "curated_poses/hugging_knees_sad.png",
+      "emotion_tags": ["loneliness", "grief", "sadness", "tired"],
+      "expression": "sad",
+      "compatible_motifs": ["scribble_cloud", "empty_chair", "thin_path"],
+      "layout_hints": ["character_center_motif_above", "character_left_motif_right"]
+    },
+    "looking_down_tired": {
+      "file": "curated_poses/looking_down_tired.png",
+      "emotion_tags": ["tired", "fatigue", "regret", "reflection"],
+      "expression": "tired",
+      "compatible_motifs": ["small_flower", "paper_heart", "seedling"],
+      "layout_hints": ["character_center_motif_right"]
+    },
+    "looking_up_hopeful": {
+      "file": "curated_poses/looking_up_hopeful.png",
+      "emotion_tags": ["hope", "relief", "quiet_joy", "healing"],
+      "expression": "hopeful",
+      "compatible_motifs": ["glowing_light", "little_star", "sunrise_circle", "tiny_bird"],
+      "layout_hints": ["character_center_motif_above"]
+    },
+    "walking_away": {
+      "file": "curated_poses/walking_away.png",
+      "emotion_tags": ["moving_on", "acceptance", "healing"],
+      "expression": "neutral",
+      "compatible_motifs": ["thin_path", "tiny_bird", "sunrise_circle"],
+      "layout_hints": ["walking_on_path"]
+    },
+    "walking_forward_soft": {
+      "file": "curated_poses/walking_forward_soft.png",
+      "emotion_tags": ["trying_again", "healing", "acceptance"],
+      "expression": "gentle_smile",
+      "compatible_motifs": ["thin_path", "seedling", "glowing_light"],
+      "layout_hints": ["walking_on_path"]
+    },
+    "reaching_forward_hopeful": {
+      "file": "curated_poses/reaching_forward_hopeful.png",
+      "emotion_tags": ["hope", "trying_again", "healing"],
+      "expression": "hopeful",
+      "compatible_motifs": ["glowing_light", "paper_heart", "seedling"],
+      "layout_hints": ["character_center_motif_right"]
+    },
+    "holding_paper_heart": {
+      "file": "curated_poses/holding_paper_heart.png",
+      "emotion_tags": ["self_kindness", "acceptance", "healing"],
+      "expression": "gentle_smile",
+      "compatible_motifs": ["paper_heart", "little_star", "glowing_light"],
+      "layout_hints": ["character_center_motif_right"]
+    },
+    "arms_open_relief": {
+      "file": "curated_poses/arms_open_relief.png",
+      "emotion_tags": ["relief", "quiet_joy", "acceptance", "hope"],
+      "expression": "hopeful",
+      "compatible_motifs": ["sunrise_circle", "little_star", "glowing_light"],
+      "layout_hints": ["character_center_motif_above"]
+    },
+    "sitting_by_lamp": {
+      "file": "curated_poses/sitting_by_lamp.png",
+      "emotion_tags": ["calm", "reflection", "self_kindness"],
+      "expression": "gentle_smile",
+      "compatible_motifs": ["lamp", "small_window", "small_flower"],
+      "layout_hints": ["side_sitting_with_motif_right"]
+    }
+  }
+}

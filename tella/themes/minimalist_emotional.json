@@ -1,0 +1,21 @@
+{
+  "name": "minimalist_emotional",
+  "display_name": "Minimalist Emotional",
+  "description": "Static emotional shorts with simple hand-drawn characters, warm muted bedroom scenes, slow calm narration, subtle Ken Burns, and soft scene transitions.",
+  "image_style_suffix": ", minimalist hand-drawn emotional doodle illustration, exactly one small girl character, exactly one head, full body visible, generous negative space, quiet warm taupe bedroom scene, thin imperfect black linework, flat muted color, muted mustard yellow and soft rust clothing, vertical 9:16 medium-wide composition, character within central safe area above caption lane, character occupies about 35-45 percent of frame height, keep bottom 25 percent mostly empty for captions, head fully visible, feet fully visible, complete emotional illustration scene not only a character portrait, layered composition with foreground curtain edge or soft shadow, middle ground young woman, background bed on one side, window with thin curtains, small bedside table, warm table lamp, books or folded blanket, soft wall shadows, subtle dust or memory particles near the window, muted floor and wall shapes, no realistic shading, no 3D, no anime, no photorealism, no text, no watermark, no duplicate head, no extra face, no second character, no doll, no baby, no face on heart, no face on object, no deformed anatomy, no extra limbs, no cropped body, no cropped head, no cropped feet, no extreme close-up, no large character filling the frame",
+  "color_palette": {
+    "primary": "#8a5f47",
+    "accent": "#d4a33a",
+    "bg": "#b69a82",
+    "text": "#fff7ed"
+  },
+  "font_family": "sans-serif",
+  "voice_pace_default": "slow",
+  "voice_gender_default": "female",
+  "transition": "crossfade",
+  "ken_burns": {
+    "start_scale": 1.0,
+    "end_scale": 1.02,
+    "easing": "linear"
+  }
+}

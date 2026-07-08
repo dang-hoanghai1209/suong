@@ -1,0 +1,248 @@
+{
+  "character_id": "girl_v1",
+  "canvas": { "width": 600, "height": 900 },
+  "base_anchor": { "x": 300, "y": 850 },
+  "safe_angle_limits": {
+    "head": [-10, 10],
+    "torso": [-14, 14],
+    "left_arm": [-64, 64],
+    "right_arm": [-64, 64],
+    "left_leg": [-42, 42],
+    "right_leg": [-42, 42]
+  },
+  "head": {
+    "base_file": "parts/head_base.png",
+    "fallback_file": "parts/head_face_hair.png",
+    "pivot": { "x": 128, "y": 128 },
+    "neck_attach": { "x": 128, "y": 224 },
+    "z": 60
+  },
+  "faces": {
+    "neutral": { "file": "parts/faces/face_neutral.png" },
+    "sad": { "file": "parts/faces/face_sad.png" },
+    "tired": { "file": "parts/faces/face_tired.png" },
+    "gentle_smile": { "file": "parts/faces/face_gentle_smile.png" },
+    "hopeful": { "file": "parts/faces/face_hopeful.png" }
+  },
+  "emotion_to_expression": {
+    "neutral": "neutral",
+    "calm": "neutral",
+    "reflection": "neutral",
+    "acceptance": "gentle_smile",
+    "self_kindness": "gentle_smile",
+    "healing": "gentle_smile",
+    "sadness": "sad",
+    "loneliness": "sad",
+    "grief": "sad",
+    "regret": "sad",
+    "tired": "tired",
+    "fatigue": "tired",
+    "hope": "hopeful",
+    "relief": "hopeful",
+    "quiet_joy": "hopeful",
+    "trying_again": "hopeful"
+  },
+  "parts": {
+    "torso": {
+      "file": "parts/torso.png",
+      "pivot": { "x": 90, "y": 40 },
+      "default_position": { "x": 300, "y": 430 },
+      "neck_attach": { "x": 90, "y": 20 },
+      "z": 30
+    },
+    "left_arm": {
+      "file": "parts/left_arm.png",
+      "pivot": { "x": 16, "y": 22 },
+      "default_position": { "x": 246, "y": 410 },
+      "z": 35
+    },
+    "right_arm": {
+      "file": "parts/right_arm.png",
+      "pivot": { "x": 48, "y": 22 },
+      "default_position": { "x": 354, "y": 410 },
+      "z": 35
+    },
+    "left_leg": {
+      "file": "parts/left_leg.png",
+      "pivot": { "x": 26, "y": 18 },
+      "default_position": { "x": 276, "y": 610 },
+      "z": 20
+    },
+    "right_leg": {
+      "file": "parts/right_leg.png",
+      "pivot": { "x": 40, "y": 18 },
+      "default_position": { "x": 324, "y": 610 },
+      "z": 20
+    }
+  },
+  "poses": {
+    "front_standing": {
+      "emotion_tags": ["neutral", "calm", "acceptance"],
+      "angles": {
+        "head": 0,
+        "torso": 0,
+        "left_arm": 10,
+        "right_arm": -10,
+        "left_leg": 4,
+        "right_leg": -4
+      },
+      "offsets": {},
+      "scale": 1.0,
+      "compatible_motifs": ["any"]
+    },
+    "side_sitting": {
+      "emotion_tags": ["sadness", "tired", "loneliness", "reflection"],
+      "angles": {
+        "head": -3,
+        "torso": -7,
+        "left_arm": 34,
+        "right_arm": -18,
+        "left_leg": -38,
+        "right_leg": -22
+      },
+      "offsets": {
+        "head": { "x": -22, "y": 82 },
+        "torso": { "x": -18, "y": 94 },
+        "left_arm": { "x": -22, "y": 96 },
+        "right_arm": { "x": -28, "y": 112 },
+        "left_leg": { "x": -64, "y": 168 },
+        "right_leg": { "x": -4, "y": 172 }
+      },
+      "scale": 0.92,
+      "compatible_motifs": ["lamp", "empty_chair", "scribble_cloud", "small_flower", "small_window"]
+    },
+    "side_walking": {
+      "emotion_tags": ["moving_on", "healing", "acceptance", "trying_again"],
+      "angles": {
+        "head": 1,
+        "torso": 5,
+        "left_arm": -22,
+        "right_arm": 24,
+        "left_leg": 26,
+        "right_leg": -26
+      },
+      "offsets": {
+        "head": { "x": 14, "y": 4 },
+        "torso": { "x": 10, "y": 8 },
+        "left_arm": { "x": 4, "y": 10 },
+        "right_arm": { "x": 4, "y": 8 },
+        "left_leg": { "x": -12, "y": 10 },
+        "right_leg": { "x": 16, "y": 0 }
+      },
+      "scale": 1.0,
+      "compatible_motifs": ["thin_path", "sunrise_circle", "tiny_bird", "seedling"]
+    },
+    "hugging_knees": {
+      "emotion_tags": ["loneliness", "grief", "sadness", "tired"],
+      "angles": {
+        "head": -7,
+        "torso": -12,
+        "left_arm": 58,
+        "right_arm": -58,
+        "left_leg": -42,
+        "right_leg": 42
+      },
+      "offsets": {
+        "head": { "x": -16, "y": 150 },
+        "torso": { "x": -10, "y": 178 },
+        "left_arm": { "x": -46, "y": 198 },
+        "right_arm": { "x": 44, "y": 198 },
+        "left_leg": { "x": -82, "y": 236 },
+        "right_leg": { "x": 84, "y": 236 }
+      },
+      "scale": 0.86,
+      "compatible_motifs": ["empty_chair", "scribble_cloud", "thin_path", "lamp"]
+    },
+    "looking_up": {
+      "emotion_tags": ["hope", "relief", "realization"],
+      "angles": {
+        "head": 8,
+        "torso": 2,
+        "left_arm": 4,
+        "right_arm": -18,
+        "left_leg": 4,
+        "right_leg": -4
+      },
+      "offsets": {
+        "head": { "x": 0, "y": -14 },
+        "left_arm": { "x": -8, "y": 4 },
+        "right_arm": { "x": 8, "y": 4 }
+      },
+      "scale": 1.0,
+      "compatible_motifs": ["glowing_light", "little_star", "sunrise_circle", "tiny_bird"]
+    },
+    "looking_down": {
+      "emotion_tags": ["tired", "regret", "reflection", "sadness"],
+      "angles": {
+        "head": -9,
+        "torso": -8,
+        "left_arm": 22,
+        "right_arm": -4,
+        "left_leg": 6,
+        "right_leg": -8
+      },
+      "offsets": {
+        "head": { "x": -6, "y": 24 },
+        "torso": { "x": -3, "y": 22 },
+        "left_arm": { "x": -10, "y": 28 },
+        "right_arm": { "x": -8, "y": 18 }
+      },
+      "scale": 0.98,
+      "compatible_motifs": ["small_flower", "paper_heart", "seedling", "lamp"]
+    },
+    "reaching_forward": {
+      "emotion_tags": ["hope", "trying_again", "healing"],
+      "angles": {
+        "head": 3,
+        "torso": 7,
+        "left_arm": -48,
+        "right_arm": -56,
+        "left_leg": 12,
+        "right_leg": -12
+      },
+      "offsets": {
+        "head": { "x": 8, "y": 0 },
+        "torso": { "x": 8, "y": 4 },
+        "left_arm": { "x": 18, "y": 2 },
+        "right_arm": { "x": 26, "y": 2 }
+      },
+      "scale": 1.0,
+      "compatible_motifs": ["glowing_light", "paper_heart", "seedling", "little_star"]
+    },
+    "holding_paper_heart": {
+      "emotion_tags": ["self_kindness", "acceptance", "healing"],
+      "angles": {
+        "head": 0,
+        "torso": 0,
+        "left_arm": 38,
+        "right_arm": -38,
+        "left_leg": 4,
+        "right_leg": -4
+      },
+      "offsets": {
+        "left_arm": { "x": -22, "y": 44 },
+        "right_arm": { "x": 22, "y": 44 }
+      },
+      "scale": 1.0,
+      "compatible_motifs": ["paper_heart", "little_star", "glowing_light"]
+    },
+    "arms_open": {
+      "emotion_tags": ["hope", "relief", "quiet_joy", "acceptance"],
+      "angles": {
+        "head": 3,
+        "torso": 3,
+        "left_arm": -56,
+        "right_arm": 56,
+        "left_leg": 8,
+        "right_leg": -8
+      },
+      "offsets": {
+        "head": { "x": 0, "y": -6 },
+        "left_arm": { "x": -20, "y": -12 },
+        "right_arm": { "x": 20, "y": -12 }
+      },
+      "scale": 1.0,
+      "compatible_motifs": ["sunrise_circle", "little_star", "glowing_light", "tiny_bird"]
+    }
+  }
+}

@@ -2,7 +2,8 @@
 
 Two axes of variation:
 
-  - ``theme``         : parable | cinematic | playful | mindfulness
+  - ``theme``         : parable | cinematic | playful | mindfulness |
+                        minimalist_emotional
                         (defines storytelling tone + image style suffix)
   - ``duration_mode`` : short (~70-130s total, ~10-18 beats)
                         detailed (~3-5min total, ~25-40 beats)
@@ -75,6 +76,30 @@ _THEME_TONE: dict[Theme, str] = {
         "inspired, warm cream and gold palette. NO Western religious "
         "imagery. NO modern slang. NO sarcasm. Family-friendly. SFW always."
     ),
+    "minimalist_emotional": (
+        "QUIET emotional short-form narrator, calm and intimate, second-person "
+        "OK. This is NOT a complex animated film and NOT realistic AI video. "
+        "Write a static-illustration emotional short: each scene is one simple "
+        "feeling or realization, spoken as one short natural sentence. Imagery: "
+        "minimalist hand-drawn emotional doodle illustration, tiny simple "
+        "character, generous negative space, thin imperfect black linework, "
+        "flat muted color, warm taupe bedroom, soft environmental details. "
+        "Use the SAME small simple girl in EVERY normal scene: short straight black "
+        "bob ending at the chin, symmetrical bob shape, mustard yellow "
+        "triangular dress, soft rust sleeves, dot eyes only, tiny nose, tiny "
+        "neutral mouth, stick-like legs, simple mitten hands, exactly one head, "
+        "full body visible. Character should occupy only about 35-45 percent of "
+        "frame height and stay above the caption lane. Each image should feel like "
+        "a complete emotional illustration scene, not only a character portrait: "
+        "bed, window with thin curtains, bedside table, warm table lamp, books or "
+        "folded blanket, soft wall shadows, dust or memory particles, muted floor "
+        "and wall shapes. Use layered composition: foreground curtain edge or soft "
+        "shadow, middle ground young woman, background room details. NO self-hug, NO body-touch "
+        "emotion phrases, NO close-up face, NO anime, NO realistic anatomy, NO "
+        "detailed hands, NO twisted torso, NO head/body direction mismatch, NO "
+        "long loose hair strands, NO duplicate head, NO second face, NO face on "
+        "heart or objects, NO extra characters unless explicitly needed."
+    ),
 }
 
 
@@ -106,6 +131,58 @@ doubt; padding from 6 long beats to 12 tight beats is a quality WIN.
 
 NO trailing periods on titles. Voice copy feels natural when spoken aloud
 — no run-on sentences, no academic prose.
+"""
+
+_MINIMALIST_EMOTIONAL_SHORT_STRUCTURE = """\
+STRUCTURE — minimalist_emotional short mode (~32-38 seconds total, exactly 7-8 scenes):
+
+Plan this as a vertical emotional illustration reel, not a full story film.
+Produce 8 scenes unless the topic truly only supports 7. Each scene should
+hold on screen for about 3-5 seconds after TTS timing, so keep narration very
+short.
+
+Recommended 8-beat micro-structure:
+  1. Hook / opening emotional image
+  2. Emotional setup
+  3. Context / small detail
+  4. Pain or tension
+  5. Low point / quiet sadness
+  6. Reflection / realization
+  7. Healing / acceptance
+  8. Final memorable line
+
+Each scene's voice_script — HARD CAPS:
+  - Exactly 1 short sentence.
+  - English: 6-12 words. Vietnamese: 8-16 words. NEVER exceed this.
+  - Each sentence expresses ONE emotional idea only.
+
+Each image_prompt:
+  - One simple visual concept only.
+  - No complex cinematic environments.
+  - No crowded scenes, no multi-action montage.
+  - Include the same quiet bedroom environment as soft supporting detail:
+    bed on one side, window with thin curtains, small bedside table, warm
+    table lamp, a few books or folded blanket, soft wall shadows, subtle dust
+    or memory particles near the window, muted floor and wall shapes.
+  - Use layered composition: foreground curtain edge or soft shadow, middle
+    ground young woman, background bed/window/lamp/wall details.
+  - Do not make the character too large; keep her about 35-45 percent of frame
+    height in medium/wide shots with negative space around her.
+  - Use exactly one safe symbolic pose/concept from this catalog:
+    front_standing, side_sitting, side_walking, looking_at_light,
+    holding_paper_heart, beside_lamp, beside_flower, under_scribble_cloud.
+  - Prefer simple symbols: glowing paper heart, warm lamp, small flower,
+    grey scribble cloud, thin line path, small warm light.
+  - Never write direct body-emotion phrases such as "she hugs herself",
+    "she touches her pain", "she holds her wounded body", "she embraces
+    herself", or "her body carries sadness".
+  - Good visual phrasing: "she stands beside a small glowing paper heart",
+    "a grey scribble cloud floats above her", "a small warm light rests near
+    her feet", "she sits quietly beside a tiny lamp", "she looks at a small
+    flower growing from the ground".
+
+Aim for total spoken narration around 32-38 seconds. Do not pad with long
+sentences; the renderer holds the static illustration with subtle motion.
 """
 
 _DETAILED_STRUCTURE = """\
@@ -225,6 +302,55 @@ identities + the setting automatically. So:
   ✓ "napping under a broad oak, low-angle, dappled light"  + character_names ["the hare"]
 """
 
+_MINIMALIST_EMOTIONAL_CHARACTER_LOCK_BLOCK = """\
+CHARACTER + SETTING LOCK (minimalist_emotional + ai_image):
+
+All visual fields MUST be in ENGLISH. The image model has no memory, so make
+the recurring character extremely simple and repeat the same template.
+
+Emit exactly ONE recurring character unless the topic explicitly requires
+another person:
+  {
+    "name": "the small girl",
+    "identity": "one small simple girl, short straight black bob ending at chin, symmetrical bob, mustard yellow triangular dress, soft rust sleeves, dot eyes only, tiny nose, tiny neutral mouth, stick-like legs, mitten-like hands, exactly one head, full body visible",
+    "role": "protagonist"
+  }
+
+Emit a simple setting_brief such as:
+  {
+    "location": "quiet warm taupe bedroom with bed, window curtains, bedside table, warm lamp, books or folded blanket, soft wall shadows",
+    "era": "timeless",
+    "mood": "quiet",
+    "time_of_day": "soft evening"
+  }
+
+PER-SCENE:
+  - Set character_names to ["the small girl"] for every scene where she appears.
+  - Describe only one pose, object, or emotional moment in image_prompt.
+  - Use one of the safe poses only: front_standing, side_sitting,
+    side_walking, looking_at_light, holding_paper_heart, beside_lamp,
+    beside_flower, under_scribble_cloud.
+  - Do not restate a different hairstyle, outfit, face, age, or body type.
+  - Avoid self-hug, arms crossing the body, hands touching chest/body/shoulders,
+    back view with visible face, head facing camera while body is side-facing,
+    twisted torso, complex hand gestures, hands behind back, lying down,
+    kneeling, detailed fingers.
+  - Every normal scene must include the same small girl; symbolic motifs appear
+    beside or near her and must be plain, faceless objects.
+  - For paper heart motifs, write "tiny flat paper heart symbol with no face,
+    no eyes, no mouth" and never describe a small person, inner child, younger
+    self, doll, baby, or second figure.
+  - Frame safety: full body visible, head fully visible, feet fully visible,
+    character within central safe area, bottom 25 percent mostly empty for
+    captions, character about 35-45 percent of frame height, no cropped body.
+  - The image should feel like a complete emotional illustration scene, not
+    only a character portrait. Include soft room details: bed on one side,
+    window with thin curtains, bedside table, warm table lamp, books or folded
+    blanket, soft wall shadows, subtle dust or memory particles, muted floor
+    and wall shapes.
+  - Avoid extra characters unless the narration explicitly needs them.
+"""
+
 
 _STOCK_MODE_BLOCK = """\
 STOCK MODE (because media_source != ai_image):
@@ -316,9 +442,14 @@ def build_system_prompt(
     JSON schema. Used by :func:`tella.planner.story_planner.plan_story`.
     """
     tone = _THEME_TONE[theme]
-    structure = _SHORT_STRUCTURE if duration_mode == "short" else _DETAILED_STRUCTURE
+    if theme == "minimalist_emotional" and duration_mode == "short":
+        structure = _MINIMALIST_EMOTIONAL_SHORT_STRUCTURE
+    else:
+        structure = _SHORT_STRUCTURE if duration_mode == "short" else _DETAILED_STRUCTURE
     media_block = (
-        _CHARACTER_LOCK_BLOCK if media_source == "ai_image" else _STOCK_MODE_BLOCK
+        _MINIMALIST_EMOTIONAL_CHARACTER_LOCK_BLOCK
+        if theme == "minimalist_emotional" and media_source == "ai_image"
+        else _CHARACTER_LOCK_BLOCK if media_source == "ai_image" else _STOCK_MODE_BLOCK
     )
 
     return f"""You are a creative story planner for Tella, a short-form video tool.
@@ -440,7 +571,9 @@ def build_user_script_system_prompt(
     """
     tone = _THEME_TONE[theme]
     media_block = (
-        _CHARACTER_LOCK_BLOCK if media_source == "ai_image" else _STOCK_MODE_BLOCK
+        _MINIMALIST_EMOTIONAL_CHARACTER_LOCK_BLOCK
+        if theme == "minimalist_emotional" and media_source == "ai_image"
+        else _CHARACTER_LOCK_BLOCK if media_source == "ai_image" else _STOCK_MODE_BLOCK
     )
 
     return f"""You are a script parser + visual director for Tella, a short-form video tool.

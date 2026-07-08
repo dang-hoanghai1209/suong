@@ -19,6 +19,52 @@ from tella.planner.models import TellaScenePlan
 
 logger = logging.getLogger("tella.planner.character_lock")
 
+_MINIMALIST_CHARACTER_TEMPLATE = (
+    "one small simple girl character, short straight black bob haircut ending "
+    "at the chin, simple symmetrical bob shape, no long loose hair strands, "
+    "small round face, dot eyes only, tiny nose, tiny neutral mouth, mustard "
+    "yellow simple triangular dress, soft rust sleeves, stick-like simple "
+    "legs, simple mitten-like hands, simple doodle proportions, exactly one "
+    "head, full body visible"
+)
+
+_MINIMALIST_NEGATIVE_LOCK = (
+    "single simple safe pose, no twisted body, head and torso face the same "
+    "direction, full body visible, head fully visible, feet fully visible, "
+    "character within central safe area, keep bottom 25 percent empty for "
+    "captions, do not make the character too large, character occupies about "
+    "35-45 percent of frame height, generous negative space, complete emotional "
+    "room illustration scene, not only a character portrait, layered composition "
+    "with foreground curtain edge or soft shadow, middle ground young woman, "
+    "background bed, window with thin curtains, bedside table, warm table lamp, "
+    "books or folded blanket, soft wall shadows, subtle dust or memory particles, "
+    "muted floor and wall shapes, exactly one head, no second head, no duplicate face, no second "
+    "character, no face on heart, no face on object, no deformed anatomy, no "
+    "extra limbs, no cropped body, arms stay simple and relaxed, no arms "
+    "crossing the torso, hands stay away from chest and torso, mitten hands "
+    "only, no finger detail, no realistic body, "
+    "no anime face, no detailed eyes, no eyelashes, no complex hair shine, "
+    "no close-up face, no cropped head, no cropped feet, no large character "
+    "filling the frame"
+)
+
+
+def _minimalist_emotional_prefix(plan: TellaScenePlan) -> str:
+    """Repeat a deliberately simple character template for this style.
+
+    Text-only image generation has no identity memory. For this theme the
+    product goal is not photoreal identity, but reduced hair/face/outfit
+    drift, so every scene repeats the same simplified character constraints.
+    """
+    location = (
+        "quiet warm taupe bedroom, bed on one side, window with thin curtains, "
+        "small bedside table, warm table lamp, a few books or folded blanket, "
+        "soft shadows on the wall, subtle dust or memory particles near the window"
+    )
+    if plan.setting_brief and plan.setting_brief.location:
+        location = plan.setting_brief.location.strip().rstrip(".,;")
+    return f"{_MINIMALIST_CHARACTER_TEMPLATE}, {location}"
+
 
 def apply_lock(plan: TellaScenePlan, *, style_suffix: str = "") -> TellaScenePlan:
     """Mutate ``plan`` in place: prepend identity + setting to each
@@ -31,6 +77,8 @@ def apply_lock(plan: TellaScenePlan, *, style_suffix: str = "") -> TellaScenePla
                        whole prompt reads: ``<identity> + <setting> + <scene
                        action> + <style suffix>``.
     """
+    is_minimalist = plan.theme == "minimalist_emotional"
+
     if plan.media_source != "ai_image":
         # Stock modes: nothing to lock — but we still tack on the style
         # suffix so any future swap to ai_image still has a hook.
@@ -48,10 +96,29 @@ def apply_lock(plan: TellaScenePlan, *, style_suffix: str = "") -> TellaScenePla
 
     sb = plan.setting_brief
     if not cast or sb is None:
+        if not is_minimalist:
+            logger.warning(
+                "ai_image mode but cast/setting_brief missing — leaving "
+                "image_prompts as-is. Planner likely failed to emit briefs."
+            )
+            return plan
         logger.warning(
-            "ai_image mode but cast/setting_brief missing — leaving "
-            "image_prompts as-is. Planner likely failed to emit briefs."
+            "minimalist_emotional: cast/setting missing — applying fallback "
+            "character template to image_prompts."
         )
+        for scene in plan.scenes:
+            action = (scene.image_prompt or "").strip().rstrip(".,;")
+            prompt = ", ".join(
+                p for p in (
+                    _minimalist_emotional_prefix(plan),
+                    action,
+                    _MINIMALIST_NEGATIVE_LOCK,
+                )
+                if p
+            )
+            if style_suffix:
+                prompt = f"{prompt}{style_suffix}"
+            scene.image_prompt = prompt
         return plan
 
     # name (lowercased) → identity string. Unnamed characters fall back to
@@ -111,6 +178,14 @@ def apply_lock(plan: TellaScenePlan, *, style_suffix: str = "") -> TellaScenePla
             parts.append(setting_tail)
         if action:
             parts.append(action)
+        if is_minimalist:
+            # The minimalist emotional theme intentionally repeats the same
+            # simple template and negative drift terms in every prompt.
+            parts = [
+                _minimalist_emotional_prefix(plan),
+                action,
+                _MINIMALIST_NEGATIVE_LOCK,
+            ]
         prompt = ", ".join(p for p in parts if p)
         if style_suffix:
             prompt = f"{prompt}{style_suffix}"
