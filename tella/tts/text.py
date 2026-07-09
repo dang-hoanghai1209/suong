@@ -17,7 +17,7 @@ def normalize_narration_for_tts(text: str, provider: str, theme: str) -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"[ \t]+", " ", text)
 
-    if theme == "minimalist_emotional":
+    if theme in {"minimalist_emotional", "minimalist_symbolic_reel"}:
         text = re.sub(r"\s*(?:\.{3,}|\u2026+)\s*", ", ", text)
         text = re.sub(r"\s*\n+\s*", " ", text)
         text = re.sub(r"([!?]){2,}", r"\1", text)

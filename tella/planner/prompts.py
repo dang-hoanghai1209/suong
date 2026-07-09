@@ -83,22 +83,35 @@ _THEME_TONE: dict[Theme, str] = {
         "feeling or realization, spoken as one short natural sentence. Imagery: "
         "minimalist hand-drawn emotional doodle illustration, tiny simple "
         "character, generous negative space, thin imperfect black linework, "
-        "flat muted color, warm taupe bedroom, soft environmental details. "
-        "Use the SAME small simple girl in EVERY normal scene: short straight black "
-        "bob ending at the chin, symmetrical bob shape, mustard yellow "
-        "triangular dress, soft rust sleeves, dot eyes only, tiny nose, tiny "
-        "neutral mouth, stick-like legs, simple mitten hands, exactly one head, "
-        "full body visible. Character should occupy only about 35-45 percent of "
+        "flat muted color, warm muted everyday setting that matches the story, "
+        "soft environmental details. "
+        "Use the SAME young Vietnamese woman in EVERY normal scene: short "
+        "straight black bob ending at the chin, mustard yellow simple dress, "
+        "soft rust sleeves, gentle expressive eyes, tiny nose, soft melancholic "
+        "mouth, full body visible. Character should occupy only about 35-45 percent of "
         "frame height and stay above the caption lane. Each image should feel like "
-        "a complete emotional illustration scene, not only a character portrait: "
-        "bed, window with thin curtains, bedside table, warm table lamp, books or "
-        "folded blanket, soft wall shadows, dust or memory particles, muted floor "
-        "and wall shapes. Use layered composition: foreground curtain edge or soft "
-        "shadow, middle ground young woman, background room details. NO self-hug, NO body-touch "
+        "a complete emotional illustration scene, not only a character portrait. "
+        "The background must match the actual story beat: street, bakery, shop, "
+        "room, or another explicitly requested place. Use layered composition: "
+        "soft foreground edge or shadow, middle ground young woman, background "
+        "details from the current scene. NO self-hug, NO body-touch "
         "emotion phrases, NO close-up face, NO anime, NO realistic anatomy, NO "
         "detailed hands, NO twisted torso, NO head/body direction mismatch, NO "
         "long loose hair strands, NO duplicate head, NO second face, NO face on "
-        "heart or objects, NO extra characters unless explicitly needed."
+        "heart or objects, NO extra characters unless explicitly requested."
+    ),
+    "minimalist_symbolic_reel": (
+        "QUIET symbolic short-form narrator, calm and melancholic, second-person "
+        "OK. This is NOT an action-driven story scene sequence. Write a "
+        "minimalist symbolic reel: each scene represents one emotional idea or "
+        "metaphor, with simple doodle characters or symbolic objects on a warm "
+        "muted taupe background. Do not require strict character continuity "
+        "across every scene. Prefer plain-background emotional metaphors over "
+        "literal actions or detailed settings. Imagery: rough soft pencil lines, "
+        "flat earthy colors, centered composition, lots of negative space, very "
+        "limited background detail. NO photorealism, NO 3D, NO anime, NO complex "
+        "environment, NO cinematic lighting, NO bedroom/street/bakery/room "
+        "defaults unless the script explicitly asks for that place."
     ),
 }
 
@@ -160,12 +173,11 @@ Each image_prompt:
   - One simple visual concept only.
   - No complex cinematic environments.
   - No crowded scenes, no multi-action montage.
-  - Include the same quiet bedroom environment as soft supporting detail:
-    bed on one side, window with thin curtains, small bedside table, warm
-    table lamp, a few books or folded blanket, soft wall shadows, subtle dust
-    or memory particles near the window, muted floor and wall shapes.
-  - Use layered composition: foreground curtain edge or soft shadow, middle
-    ground young woman, background bed/window/lamp/wall details.
+  - Match the actual setting and action in the narration. If the story happens
+    on a street, show the street. If it happens at a bakery, show the bakery.
+    If it happens in a bedroom, then and only then include bedroom details.
+  - Use layered composition: soft foreground edge or shadow, middle ground
+    young woman, background details from the current scene.
   - Do not make the character too large; keep her about 35-45 percent of frame
     height in medium/wide shots with negative space around her.
   - Use exactly one safe symbolic pose/concept from this catalog:
@@ -183,6 +195,44 @@ Each image_prompt:
 
 Aim for total spoken narration around 32-38 seconds. Do not pad with long
 sentences; the renderer holds the static illustration with subtle motion.
+"""
+
+_MINIMALIST_SYMBOLIC_REEL_SHORT_STRUCTURE = """\
+STRUCTURE — minimalist_symbolic_reel short mode (~32-38 seconds total, exactly 7-8 scenes):
+
+Plan this as a vertical symbolic reel, not a literal action story and not a
+cinematic scene sequence. Produce 8 scenes unless the topic truly only supports
+7. Each scene represents ONE emotional idea, metaphor, or inner realization.
+
+Recommended 8-beat symbolic structure:
+  1. Hook / core feeling
+  2. The hidden weight
+  3. A quiet absence or contrast
+  4. The emotional knot
+  5. A tiny protected hope
+  6. Soft release
+  7. Returning to self
+  8. Final memorable line
+
+Each scene's voice_script — HARD CAPS:
+  - Exactly 1 short sentence.
+  - English: 5-11 words. Vietnamese: 7-15 words. NEVER exceed this.
+  - Each sentence expresses ONE emotional idea only.
+
+Each scene must include these symbolic metadata fields:
+  - scene_meaning: the emotional idea of the scene
+  - symbolic_visual: the simple doodle symbol or character/object to draw
+  - emotional_metaphor: the metaphor the visual represents
+  - main_character_or_object: the central figure or object, not a full cast
+  - subtitle_highlight_words: 1-3 important words from voice_script
+  - visual_mode: "symbolic_listicle"
+
+Visuals:
+  - Prefer symbolic plain-background composition.
+  - Do not force a bedroom, street, bakery, shop, or detailed room.
+  - Include a setting only if the script explicitly asks for one.
+  - Avoid action-heavy scene requirements and multiple unnecessary characters.
+  - Keep each prompt centered, simple, sparse, and metaphor-first.
 """
 
 _DETAILED_STRUCTURE = """\
@@ -309,23 +359,49 @@ All visual fields MUST be in ENGLISH. The image model has no memory, so make
 the recurring character extremely simple and repeat the same template.
 
 Emit exactly ONE recurring character unless the topic explicitly requires
-another person:
+another person. The default protagonist is:
   {
-    "name": "the small girl",
-    "identity": "one small simple girl, short straight black bob ending at chin, symmetrical bob, mustard yellow triangular dress, soft rust sleeves, dot eyes only, tiny nose, tiny neutral mouth, stick-like legs, mitten-like hands, exactly one head, full body visible",
+    "name": "female protagonist",
+    "identity": "young Vietnamese woman, short straight black bob ending at chin, mustard yellow simple dress, soft rust sleeves, gentle expressive eyes, soft melancholic face, full body visible",
     "role": "protagonist"
   }
 
+If the topic/script explicitly mentions a male and female pair, "co ban nam
+va nu", "chàng trai không chọn mình", "the boy did not choose her", or the
+person who did not choose the woman, emit TWO recurring characters:
+  [
+    {
+      "name": "female protagonist",
+      "identity": "young Vietnamese woman, short straight black bob ending at chin, mustard yellow simple dress, soft rust sleeves, gentle expressive eyes, soft melancholic face",
+      "role": "protagonist"
+    },
+    {
+      "name": "male memory",
+      "identity": "young Vietnamese man, short dark hair, muted brown shirt, distant posture, turned partly away from her",
+      "role": "supporting"
+    }
+  ]
+
+For that two-character premise, scenes 1-2 should include BOTH characters
+with character_names ["female protagonist", "male memory"]. Their image_prompt
+must show emotional distance: the young woman in the current scene setting and the young man
+standing apart, turning away, leaving, or not choosing her. No romantic
+hugging, no wedding, no extra people. Later healing scenes should include
+only ["female protagonist"].
+
 Emit a simple setting_brief such as:
   {
-    "location": "quiet warm taupe bedroom with bed, window curtains, bedside table, warm lamp, books or folded blanket, soft wall shadows",
+    "location": "quiet everyday emotional setting matching the story, such as a street, bakery, shop interior, or bedroom only if explicitly requested",
     "era": "timeless",
     "mood": "quiet",
     "time_of_day": "soft evening"
   }
 
 PER-SCENE:
-  - Set character_names to ["the small girl"] for every scene where she appears.
+  - Set character_names to ["female protagonist"] for ordinary healing scenes.
+  - If the topic requires the male memory character, set scene 1 and scene 2
+    character_names to ["female protagonist", "male memory"], then return to
+    only ["female protagonist"] for later healing scenes.
   - Describe only one pose, object, or emotional moment in image_prompt.
   - Use one of the safe poses only: front_standing, side_sitting,
     side_walking, looking_at_light, holding_paper_heart, beside_lamp,
@@ -344,11 +420,41 @@ PER-SCENE:
     character within central safe area, bottom 25 percent mostly empty for
     captions, character about 35-45 percent of frame height, no cropped body.
   - The image should feel like a complete emotional illustration scene, not
-    only a character portrait. Include soft room details: bed on one side,
-    window with thin curtains, bedside table, warm table lamp, books or folded
-    blanket, soft wall shadows, subtle dust or memory particles, muted floor
-    and wall shapes.
+    only a character portrait. Include soft environment details that match the
+    current narration setting. Use bedroom details only when the scene actually
+    asks for a bedroom or room.
   - Avoid extra characters unless the narration explicitly needs them.
+"""
+
+_MINIMALIST_SYMBOLIC_REEL_BLOCK = """\
+SYMBOLIC VISUAL MODE (minimalist_symbolic_reel):
+
+All visual fields MUST be in English. This theme does NOT need a recurring
+cast or detailed setting lock. Use symbolic single-scene illustrations instead
+of action-driven storyboards.
+
+Top-level fields:
+  - Set characters: [] unless the script explicitly requires a recurring person.
+  - Set character_brief: null and setting_brief: null by default.
+  - Set subtitle_style: "reel_minimal".
+
+Per scene:
+  - Set visual_mode: "symbolic_listicle".
+  - Fill scene_meaning, symbolic_visual, emotional_metaphor,
+    main_character_or_object, and subtitle_highlight_words.
+  - image_prompt must describe a simple symbolic doodle illustration, not a
+    detailed room or cinematic scene.
+  - Required style phrase in every image_prompt:
+    "minimalist hand-drawn emotional doodle illustration, warm muted taupe
+    background, simple expressive character or symbolic object, soft rough
+    pencil lines, flat muted earthy colors, centered composition, lots of
+    negative space, no text, no watermark, no realistic rendering, no 3D, no
+    anime, no complex background".
+  - Use a bedroom, street, bakery, window, curtain, bed, or room only when the
+    user's script explicitly names that place or object.
+  - Avoid multiple unnecessary characters, action-heavy requirements,
+    photorealistic faces, cinematic lighting, and detailed environments.
+  - stock_query should be 2-4 English words such as "symbolic emotional doodle".
 """
 
 
@@ -383,6 +489,12 @@ PER-SCENE FIELDS (every scene needs ALL of these):
   - stock_query    : 2-4 ENGLISH keywords for Pexels search
   - character_names: list of cast names appearing in this scene (ai_image
                      mode). [] for a scenery shot. Omit / [] in stock modes.
+  - scene_meaning  : optional emotional idea for symbolic reels
+  - symbolic_visual: optional simple doodle symbol/object for symbolic reels
+  - emotional_metaphor: optional metaphor represented by the visual
+  - main_character_or_object: optional central figure/object for symbolic reels
+  - subtitle_highlight_words: optional 1-3 important words for subtitle emphasis
+  - visual_mode    : use "symbolic_listicle" for minimalist_symbolic_reel
   - asset_count    : 1 by default (one image per beat — that's what scenes
                      ARE in this planner). Only use 2-3 when a single beat
                      genuinely needs a montage (e.g. "she tried again, and
@@ -442,15 +554,20 @@ def build_system_prompt(
     JSON schema. Used by :func:`tella.planner.story_planner.plan_story`.
     """
     tone = _THEME_TONE[theme]
-    if theme == "minimalist_emotional" and duration_mode == "short":
+    if theme == "minimalist_symbolic_reel" and duration_mode == "short":
+        structure = _MINIMALIST_SYMBOLIC_REEL_SHORT_STRUCTURE
+    elif theme == "minimalist_emotional" and duration_mode == "short":
         structure = _MINIMALIST_EMOTIONAL_SHORT_STRUCTURE
     else:
         structure = _SHORT_STRUCTURE if duration_mode == "short" else _DETAILED_STRUCTURE
-    media_block = (
-        _MINIMALIST_EMOTIONAL_CHARACTER_LOCK_BLOCK
-        if theme == "minimalist_emotional" and media_source == "ai_image"
-        else _CHARACTER_LOCK_BLOCK if media_source == "ai_image" else _STOCK_MODE_BLOCK
-    )
+    if theme == "minimalist_symbolic_reel":
+        media_block = _MINIMALIST_SYMBOLIC_REEL_BLOCK
+    elif theme == "minimalist_emotional" and media_source == "ai_image":
+        media_block = _MINIMALIST_EMOTIONAL_CHARACTER_LOCK_BLOCK
+    elif media_source == "ai_image":
+        media_block = _CHARACTER_LOCK_BLOCK
+    else:
+        media_block = _STOCK_MODE_BLOCK
 
     return f"""You are a creative story planner for Tella, a short-form video tool.
 
@@ -570,11 +687,14 @@ def build_user_script_system_prompt(
     because the model's job here is parsing + visual gen, NOT writing.
     """
     tone = _THEME_TONE[theme]
-    media_block = (
-        _MINIMALIST_EMOTIONAL_CHARACTER_LOCK_BLOCK
-        if theme == "minimalist_emotional" and media_source == "ai_image"
-        else _CHARACTER_LOCK_BLOCK if media_source == "ai_image" else _STOCK_MODE_BLOCK
-    )
+    if theme == "minimalist_symbolic_reel":
+        media_block = _MINIMALIST_SYMBOLIC_REEL_BLOCK
+    elif theme == "minimalist_emotional" and media_source == "ai_image":
+        media_block = _MINIMALIST_EMOTIONAL_CHARACTER_LOCK_BLOCK
+    elif media_source == "ai_image":
+        media_block = _CHARACTER_LOCK_BLOCK
+    else:
+        media_block = _STOCK_MODE_BLOCK
 
     return f"""You are a script parser + visual director for Tella, a short-form video tool.
 

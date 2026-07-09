@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # ─── Vocabulary ────────────────────────────────────────────────────────
 
@@ -34,6 +34,7 @@ Theme = Literal[
     "playful",
     "mindfulness",
     "minimalist_emotional",
+    "minimalist_symbolic_reel",
 ]
 VoicePaceName = Literal["slow", "medium", "fast", "custom"]
 VoiceGender = Literal["male", "female"]
@@ -278,6 +279,22 @@ class Scene(BaseModel):
     # character_lock prepends those identities to image_prompt. Empty = an
     # establishing / scenery shot with no recurring character.
     character_names: list[str] = Field(default_factory=list)
+    requested_characters: list[str] = Field(default_factory=list)
+    required_characters: list[str] = Field(default_factory=list)
+    cast_source: str = Field("", max_length=80)
+    cast_fallback_applied: bool = False
+    prompt_contains_secondary_character: bool = False
+    scene_setting: str = Field("", max_length=80)
+    scene_action: str = Field("", max_length=80)
+    setting_source: str = Field("", max_length=80)
+    action_source: str = Field("", max_length=80)
+    prompt_setting_matches_story: bool = False
+    prompt_action_matches_story: bool = False
+    scene_meaning: str = Field("", max_length=300)
+    symbolic_visual: str = Field("", max_length=300)
+    emotional_metaphor: str = Field("", max_length=300)
+    main_character_or_object: str = Field("", max_length=160)
+    subtitle_highlight_words: list[str] = Field(default_factory=list)
 
     # 1-3 assets per scene. 1 = static Ken Burns; 2-3 = mini-montage with
     # crossfades inside the scene window.
@@ -291,6 +308,9 @@ class Scene(BaseModel):
         "local_composed",
         "sanitized_retry",
         "abstract_fallback",
+        "ai_provider_quota_exhausted",
+        "ai_provider_failed",
+        "reused_asset",
     ] = ""
     asset_error: str = Field("", max_length=300)
     pose_family: str = Field("", max_length=60)
@@ -318,6 +338,30 @@ class Scene(BaseModel):
     character_bbox: str = Field("", max_length=80)
     motif_bbox: str = Field("", max_length=80)
     asset_hash: str = Field("", max_length=80)
+    image_source: str = Field("", max_length=80)
+    image_provider: str = Field("", max_length=80)
+    used_local_fallback: bool = False
+    asset_path: str = Field("", max_length=300)
+    ai_provider_error_type: str = Field("", max_length=80)
+    ai_provider_error_message: str = Field("", max_length=500)
+    ai_provider_recoverable: bool = True
+    local_fallback_allowed: bool = False
+    reused_asset: bool = False
+    reused_from_job_id: str = Field("", max_length=160)
+    reused_asset_prompt_hash_mismatch: bool = False
+    reuse_mode: str = Field("", max_length=40)
+    asset_prompt_hash: str = Field("", max_length=80)
+    nsfw_retry_attempted: bool = False
+    nsfw_retry_succeeded: bool = False
+    original_prompt_hash: str = Field("", max_length=80)
+    sanitized_prompt_hash: str = Field("", max_length=80)
+    sanitized_prompt_used: str = Field("", max_length=4000)
+    original_prompt_summary: str = Field("", max_length=500)
+    sanitized_prompt_summary: str = Field("", max_length=500)
+    content_policy_blocked_count: int = 0
+    ai_images_requested: int = 0
+    ai_images_generated: int = 0
+    ai_images_reused: int = 0
     visual_mode: str = Field("", max_length=40)
     provider: str = Field("", max_length=80)
     used_reference_conditioning: bool = False
@@ -426,6 +470,8 @@ class TellaScenePlan(BaseModel):
     # ``characters`` is non-empty it takes precedence.
     characters: list[CharacterBrief] = Field(default_factory=list, max_length=4)
     character_brief: CharacterBrief | None = None
+    primary_character: CharacterBrief | None = None
+    secondary_character: CharacterBrief | None = None
     setting_brief: SettingBrief | None = None
 
     scenes: list[Scene] = Field(..., min_length=3, max_length=40)
@@ -446,6 +492,16 @@ class TellaScenePlan(BaseModel):
     narration_audio_filename: str = ""
     narration_audio_path: str = ""
     narration_duration: float = 0.0
+    global_narration_text: str = Field("", max_length=12000)
+    tts_continuous: bool = False
+    tts_text_source: str = Field("", max_length=80)
+    tts_max_pause_ms: int = 350
+    tts_style: str = Field("", max_length=80)
+    silence_postprocess_applied: bool = False
+    original_narration_duration: float = 0.0
+    processed_narration_duration: float = 0.0
+    longest_silence_before: float = 0.0
+    longest_silence_after: float = 0.0
     tts_provider: str = Field("", max_length=80)
     tts_voice: str = Field("", max_length=120)
     tts_language: str = Field("", max_length=20)
@@ -456,12 +512,46 @@ class TellaScenePlan(BaseModel):
     tts_fallback_reason: str = Field("", max_length=500)
     tts_metadata: dict[str, Any] = Field(default_factory=dict)
     scene_timing_map: list[dict[str, float | int]] = Field(default_factory=list)
-    subtitle_segments: list[dict[str, str | float | int]] = Field(default_factory=list)
+    subtitle_style: str = Field("", max_length=80)
+    subtitle_segments: list[dict[str, Any]] = Field(default_factory=list)
     total_vision_qc_calls: int = 0
     total_scene_regeneration_attempts: int = 0
     total_qc_json_parse_attempts: int = 0
+    ai_provider_error_type: str = Field("", max_length=80)
+    ai_provider_error_message: str = Field("", max_length=500)
+    ai_provider_recoverable: bool = True
+    local_fallback_allowed: bool = False
+    used_local_fallback: bool = False
+    reused_asset: bool = False
+    reused_from_job_id: str = Field("", max_length=160)
+    reused_asset_prompt_hash_mismatch: bool = False
+    reuse_mode: str = Field("", max_length=40)
+    content_policy_blocked_count: int = 0
+    ai_images_requested: int = 0
+    ai_images_generated: int = 0
+    ai_images_reused: int = 0
 
     total_duration: float = 0.0
+
+    @model_validator(mode="after")
+    def _validate_symbolic_reel_contract(self) -> "TellaScenePlan":
+        if self.theme != "minimalist_symbolic_reel":
+            return self
+
+        missing: list[str] = []
+        for scene in self.scenes:
+            if scene.kind != "scene":
+                continue
+            if not (scene.scene_meaning or "").strip():
+                missing.append(f"scene {scene.scene_index}: scene_meaning")
+            if not (scene.symbolic_visual or "").strip():
+                missing.append(f"scene {scene.scene_index}: symbolic_visual")
+        if missing:
+            raise ValueError(
+                "minimalist_symbolic_reel requires non-empty symbolic scene "
+                "fields: " + ", ".join(missing[:12])
+            )
+        return self
 
 
 __all__ = [

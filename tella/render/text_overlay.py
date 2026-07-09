@@ -22,6 +22,8 @@ Layout (matches the safe zone constants in
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -153,6 +155,102 @@ def _draw_text_box(
     return box_y + box_h
 
 
+def _ascii_key(text: str) -> str:
+    raw = (text or "").casefold().replace("\u0111", "d")
+    decomposed = unicodedata.normalize("NFKD", raw)
+    ascii_only = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]+", " ", ascii_only).strip()
+
+
+def _draw_reel_caption(
+    draw: ImageDraw.ImageDraw,
+    *,
+    caption: str,
+    font: ImageFont.FreeTypeFont,
+    canvas_w: int,
+    canvas_h: int,
+    safe_top: int,
+    safe_bottom: int,
+    wrap_w: int,
+    highlight_words: list[str],
+) -> None:
+    lines = _wrap_pixel(caption, font, wrap_w, 2)
+    if not lines:
+        return
+
+    highlight_keys = {
+        _ascii_key(word)
+        for word in highlight_words
+        if _ascii_key(word)
+    }
+    phrase_word_keys = _phrase_word_highlight_keys(caption, highlight_words)
+    line_heights = [_measure(font, line)[1] for line in lines]
+    block_h = sum(line_heights) + LINE_SPACING * max(0, len(lines) - 1)
+    lower_middle_y = int(canvas_h * 0.68)
+    bottom_anchor_y = safe_bottom - CAPTION_BOTTOM_PADDING - block_h
+    cur_y = max(safe_top, min(lower_middle_y, bottom_anchor_y))
+
+    text_color = (255, 247, 237, 255)
+    highlight_color = (191, 99, 73, 255)
+    shadow_color = (62, 43, 35, 150)
+
+    for line, line_h in zip(lines, line_heights, strict=True):
+        tokens = re.findall(r"\S+|\s+", line)
+        highlight_token_indexes = _highlight_token_indexes(tokens, highlight_words)
+        token_widths = [_measure(font, token)[0] for token in tokens]
+        line_w = sum(token_widths)
+        cur_x = (canvas_w - line_w) // 2
+        for token_idx, (token, token_w) in enumerate(zip(tokens, token_widths, strict=True)):
+            stripped = token.strip(" \t\r\n.,;:!?\u2026\"'()[]{}")
+            is_highlight = bool(
+                stripped
+                and (
+                    token_idx in highlight_token_indexes
+                    or _ascii_key(stripped) in highlight_keys
+                    or _ascii_key(stripped) in phrase_word_keys
+                )
+            )
+            fill = highlight_color if is_highlight else text_color
+            draw.text((cur_x + 2, cur_y + 2), token, font=font, fill=shadow_color)
+            draw.text((cur_x, cur_y), token, font=font, fill=fill)
+            cur_x += token_w
+        cur_y += line_h + LINE_SPACING
+
+
+def _highlight_token_indexes(tokens: list[str], highlight_words: list[str]) -> set[int]:
+    word_positions: list[int] = []
+    word_keys: list[str] = []
+    for idx, token in enumerate(tokens):
+        key = _ascii_key(token.strip(" \t\r\n.,;:!?\u2026\"'()[]{}"))
+        if key:
+            word_positions.append(idx)
+            word_keys.append(key)
+
+    highlighted: set[int] = set()
+    for phrase in highlight_words:
+        phrase_words = _ascii_key(phrase).split()
+        if not phrase_words:
+            continue
+        phrase_len = len(phrase_words)
+        for start in range(0, len(word_keys) - phrase_len + 1):
+            if word_keys[start:start + phrase_len] == phrase_words:
+                highlighted.update(word_positions[start:start + phrase_len])
+    return highlighted
+
+
+def _phrase_word_highlight_keys(caption: str, highlight_words: list[str]) -> set[str]:
+    caption_key = f" {_ascii_key(caption)} "
+    keys: set[str] = set()
+    for phrase in highlight_words:
+        phrase_words = _ascii_key(phrase).split()
+        if len(phrase_words) < 2:
+            continue
+        phrase_key = " ".join(phrase_words)
+        if f" {phrase_key} " in caption_key:
+            keys.update(phrase_words)
+    return keys
+
+
 def _circular_avatar(path: str, size: int) -> Image.Image | None:
     """Load an avatar image and crop it to a circle of ``size`` px. None on error."""
     try:
@@ -229,6 +327,8 @@ def render_overlay_png(
     safe_right: int,
     font_file: Path,
     out_path: Path,
+    subtitle_style: str = "",
+    highlight_words: list[str] | None = None,
     channel_name: str | None = None,
     channel_avatar: str | None = None,
 ) -> Path | None:
@@ -283,7 +383,21 @@ def render_overlay_png(
 
     if caption:
         cap_font = ImageFont.truetype(str(font_file), CAPTION_FONT_SIZE)
-        cap_lines = _wrap_pixel(caption, cap_font, wrap_w, CAPTION_MAX_LINES)
+        if subtitle_style == "reel_minimal":
+            _draw_reel_caption(
+                draw,
+                caption=caption,
+                font=cap_font,
+                canvas_w=canvas_w,
+                canvas_h=canvas_h,
+                safe_top=safe_top,
+                safe_bottom=safe_bottom,
+                wrap_w=wrap_w,
+                highlight_words=highlight_words or [],
+            )
+            cap_lines = []
+        else:
+            cap_lines = _wrap_pixel(caption, cap_font, wrap_w, CAPTION_MAX_LINES)
         if cap_lines:
             # Measure block height to anchor the box at the bottom of the
             # safe zone.

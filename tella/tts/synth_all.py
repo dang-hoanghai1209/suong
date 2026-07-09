@@ -23,6 +23,8 @@ import asyncio
 import json
 import logging
 import os
+import re
+import shutil
 from pathlib import Path
 
 from tella.planner.models import TellaScenePlan
@@ -31,6 +33,8 @@ from tella.tts.providers import EdgeTTSProvider, TTSResult, get_tts_provider
 from tella.tts.text import normalize_narration_for_tts
 
 logger = logging.getLogger("tella.tts.synth_all")
+
+_CONTINUOUS_NARRATION_THEMES = {"minimalist_emotional", "minimalist_symbolic_reel"}
 
 
 async def _ffprobe_duration(path: Path) -> float:
@@ -52,6 +56,63 @@ async def _ffprobe_duration(path: Path) -> float:
         return 0.0
 
 
+async def _detect_longest_silence(path: Path, *, min_duration: float = 0.2) -> float:
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-hide_banner", "-nostats", "-i", str(path),
+        "-af", f"silencedetect=noise=-40dB:d={min_duration:.3f}",
+        "-f", "null", "-",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    _stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        return 0.0
+    text = stderr.decode("utf-8", errors="replace")
+    durations = [
+        float(match.group(1))
+        for match in re.finditer(r"silence_duration:\s*([0-9.]+)", text)
+    ]
+    return round(max(durations, default=0.0), 3)
+
+
+async def _postprocess_narration_audio(raw_path: Path, out_path: Path, *, max_pause_ms: int) -> dict:
+    max_pause_s = max(0.08, int(max_pause_ms) / 1000.0)
+    original_duration = await _ffprobe_duration(raw_path)
+    longest_before = await _detect_longest_silence(raw_path)
+    audio_filter = (
+        "silenceremove="
+        "start_periods=1:start_duration=0.05:start_threshold=-45dB:"
+        f"stop_periods=-1:stop_duration={max_pause_s:.3f}:"
+        "stop_threshold=-45dB:"
+        f"stop_silence={max_pause_s:.3f},"
+        "loudnorm=I=-16:TP=-1.5:LRA=11"
+    )
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-i", str(raw_path),
+        "-af", audio_filter,
+        "-c:a", "libmp3lame", "-q:a", "3",
+        str(out_path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _stdout, stderr = await proc.communicate()
+    if proc.returncode != 0 or not out_path.is_file() or out_path.stat().st_size < 256:
+        raise RuntimeError(
+            "ffmpeg TTS post-process failed: "
+            f"{stderr.decode('utf-8', errors='replace')[-300:]}"
+        )
+    processed_duration = await _ffprobe_duration(out_path)
+    longest_after = await _detect_longest_silence(out_path)
+    return {
+        "silence_postprocess_applied": True,
+        "max_pause_ms": int(max_pause_ms),
+        "original_duration": round(original_duration, 2),
+        "processed_duration": round(processed_duration, 2),
+        "longest_silence_before": longest_before,
+        "longest_silence_after": longest_after,
+    }
+
+
 def _join_voice_scripts(scenes, *, add_terminal_punctuation: bool = True) -> str:
     """Concatenate per-scene voice_script into one TTS input.
 
@@ -71,6 +132,57 @@ def _join_voice_scripts(scenes, *, add_terminal_punctuation: bool = True) -> str
             text = text + "."
         parts.append(text)
     return " ".join(parts)
+
+
+def _scene_text_for_tts(scenes) -> str:
+    return " ".join(
+        re.sub(r"\s+", " ", (s.voice_script or "").strip())
+        for s in scenes
+        if (s.voice_script or "").strip()
+    ).strip()
+
+
+def _build_global_narration_text(scenes, *, theme: str) -> str:
+    parts = [
+        re.sub(r"\s+", " ", (s.voice_script or "").strip())
+        for s in scenes
+        if (s.voice_script or "").strip()
+    ]
+    if not parts:
+        return ""
+    if theme not in _CONTINUOUS_NARRATION_THEMES:
+        return normalize_narration_for_tts(
+            _join_voice_scripts(scenes),
+            "edge",
+            theme,
+        )
+
+    smoothed: list[str] = []
+    for idx, part in enumerate(parts):
+        part = re.sub(r"\s*(?:\.{3,}|\u2026+)\s*", ", ", part)
+        part = re.sub(r"([!?]){2,}", r"\1", part)
+        part = re.sub(r"\s+([,.;:!?])", r"\1", part)
+        if idx < len(parts) - 1:
+            part = part.rstrip(" .!?;:\u2026")
+        else:
+            part = part.rstrip()
+        if part:
+            smoothed.append(part)
+    text = ", ".join(smoothed)
+    text = re.sub(r",\s*,+", ", ", text)
+    text = re.sub(r"\s{2,}", " ", text).strip(" ,")
+    if text and text[-1] not in ".!?\u2026":
+        text = text + "."
+    return text
+
+
+def _tts_continuous_enabled(plan: TellaScenePlan) -> bool:
+    raw = (os.environ.get("TELLA_TTS_CONTINUOUS") or "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return plan.theme in _CONTINUOUS_NARRATION_THEMES
 
 
 def _distribute_durations(scenes, total_duration: float) -> None:
@@ -135,6 +247,11 @@ def _edge_rate_to_speed(edge_rate: str) -> float:
 
 def _resolve_tts_settings(plan: TellaScenePlan, requested_provider: str) -> dict:
     provider = requested_provider or "edge"
+    if provider == "gemini":
+        raise RuntimeError(
+            "TELLA_TTS_PROVIDER=gemini is not implemented in this Tella build; "
+            "use edge, google, cloudflare_grok, or xai."
+        )
     env_voice = (os.environ.get("TELLA_TTS_VOICE") or "").strip()
     env_language = (os.environ.get("TELLA_TTS_LANGUAGE") or "").strip().lower()
     language = plan.language if env_language in {"", "auto"} else env_language
@@ -148,6 +265,8 @@ def _resolve_tts_settings(plan: TellaScenePlan, requested_provider: str) -> dict
 
     if provider == "edge":
         voice = env_voice or plan.voice_name
+    elif provider == "google":
+        voice = env_voice or (os.environ.get("GOOGLE_TTS_VOICE") or "").strip() or "vi-VN-Chirp3-HD-Achernar"
     else:
         voice = env_voice or "ara"
 
@@ -224,10 +343,22 @@ async def synthesize_all(
     if not body_scenes:
         return
 
-    raw_text = _join_voice_scripts(
-        body_scenes,
-        add_terminal_punctuation=plan.theme != "minimalist_emotional",
+    raw_scene_text = _scene_text_for_tts(body_scenes)
+    tts_continuous = _tts_continuous_enabled(plan)
+    raw_text = (
+        _build_global_narration_text(body_scenes, theme=plan.theme)
+        if tts_continuous else
+        _join_voice_scripts(
+            body_scenes,
+            add_terminal_punctuation=plan.theme not in _CONTINUOUS_NARRATION_THEMES,
+        )
     )
+    plan.global_narration_text = raw_text if tts_continuous else ""
+    plan.tts_continuous = tts_continuous
+    plan.tts_text_source = "global_narration_text" if tts_continuous else "scene_voice_script_join"
+    default_pause_ms = 700 if plan.theme == "minimalist_symbolic_reel" else 350
+    plan.tts_max_pause_ms = _env_int("TELLA_TTS_MAX_PAUSE_MS", default_pause_ms)
+    plan.tts_style = (os.environ.get("TELLA_TTS_STYLE") or "emotional_storytelling").strip() or "emotional_storytelling"
     requested_provider = (os.environ.get("TELLA_TTS_PROVIDER") or "").strip().lower()
     settings = _resolve_tts_settings(plan, requested_provider)
     full_text = normalize_narration_for_tts(
@@ -238,13 +369,52 @@ async def synthesize_all(
     if not full_text.strip():
         return
 
+    raw_out = assets_dir / "narration_raw.mp3"
     out = assets_dir / "narration.mp3"
     result: TTSResult | None = None
     fallback_used = False
     fallback_reason = ""
+    google_tts_api_key = google_tts_api_key or (os.environ.get("GOOGLE_TTS_API_KEY") or "").strip()
+    google_tts_voice = google_tts_voice or (os.environ.get("GOOGLE_TTS_VOICE") or "").strip()
     google_enabled = bool(google_tts_api_key) and bool(google_tts_voice)
 
-    if requested_provider:
+    if requested_provider == "google":
+        ok = await google.synth_google(
+            text=full_text,
+            voice_name=settings["voice"],
+            rate=plan.voice_edge_rate,
+            api_key=google_tts_api_key,
+            out_path=raw_out,
+        )
+        if not ok:
+            if _env_bool("TELLA_STRICT_TTS_PROVIDER"):
+                raise RuntimeError("TTS provider google failed; check GOOGLE_TTS_API_KEY and voice.")
+            fallback_used = True
+            fallback_reason = "google TTS failed or was not configured"
+            logger.warning("TTS provider=google failed; falling back to Edge TTS")
+            result = await _synthesize_edge_fallback(
+                full_text,
+                raw_out,
+                plan,
+                language=settings["language"],
+                sample_rate=settings["sample_rate"],
+                fallback_from="google",
+            )
+        else:
+            result = TTSResult(
+                audio_path=raw_out,
+                provider="google",
+                voice=settings["voice"],
+                language=settings["language"],
+                metadata={
+                    "requested_provider": "google",
+                    "edge_rate": plan.voice_edge_rate,
+                    "normalized_text_chars": len(full_text),
+                    "codec": "mp3",
+                },
+            )
+
+    if result is None and requested_provider and requested_provider != "google":
         try:
             edge_metadata = {}
             if settings["provider"] == "edge" and not settings["speed_from_env"]:
@@ -252,7 +422,7 @@ async def synthesize_all(
             provider = get_tts_provider(settings["provider"])
             result = await provider.synthesize(
                 full_text,
-                out,
+                raw_out,
                 voice=settings["voice"],
                 language=settings["language"],
                 speed=settings["speed"],
@@ -278,7 +448,7 @@ async def synthesize_all(
             )
             result = await _synthesize_edge_fallback(
                 full_text,
-                out,
+                raw_out,
                 plan,
                 language=settings["language"],
                 sample_rate=settings["sample_rate"],
@@ -291,11 +461,11 @@ async def synthesize_all(
             voice_name=google_tts_voice,
             rate=plan.voice_edge_rate,
             api_key=google_tts_api_key,
-            out_path=out,
+            out_path=raw_out,
         )
         if ok:
             result = TTSResult(
-                audio_path=out,
+                audio_path=raw_out,
                 provider="google",
                 voice=google_tts_voice,
                 language=settings["language"],
@@ -309,7 +479,7 @@ async def synthesize_all(
     if result is None:
         result = await EdgeTTSProvider().synthesize(
             full_text,
-            out,
+            raw_out,
             voice=settings["voice"] if requested_provider == "edge" else plan.voice_name,
             language=settings["language"],
             speed=settings["speed"],
@@ -322,7 +492,28 @@ async def synthesize_all(
             },
         )
 
-    total_duration = await _ffprobe_duration(out)
+    original_duration = await _ffprobe_duration(raw_out)
+    postprocess = {
+        "silence_postprocess_applied": False,
+        "max_pause_ms": int(plan.tts_max_pause_ms),
+        "original_duration": round(original_duration, 2),
+        "processed_duration": round(original_duration, 2),
+        "longest_silence_before": 0.0,
+        "longest_silence_after": 0.0,
+    }
+    try:
+        postprocess = await _postprocess_narration_audio(
+            raw_out,
+            out,
+            max_pause_ms=plan.tts_max_pause_ms,
+        )
+    except Exception as exc:
+        shutil.copyfile(raw_out, out)
+        logger.warning("TTS silence post-process skipped: %s", str(exc)[:180])
+        postprocess["longest_silence_before"] = await _detect_longest_silence(raw_out)
+        postprocess["longest_silence_after"] = postprocess["longest_silence_before"]
+
+    total_duration = float(postprocess["processed_duration"]) or await _ffprobe_duration(out)
     result.duration = total_duration
     _distribute_durations(body_scenes, total_duration)
     effective_speed = (
@@ -335,6 +526,11 @@ async def synthesize_all(
     plan.narration_audio_filename = f"assets/{out.name}"
     plan.narration_audio_path = str(out)
     plan.narration_duration = round(total_duration, 2)
+    plan.original_narration_duration = float(postprocess["original_duration"])
+    plan.processed_narration_duration = float(postprocess["processed_duration"])
+    plan.silence_postprocess_applied = bool(postprocess["silence_postprocess_applied"])
+    plan.longest_silence_before = float(postprocess["longest_silence_before"])
+    plan.longest_silence_after = float(postprocess["longest_silence_after"])
     plan.tts_provider = result.provider
     plan.tts_voice = result.voice
     plan.tts_language = result.language
@@ -357,6 +553,18 @@ async def synthesize_all(
         "narration_duration": round(total_duration, 2),
         "fallback_used": fallback_used,
         "fallback_reason": fallback_reason,
+        "tts_continuous": tts_continuous,
+        "tts_text_source": plan.tts_text_source,
+        "tts_style": plan.tts_style,
+        "raw_scene_text_chars": len(raw_scene_text),
+        "global_narration_text_chars": len(plan.global_narration_text),
+        "silence_postprocess_applied": bool(postprocess["silence_postprocess_applied"]),
+        "max_pause_ms": int(plan.tts_max_pause_ms),
+        "original_duration": float(postprocess["original_duration"]),
+        "processed_duration": float(postprocess["processed_duration"]),
+        "longest_silence_before": float(postprocess["longest_silence_before"]),
+        "longest_silence_after": float(postprocess["longest_silence_after"]),
+        "edge_rate": str(result.metadata.get("edge_rate", plan.voice_edge_rate)),
         "normalized_text_chars": len(full_text),
         "raw_text_chars": len(raw_text),
         "provider_metadata": result.metadata,
@@ -369,14 +577,20 @@ async def synthesize_all(
         s.audio_filename = ""
 
     logger.info(
-        "synthesize_all: 1 combined narration (%.2fs, provider=%s, voice=%s, language=%s, speed=%.2f, fallback=%s) "
-        "distributed across %d scenes",
+        "synthesize_all: 1 combined narration (%.2fs -> %.2fs, provider=%s, voice=%s, language=%s, edge_rate=%s, speed=%.2f, continuous=%s, source=%s, fallback=%s) "
+        "longest_silence %.2fs -> %.2fs, distributed across %d scenes",
+        float(postprocess["original_duration"]),
         total_duration,
         result.provider,
         result.voice,
         result.language,
+        str(result.metadata.get("edge_rate", plan.voice_edge_rate)),
         float(settings["speed"]),
+        tts_continuous,
+        plan.tts_text_source,
         fallback_used,
+        float(postprocess["longest_silence_before"]),
+        float(postprocess["longest_silence_after"]),
         len(body_scenes),
     )
 

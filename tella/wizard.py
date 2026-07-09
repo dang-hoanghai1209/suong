@@ -63,8 +63,13 @@ _GENDERS: list[tuple[str, str]] = [
 _STYLES: list[tuple[str, str]] = [
     ("cinematic", "Cinematic - realistic, filmic (great for adults / real-world topics)"),
     ("cartoon", "Cartoon   - colorful illustration, kid-friendly (great for children)"),
+    ("symbolic_reel", "Symbolic reel - minimalist doodle metaphors for emotional shorts"),
 ]
-_STYLE_TO_THEME = {"cinematic": "cinematic", "cartoon": "playful"}
+_STYLE_TO_THEME = {
+    "cinematic": "cinematic",
+    "cartoon": "playful",
+    "symbolic_reel": "minimalist_symbolic_reel",
+}
 
 _LANG_NAME = dict(_LANGS)
 
@@ -74,6 +79,12 @@ def _resolve_theme(media_source: str, style: str | None) -> str:
     if media_source == "ai_image" and style:
         return _STYLE_TO_THEME.get(style, "cinematic")
     return "cinematic"
+
+
+def _voice_pace_name_for_wizard(text: str, theme: str) -> str | None:
+    if theme == "minimalist_symbolic_reel":
+        return None
+    return pace_name_for(text, theme)
 
 
 @dataclass
@@ -370,7 +381,7 @@ def _flow_scoped_channel(channel: Channel) -> WizardResult:
     )
 
     theme = _resolve_theme(media_source, style)
-    voice_pace_name = pace_name_for(user_script or topic, theme)
+    voice_pace_name = _voice_pace_name_for_wizard(user_script or topic, theme)
 
     print()
     print("-" * 60)
@@ -448,7 +459,7 @@ def _flow_adhoc(channel_name: str, channel_avatar: str) -> WizardResult:
         voice_gender = _ask_choice("Step 6 - Narrator voice", _GENDERS, 0)
 
         theme = _resolve_theme(media_source, style)
-        voice_pace_name = pace_name_for(user_script, theme)
+        voice_pace_name = _voice_pace_name_for_wizard(user_script, theme)
 
         print()
         print("-" * 60)
@@ -490,7 +501,7 @@ def _flow_adhoc(channel_name: str, channel_avatar: str) -> WizardResult:
     voice_gender = _ask_choice("Step 8 - Narrator voice", _GENDERS, 0)
 
     theme = _resolve_theme(media_source, style)
-    voice_pace_name = pace_name_for(topic, theme)
+    voice_pace_name = _voice_pace_name_for_wizard(topic, theme)
 
     print()
     print("-" * 60)

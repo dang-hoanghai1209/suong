@@ -20,32 +20,41 @@ from tella.planner.models import TellaScenePlan
 logger = logging.getLogger("tella.planner.character_lock")
 
 _MINIMALIST_CHARACTER_TEMPLATE = (
-    "one small simple girl character, short straight black bob haircut ending "
-    "at the chin, simple symmetrical bob shape, no long loose hair strands, "
-    "small round face, dot eyes only, tiny nose, tiny neutral mouth, mustard "
-    "yellow simple triangular dress, soft rust sleeves, stick-like simple "
-    "legs, simple mitten-like hands, simple doodle proportions, exactly one "
-    "head, full body visible"
+    "one young Vietnamese woman character, short straight black bob haircut "
+    "ending at the chin, simple symmetrical bob shape, small rounded face, "
+    "gentle expressive eyes, tiny nose, soft melancholic mouth, mustard yellow "
+    "simple dress with soft rust sleeves, hand-drawn cartoon proportions, "
+    "full body visible"
 )
 
-_MINIMALIST_NEGATIVE_LOCK = (
+_MINIMALIST_SHARED_LOCK = (
     "single simple safe pose, no twisted body, head and torso face the same "
     "direction, full body visible, head fully visible, feet fully visible, "
     "character within central safe area, keep bottom 25 percent empty for "
     "captions, do not make the character too large, character occupies about "
     "35-45 percent of frame height, generous negative space, complete emotional "
-    "room illustration scene, not only a character portrait, layered composition "
-    "with foreground curtain edge or soft shadow, middle ground young woman, "
-    "background bed, window with thin curtains, bedside table, warm table lamp, "
-    "books or folded blanket, soft wall shadows, subtle dust or memory particles, "
-    "muted floor and wall shapes, exactly one head, no second head, no duplicate face, no second "
-    "character, no face on heart, no face on object, no deformed anatomy, no "
+    "illustration scene matching the story setting, not only a character "
+    "portrait, layered composition with soft foreground edge or shadow, middle "
+    "ground young woman, background environmental details from the current "
+    "scene, soft shadows, subtle dust or memory particles, muted floor, wall, "
+    "sidewalk, or shop shapes, no duplicate face, no face on heart, no face on object, no deformed anatomy, no "
     "extra limbs, no cropped body, arms stay simple and relaxed, no arms "
     "crossing the torso, hands stay away from chest and torso, mitten hands "
     "only, no finger detail, no realistic body, "
     "no anime face, no detailed eyes, no eyelashes, no complex hair shine, "
     "no close-up face, no cropped head, no cropped feet, no large character "
     "filling the frame"
+)
+
+_MINIMALIST_SINGLE_CHARACTER_LOCK = (
+    f"{_MINIMALIST_SHARED_LOCK}, exactly one character, no second character"
+)
+
+_MINIMALIST_TWO_CHARACTER_LOCK = (
+    f"{_MINIMALIST_SHARED_LOCK}, exactly two characters only: one young "
+    "Vietnamese woman and one young Vietnamese man, emotional distance between "
+    "them, the man turns away or stands apart, no romantic hugging, no wedding, "
+    "no extra people"
 )
 
 
@@ -57,13 +66,20 @@ def _minimalist_emotional_prefix(plan: TellaScenePlan) -> str:
     drift, so every scene repeats the same simplified character constraints.
     """
     location = (
-        "quiet warm taupe bedroom, bed on one side, window with thin curtains, "
-        "small bedside table, warm table lamp, a few books or folded blanket, "
-        "soft shadows on the wall, subtle dust or memory particles near the window"
+        "quiet everyday emotional setting matching the scene narration, soft "
+        "environmental details, simple background shapes, warm muted light"
     )
     if plan.setting_brief and plan.setting_brief.location:
         location = plan.setting_brief.location.strip().rstrip(".,;")
     return f"{_MINIMALIST_CHARACTER_TEMPLATE}, {location}"
+
+
+def _scene_requires_secondary(scene) -> bool:
+    required = {str(item).strip().lower() for item in scene.required_characters}
+    if "male" in required:
+        return True
+    names = {str(item).strip().lower() for item in scene.character_names}
+    return bool(names & {"male memory", "secondary male", "young man"})
 
 
 def apply_lock(plan: TellaScenePlan, *, style_suffix: str = "") -> TellaScenePlan:
@@ -78,10 +94,18 @@ def apply_lock(plan: TellaScenePlan, *, style_suffix: str = "") -> TellaScenePla
                        action> + <style suffix>``.
     """
     is_minimalist = plan.theme == "minimalist_emotional"
+    is_symbolic = plan.theme == "minimalist_symbolic_reel"
 
     if plan.media_source != "ai_image":
         # Stock modes: nothing to lock — but we still tack on the style
         # suffix so any future swap to ai_image still has a hook.
+        if style_suffix:
+            for scene in plan.scenes:
+                if scene.image_prompt and style_suffix not in scene.image_prompt:
+                    scene.image_prompt = f"{scene.image_prompt.rstrip(', ')}{style_suffix}"
+        return plan
+
+    if is_symbolic:
         if style_suffix:
             for scene in plan.scenes:
                 if scene.image_prompt and style_suffix not in scene.image_prompt:
@@ -108,11 +132,22 @@ def apply_lock(plan: TellaScenePlan, *, style_suffix: str = "") -> TellaScenePla
         )
         for scene in plan.scenes:
             action = (scene.image_prompt or "").strip().rstrip(".,;")
+            if _scene_requires_secondary(scene):
+                secondary = (
+                    plan.secondary_character.identity.strip().rstrip(".,;")
+                    if plan.secondary_character else
+                    "young Vietnamese man, short dark hair, muted brown shirt, distant posture, turned partly away from her"
+                )
+                prefix = f"{_minimalist_emotional_prefix(plan)}, {secondary}"
+                lock = _MINIMALIST_TWO_CHARACTER_LOCK
+            else:
+                prefix = _minimalist_emotional_prefix(plan)
+                lock = _MINIMALIST_SINGLE_CHARACTER_LOCK
             prompt = ", ".join(
                 p for p in (
-                    _minimalist_emotional_prefix(plan),
+                    prefix,
                     action,
-                    _MINIMALIST_NEGATIVE_LOCK,
+                    lock,
                 )
                 if p
             )
@@ -179,13 +214,26 @@ def apply_lock(plan: TellaScenePlan, *, style_suffix: str = "") -> TellaScenePla
         if action:
             parts.append(action)
         if is_minimalist:
-            # The minimalist emotional theme intentionally repeats the same
-            # simple template and negative drift terms in every prompt.
-            parts = [
-                _minimalist_emotional_prefix(plan),
-                action,
-                _MINIMALIST_NEGATIVE_LOCK,
-            ]
+            # Repeat stable identity/style terms, but do not erase a
+            # deliberately requested secondary character.
+            if _scene_requires_secondary(scene):
+                if not identities:
+                    identities = list(all_identities[:2])
+                parts = [
+                    *identities,
+                    location,
+                    setting_tail,
+                    action,
+                    _MINIMALIST_TWO_CHARACTER_LOCK,
+                ]
+            else:
+                parts = [
+                    identities[0] if identities else _minimalist_emotional_prefix(plan),
+                    location,
+                    setting_tail,
+                    action,
+                    _MINIMALIST_SINGLE_CHARACTER_LOCK,
+                ]
         prompt = ", ".join(p for p in parts if p)
         if style_suffix:
             prompt = f"{prompt}{style_suffix}"

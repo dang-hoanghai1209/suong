@@ -56,6 +56,47 @@ _throttle_lock = asyncio.Lock()
 _last_request_at = 0.0
 
 
+class CloudflareAIError(RuntimeError):
+    """Structured Cloudflare Workers AI failure."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_type: str = "unknown",
+        status_code: int = 0,
+        recoverable: bool = True,
+    ) -> None:
+        super().__init__(message)
+        self.error_type = error_type
+        self.status_code = status_code
+        self.recoverable = recoverable
+
+
+def classify_cloudflare_error(status_code: int, body: str) -> tuple[str, bool]:
+    text = (body or "").lower()
+    if (
+        "3030" in text
+        or "input prompt contains nsfw content" in text
+        or "nsfw" in text
+    ):
+        return "content_policy_blocked", True
+    if status_code == 429:
+        if (
+            "daily free allocation" in text
+            or "used up your daily" in text
+            or "quota" in text
+            or "neurons" in text
+        ):
+            return "quota_exhausted", False
+        return "rate_limited", False
+    if status_code in {401, 403}:
+        return "auth_error", False
+    if status_code in {402, 4020} or "payment" in text or "billing" in text:
+        return "payment_required", False
+    return "provider_http_error", True
+
+
 async def _throttle() -> None:
     """Space CF requests at least ``_MIN_REQUEST_INTERVAL`` apart, plus jitter."""
     global _last_request_at
@@ -177,9 +218,15 @@ async def generate_image(
                     )
                     return out_path
 
-                last_err = RuntimeError(
+                error_type, recoverable = classify_cloudflare_error(
+                    resp.status_code, resp.text
+                )
+                last_err = CloudflareAIError(
                     f"CF AI HTTP {resp.status_code} (account {cred_idx}/{len(creds)}): "
-                    f"{resp.text[:200]}"
+                    f"{resp.text[:200]}",
+                    error_type=error_type,
+                    status_code=resp.status_code,
+                    recoverable=recoverable,
                 )
                 logger.warning("cf-ai attempt %d -> %s", attempt, last_err)
                 if resp.status_code == 429:
@@ -195,8 +242,17 @@ async def generate_image(
         if quota_exhausted:
             logger.info("cf-ai account %d quota exhausted, rotating", cred_idx)
 
-    raise RuntimeError(
-        f"CF AI failed across all {len(creds)} account(s): {last_err}"
+    if isinstance(last_err, CloudflareAIError):
+        raise CloudflareAIError(
+            f"CF AI failed across all {len(creds)} account(s): {last_err}",
+            error_type=last_err.error_type,
+            status_code=last_err.status_code,
+            recoverable=last_err.recoverable,
+        ) from last_err
+    raise CloudflareAIError(
+        f"CF AI failed across all {len(creds)} account(s): {last_err}",
+        error_type="provider_failed",
+        recoverable=True,
     )
 
 
@@ -222,6 +278,8 @@ def _is_blank_or_black(path: Path, *, dark_threshold: int = 16, ratio: float = 0
 
 __all__ = [
     "DEFAULT_MODEL",
+    "CloudflareAIError",
+    "classify_cloudflare_error",
     "generate_image",
     "resolve_all_credentials",
 ]

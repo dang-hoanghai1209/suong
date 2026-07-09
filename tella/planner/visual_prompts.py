@@ -9,13 +9,13 @@ from tella.planner.models import (
     VisualBible,
 )
 
-_ROOM_SCENE_COMPOSITION_LOCK = (
+_STORY_SCENE_COMPOSITION_LOCK = (
     "complete emotional illustration scene, not a character portrait, medium-wide "
-    "vertical bedroom shot, character about 35-45 percent of frame height, "
+    "vertical story-setting shot, character about 35-45 percent of frame height, "
     "negative space around her, layered composition: foreground curtain edge or "
-    "soft shadow, middle ground young woman, background bed, window with thin "
-    "curtains, bedside table, warm lamp, books or folded blanket, soft wall "
-    "shadows, subtle dust near window, muted floor and wall shapes"
+    "soft shadow, middle ground young woman, background details matching the "
+    "current narration setting, soft shadows, subtle dust or memory particles, "
+    "muted floor, wall, sidewalk, or shop shapes"
 )
 
 
@@ -43,10 +43,13 @@ def build_scene_visual_plan(
     *,
     previous_scene_reference_path: str = "",
 ) -> SceneVisualPlan:
-    character = visual_bible.character_specs[0]
+    requires_secondary = "male" in {str(item).strip().lower() for item in scene.required_characters}
+    characters = visual_bible.character_specs[:2] if requires_secondary else visual_bible.character_specs[:1]
+    character = characters[0]
     emotion = scene.emotion_tag or _emotion_for_scene(scene)
     action = _scene_action(scene)
-    refs = [r for r in references if r.selected and r.character_id == character.character_id]
+    character_ids = [c.character_id for c in characters]
+    refs = [r for r in references if r.selected and r.character_id in character_ids]
     prompt = _join_prompt(
         [
             visual_bible.style_bible.art_style_prompt,
@@ -55,18 +58,25 @@ def build_scene_visual_plan(
             visual_bible.style_bible.rendering_prompt,
             visual_bible.style_bible.composition_prompt,
             visual_bible.style_bible.background_prompt,
-            _ROOM_SCENE_COMPOSITION_LOCK,
+            _STORY_SCENE_COMPOSITION_LOCK,
             _anatomy_prompt_hints(scene),
-            _character_identity_prompt(character),
+            *[_character_identity_prompt(c) for c in characters],
             "maintain the same character identity as the generated reference images",
             ", ".join(character.identity_lock_phrases),
+            (
+                "exactly two characters only: young woman main character and young man secondary character, "
+                "emotional distance, the man turns away or stands apart, no romantic hugging, no wedding"
+                if requires_secondary else
+                "one main character only"
+            ),
+            f"detected scene setting: {(scene.scene_setting or 'story setting').replace('_', ' ')}",
+            f"detected scene action: {(scene.scene_action or 'quiet moment').replace('_', ' ')}",
             f"scene emotion: {emotion}",
             f"scene action: {action}",
             f"scene title: {scene.title}",
             f"scene narration: {scene.voice_script}",
             f"primary motif or prop: {scene.primary_motif or 'small symbolic emotional prop'}",
             "complete character visible, character in central safe area, bottom caption lane remains visually calm",
-            "one main character only unless explicitly requested",
         ]
     )
     negative = _join_prompt(
@@ -79,17 +89,17 @@ def build_scene_visual_plan(
     return SceneVisualPlan(
         scene_index=scene.scene_index,
         visual_prompt=prompt,
-        character_ids=[character.character_id],
+        character_ids=character_ids,
         character_reference_ids=[r.reference_id for r in refs],
         previous_scene_reference_path=previous_scene_reference_path,
         action=action,
         emotion_tag=emotion,
         pose_action_description=action,
-        location=", ".join(visual_bible.environment_locks),
+        location=(scene.scene_setting or ", ".join(visual_bible.environment_locks)).replace("_", " "),
         props=[scene.primary_motif] if scene.primary_motif else [],
         continuity_notes="; ".join(visual_bible.continuity_rules),
         negative_prompt=negative,
-        expected_character_count=1,
+        expected_character_count=len(characters),
         expected_object_count=1 if scene.primary_motif else 0,
     )
 
@@ -101,7 +111,7 @@ def repair_prompt(base_prompt: str, failure_reasons: list[str]) -> str:
             base_prompt,
             f"Regenerate the same scene and repair these issues: {reason_text}.",
             "Keep the same character hairstyle, outfit, face shape, palette, and style.",
-            "Complete character visible, medium-wide room composition, character about 35-45 percent of frame height.",
+            "Complete character visible, medium-wide story-setting composition, character about 35-45 percent of frame height.",
             "Preserve the structured shot/body/pose requirements from the original prompt.",
             "No extra limbs. No duplicate head. No text or watermark.",
         ]
@@ -155,7 +165,7 @@ def _anatomy_prompt_hints(scene: Scene) -> str:
     if scene.shot_type in {"close_up", "medium"} or scene.body_visibility in {"upper_body", "waist_up"}:
         parts.append("waist-up framing if cropped, lower body not visible, avoid ambiguous partial legs")
     if scene.shot_type in {"medium", "medium_wide", "wide"}:
-        parts.append("do not crop required body parts in the medium-wide room composition")
+        parts.append("do not crop required body parts in the medium-wide story-setting composition")
     return ", ".join(parts)
 
 

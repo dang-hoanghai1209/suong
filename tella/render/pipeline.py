@@ -199,6 +199,8 @@ async def _render_scene(
     font_file: Path,
     scene_index: int,
     ken_burns_max_scale: float,
+    subtitle_style: str = "",
+    highlight_words: list[str] | None = None,
     channel_name: str | None = None,
     channel_avatar: str | None = None,
 ) -> Path:
@@ -221,6 +223,8 @@ async def _render_scene(
             safe_right=safe_right,
             font_file=font_file,
             out_path=work_dir / f"scene_{scene_index:02d}_overlay.png",
+            subtitle_style=subtitle_style,
+            highlight_words=highlight_words or [],
             channel_name=channel_name,
             channel_avatar=channel_avatar,
         )
@@ -468,6 +472,19 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
             0.1,
             1.5,
         )
+    elif plan.theme == "minimalist_symbolic_reel":
+        ken_burns_max_scale = _env_float(
+            "TELLA_SYMBOLIC_ZOOM_MAX",
+            min(1.04, max(1.02, ken_burns_max_scale)),
+            1.02,
+            1.05,
+        )
+        xfade_duration = _env_float(
+            "TELLA_SYMBOLIC_XFADE_DURATION",
+            0.2,
+            0.15,
+            0.25,
+        )
     use_crossfade = theme_spec.transition.strip().lower() == "crossfade"
 
     # Channel brand row — shown on every scene unless demo mode / blank.
@@ -500,7 +517,7 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
         asset_path = job_dir / scene.image_filenames[0]
         out_mp4 = work_dir / f"scene_{scene.scene_index:02d}.mp4"
 
-        title_lines = [] if plan.theme == "minimalist_emotional" else wrap(
+        title_lines = [] if plan.theme in {"minimalist_emotional", "minimalist_symbolic_reel"} else wrap(
             scene.title, title_cpl, max_lines=TITLE_MAX_LINES
         )
         caption_lines = wrap(scene.voice_script, caption_cpl, max_lines=CAPTION_MAX_LINES)
@@ -523,6 +540,8 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
             font_file=font_file,
             scene_index=scene.scene_index,
             ken_burns_max_scale=ken_burns_max_scale,
+            subtitle_style=plan.subtitle_style,
+            highlight_words=scene.subtitle_highlight_words,
             channel_name=brand_name or None,
             channel_avatar=brand_avatar or None,
         )

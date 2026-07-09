@@ -22,6 +22,17 @@ def build_visual_bible(plan: TellaScenePlan) -> VisualBible:
     """
     source_text = _source_text(plan)
     character = _build_character_spec(source_text)
+    character_specs = [character]
+    secondary = plan.secondary_character or _find_secondary_character(plan)
+    if secondary is not None:
+        character_specs.append(
+            _character_spec_from_brief(
+                secondary,
+                character_id="male_01",
+                role="secondary_character",
+                gender="young man",
+            )
+        )
     style = StyleBible(
         style_name="minimalist_emotional_reference",
         art_style_prompt=(
@@ -42,16 +53,16 @@ def build_visual_bible(plan: TellaScenePlan) -> VisualBible:
             "heavy texture, no complex rendering"
         ),
         composition_prompt=(
-            "vertical 9:16 medium-wide room composition, complete character visible, "
+            "vertical 9:16 medium-wide story-setting composition, complete character visible, "
             "do not make the character too large, character occupies about 35-45 "
             "percent of frame height, enough negative space around her for emotional "
             "atmosphere, bottom 25 percent calm enough for subtitles"
         ),
         background_prompt=(
-            "complete quiet bedroom scene with soft environmental details: bed on "
-            "one side, window with thin curtains, small bedside table, warm table "
-            "lamp, a few books or folded blanket, soft wall shadows, subtle dust "
-            "or memory particles near the window, muted floor and wall shapes"
+            "complete quiet scene with soft environmental details matching the "
+            "current narration setting: street, bakery, shop interior, room, or "
+            "another explicitly requested place, soft shadows, subtle dust or "
+            "memory particles, muted floor, wall, sidewalk, or shop shapes"
         ),
         motion_prompt="slow gentle visual rhythm, subtle zoom and soft dissolve transitions",
         negative_prompt=_global_negative_prompt(),
@@ -63,16 +74,16 @@ def build_visual_bible(plan: TellaScenePlan) -> VisualBible:
     )
     return VisualBible(
         style_bible=style,
-        character_specs=[character],
+        character_specs=character_specs,
         environment_locks=[
-            "quiet warm taupe bedroom",
-            "bed on one side",
-            "window with thin curtains",
-            "small bedside table with warm table lamp",
-            "a few books or folded blanket",
-            "soft shadows on the wall",
-            "subtle dust or memory particles near the window",
-            "muted floor and wall shapes",
+            "setting must match each scene narration",
+            "quiet street details when the scene is outside",
+            "small warm bakery storefront when the scene notices the bakery",
+            "bakery doorway when the scene enters or exits",
+            "glass display counter with cakes when the scene chooses cake",
+            "soft shadows in the current location",
+            "subtle dust or memory particles in warm light",
+            "muted floor, wall, sidewalk, or shop shapes",
             "consistent calm lighting",
         ],
         palette_locks=[
@@ -88,7 +99,7 @@ def build_visual_bible(plan: TellaScenePlan) -> VisualBible:
             "leave negative space around the character",
             "layered composition: foreground curtain edge or soft shadow",
             "middle ground: the young woman",
-            "background: bed, window, lamp, wall, muted room details",
+            "background: details from the current scene setting",
             "complete emotional illustration scene, not only a character portrait",
             "caption-safe lower area",
             "consistent scale across scenes",
@@ -149,7 +160,7 @@ def _build_character_spec(text: str) -> CharacterSpec:
         hair=hair,
         face="soft round face, small expressive eyes, subtle eyebrows, gentle emotional expression",
         outfit=outfit,
-        palette="warm muted earthy colors, dark hair, mustard brown outfit, taupe bedroom background",
+        palette="warm muted earthy colors, dark hair, mustard brown outfit, muted story-setting background",
         accessories=[],
         emotional_range=["tired", "sad", "calm", "gentle smile", "hopeful", "relieved"],
         identity_lock_phrases=[
@@ -171,6 +182,48 @@ def _build_character_spec(text: str) -> CharacterSpec:
             "Use this as a job-scoped character bible. The character should feel "
             "like the same person across every scene even when pose and emotion change."
         ),
+    )
+
+
+def _find_secondary_character(plan: TellaScenePlan):
+    for character in plan.characters:
+        key = f"{character.name} {character.identity}".lower()
+        if "man" in key or "male" in key or "boy" in key:
+            return character
+    return None
+
+
+def _character_spec_from_brief(
+    brief,
+    *,
+    character_id: str,
+    role: str,
+    gender: str,
+) -> CharacterSpec:
+    return CharacterSpec(
+        character_id=character_id,
+        role=role,
+        gender_or_presentation=gender,
+        age_style="young adult",
+        body_style="natural simple proportions, complete figure readable",
+        hair="short dark hair",
+        face="soft understated face, calm distant expression",
+        outfit="muted brown simple shirt and dark trousers",
+        palette="warm muted earthy colors, dark hair, muted brown clothing",
+        accessories=[],
+        emotional_range=["distant", "quiet", "turned away", "leaving"],
+        identity_lock_phrases=[
+            brief.identity,
+            "same young man character when requested",
+            "same muted clothing",
+        ],
+        negative_identity_phrases=[
+            "no extra characters beyond the requested cast",
+            "no romantic hugging",
+            "no wedding scene",
+            "no malformed anatomy",
+        ],
+        consistency_notes="Secondary character appears only in scenes that explicitly request him.",
     )
 
 

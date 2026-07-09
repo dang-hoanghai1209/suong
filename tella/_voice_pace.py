@@ -10,6 +10,7 @@ Three presets:
   Name         Edge rate   Google rate     When
   ===========  ==========  ==============  ==================================
   ``slow``     ``-10%``    ``0.90``        bedtime kids stories / parable / mindfulness
+  ``minimalist_emotional`` theme default uses ``-3%`` for a softer but less broken read.
   ``medium``   ``0%``      ``1.00``        default narrative pace
   ``fast``     ``+15%``    ``1.15``        energetic, urgent, quiz-style
   ===========  ==========  ==============  ==================================
@@ -24,7 +25,7 @@ is given):
   ``cinematic``    ``medium``
   ``playful``      ``slow``
   ``mindfulness``  ``slow``
-  ``minimalist_emotional`` ``slow``
+  ``minimalist_emotional`` ``slow`` at ``-3%``
   ===============  ==============
 
 Power user override: any ``"[+-]\\d{1,3}%"`` string passed via
@@ -47,6 +48,8 @@ class VoicePace:
 
 
 SLOW = VoicePace(name="slow", edge_rate="-10%", google_rate=0.90)
+EMOTIONAL_SLOW = VoicePace(name="slow", edge_rate="-3%", google_rate=0.97)
+SYMBOLIC_SLOW = VoicePace(name="slow", edge_rate="-7%", google_rate=0.93)
 MEDIUM = VoicePace(name="medium", edge_rate="0%", google_rate=1.00)
 FAST = VoicePace(name="fast", edge_rate="+15%", google_rate=1.15)
 
@@ -63,7 +66,8 @@ THEME_DEFAULT_PACE: dict[str, VoicePace] = {
     # Was 'fast' originally for comedy/whimsy but those are edge cases now.
     "playful": SLOW,
     "mindfulness": SLOW,
-    "minimalist_emotional": SLOW,
+    "minimalist_emotional": EMOTIONAL_SLOW,
+    "minimalist_symbolic_reel": SYMBOLIC_SLOW,
 }
 
 # Themes Tella ships with — exported for the wizard's validation step.
@@ -127,10 +131,12 @@ def _custom_to_pace(edge_rate: str) -> VoicePace:
 
 __all__ = [
     "FAST",
+    "EMOTIONAL_SLOW",
     "KNOWN_THEMES",
     "MEDIUM",
     "PRESETS",
     "SLOW",
+    "SYMBOLIC_SLOW",
     "THEME_DEFAULT_PACE",
     "VoicePace",
     "default_pace_for_theme",

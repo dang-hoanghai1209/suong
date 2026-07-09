@@ -1,0 +1,21 @@
+{
+  "name": "minimalist_symbolic_reel",
+  "display_name": "Minimalist Symbolic Reel",
+  "description": "Short emotional symbolic reels with plain taupe backgrounds, hand-drawn doodle metaphors, continuous narration, minimal captions, and very slow static-image motion.",
+  "image_style_suffix": ", minimalist hand-drawn emotional doodle illustration, warm muted taupe background, simple expressive character or symbolic object, soft rough pencil lines, flat muted earthy colors, taupe brown muted red mustard gray palette, centered composition, lots of negative space, gentle melancholic mood, symbolic plain-background composition, no text, no watermark, no realistic rendering, no 3D, no anime, no complex background, no cinematic lighting, no detailed room background",
+  "color_palette": {
+    "primary": "#7a5f51",
+    "accent": "#b7634e",
+    "bg": "#b49a86",
+    "text": "#fff7ed"
+  },
+  "font_family": "sans-serif",
+  "voice_pace_default": "slow",
+  "voice_gender_default": "female",
+  "transition": "crossfade",
+  "ken_burns": {
+    "start_scale": 1.0,
+    "end_scale": 1.04,
+    "easing": "linear"
+  }
+}

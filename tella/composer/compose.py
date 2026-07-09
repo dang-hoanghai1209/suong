@@ -64,6 +64,7 @@ def compose_timing(plan: TellaScenePlan) -> TellaScenePlan:
             "start": scene.start,
             "end": round(scene.start + scene.duration, 2),
             "text": scene.voice_script,
+            "highlight_words": scene.subtitle_highlight_words,
         }
         for scene in body_scenes
     ]

@@ -27,6 +27,11 @@ from tella._gemini import (
     parse_json_loose,
 )
 from tella._voice_pace import VoicePace, default_pace_for_theme
+from tella.planner.adherence import (
+    apply_exact_script_to_plan,
+    enforce_minimalist_cast_adherence,
+    refresh_cast_prompt_metadata,
+)
 from tella.planner.character_lock import apply_lock
 from tella.planner.models import (
     DurationMode,
@@ -41,6 +46,7 @@ from tella.planner.prompts import (
     build_user_script_system_prompt,
     build_user_script_user_prompt,
 )
+from tella.planner.symbolic_reel import enforce_symbolic_reel_plan
 from tella.planner.voices import edge_voice_for
 from tella.themes.loader import load_theme
 
@@ -220,9 +226,13 @@ async def plan_story(
             user_prompt = _build_repair_prompt(topic_norm, last_raw, exc)
             continue
 
+        enforce_minimalist_cast_adherence(plan, topic_norm)
+
         # Character lock: bake identity + setting + style suffix into each
         # scene's image_prompt (ai_image mode only).
         apply_lock(plan, style_suffix=theme_spec.image_style_suffix)
+        enforce_symbolic_reel_plan(plan)
+        refresh_cast_prompt_metadata(plan)
 
         if attempt > 1:
             logger.info(
@@ -393,7 +403,11 @@ async def plan_story_from_script(
             user_prompt = _build_repair_prompt(script_norm[:200], last_raw, exc)
             continue
 
+        apply_exact_script_to_plan(plan, script_norm)
+        enforce_minimalist_cast_adherence(plan, script_norm)
         apply_lock(plan, style_suffix=theme_spec.image_style_suffix)
+        enforce_symbolic_reel_plan(plan)
+        refresh_cast_prompt_metadata(plan)
         logger.info(
             "plan_story_from_script succeeded (%d scenes, attempt %d)",
             len(plan.scenes), attempt,
