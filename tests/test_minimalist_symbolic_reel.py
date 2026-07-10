@@ -20,6 +20,7 @@ from tella.planner.symbolic_reel import (
     enforce_symbolic_reel_plan,
 )
 from tella.render.text_overlay import (
+    _REEL_MINIMAL_CAPTION_CENTER_Y_RATIO,
     _REEL_MINIMAL_HIGHLIGHT_COLOR,
     _REEL_MINIMAL_SHADOW_COLOR,
     _REEL_MINIMAL_STROKE_WIDTH,
@@ -183,10 +184,12 @@ def test_symbolic_reel_enforces_scene_fields_and_prompt_style():
         prompt = scene.image_prompt.lower()
         assert "minimalist hand-drawn emotional doodle illustration" in prompt
         assert "dark warm taupe background" in prompt
+        assert "deeper and less bright than beige or cream" in prompt
         assert "warm dusk-like muted brown-gray backdrop" in prompt
+        assert "not muddy" in prompt
         assert "low visual clutter" in prompt
         assert "consistent earthy palette" in prompt
-        assert "stronger emotional depth" in prompt
+        assert "calm melancholic emotional depth" in prompt
         assert "soft rough pencil lines" in prompt
         assert "flat muted earthy colors" in prompt
         assert "centered composition" in prompt
@@ -206,17 +209,20 @@ def test_symbolic_reel_enforces_scene_fields_and_prompt_style():
 def test_symbolic_theme_uses_dark_warm_palette_with_readable_subtitles():
     theme = load_theme("minimalist_symbolic_reel")
 
-    assert theme.color_palette.bg == "#5b514d"
+    assert theme.color_palette.bg == "#504845"
     assert theme.color_palette.text == "#fff7ed"
     assert theme.color_palette.accent == "#e2a06f"
     assert "dark warm taupe background" in theme.image_style_suffix
+    assert "deeper and less bright than beige or cream" in theme.image_style_suffix
     assert "warm dusk-like muted brown-gray backdrop" in theme.image_style_suffix
+    assert "not muddy" in theme.image_style_suffix
     assert "not black, not cold gray" in theme.image_style_suffix
 
     assert _REEL_MINIMAL_TEXT_COLOR == (255, 247, 237, 255)
     assert _REEL_MINIMAL_HIGHLIGHT_COLOR == (226, 160, 111, 255)
     assert _REEL_MINIMAL_SHADOW_COLOR[3] >= 200
     assert _REEL_MINIMAL_STROKE_WIDTH == 1
+    assert 0.82 <= _REEL_MINIMAL_CAPTION_CENTER_Y_RATIO <= 0.86
 
 
 def test_symbolic_scenes_inherit_one_global_visual_identity_profile():

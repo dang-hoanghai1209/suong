@@ -52,6 +52,7 @@ _REEL_MINIMAL_SHADOW_COLOR = (38, 29, 26, 210)
 _REEL_MINIMAL_STROKE_COLOR = (48, 36, 31, 230)
 _REEL_MINIMAL_SHADOW_OFFSET = 3
 _REEL_MINIMAL_STROKE_WIDTH = 1
+_REEL_MINIMAL_CAPTION_CENTER_Y_RATIO = 0.84
 
 
 def _measure(font: ImageFont.FreeTypeFont, text: str) -> tuple[int, int]:
@@ -193,9 +194,11 @@ def _draw_reel_caption(
     phrase_word_keys = _phrase_word_highlight_keys(caption, highlight_words)
     line_heights = [_measure(font, line)[1] for line in lines]
     block_h = sum(line_heights) + LINE_SPACING * max(0, len(lines) - 1)
-    lower_middle_y = int(canvas_h * 0.68)
-    bottom_anchor_y = safe_bottom - CAPTION_BOTTOM_PADDING - block_h
-    cur_y = max(safe_top, min(lower_middle_y, bottom_anchor_y))
+    target_top_y = int(
+        canvas_h * _REEL_MINIMAL_CAPTION_CENTER_Y_RATIO - block_h / 2
+    )
+    bottom_anchor_y = safe_bottom - block_h
+    cur_y = max(safe_top, min(target_top_y, bottom_anchor_y))
 
     for line, line_h in zip(lines, line_heights, strict=True):
         tokens = re.findall(r"\S+|\s+", line)

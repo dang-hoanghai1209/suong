@@ -104,8 +104,9 @@ _THEME_TONE: dict[Theme, str] = {
         "QUIET symbolic short-form narrator, calm and melancholic, second-person "
         "OK. This is NOT an action-driven story scene sequence. Write a "
         "minimalist symbolic reel: each scene represents one emotional idea or "
-        "metaphor, with simple doodle characters or symbolic objects on a warm "
-        "muted taupe background. Do not require strict character continuity "
+        "metaphor, with simple doodle characters or symbolic objects on a "
+        "moderately dark warm taupe and muted brown-gray background, deeper and "
+        "less bright than beige but not black or muddy. Do not require strict character continuity "
         "across every scene. Prefer plain-background emotional metaphors over "
         "literal actions or detailed settings. Imagery: rough soft pencil lines, "
         "flat earthy colors, centered composition, lots of negative space, very "
@@ -445,10 +446,11 @@ Per scene:
   - image_prompt must describe a simple symbolic doodle illustration, not a
     detailed room or cinematic scene.
   - Required style phrase in every image_prompt:
-    "minimalist hand-drawn emotional doodle illustration, warm muted taupe
-    background, simple expressive character or symbolic object, soft rough
-    pencil lines, flat muted earthy colors, centered composition, lots of
-    negative space, no text, no watermark, no realistic rendering, no 3D, no
+    "minimalist hand-drawn emotional doodle illustration, moderately dark warm
+    taupe and muted brown-gray background, deeper and less bright than beige or
+    cream but not black or muddy, simple expressive character or symbolic object,
+    soft rough pencil lines, flat muted earthy colors, centered composition, lots
+    of negative space, no text, no watermark, no realistic rendering, no 3D, no
     anime, no complex background".
   - Use a bedroom, street, bakery, window, curtain, bed, or room only when the
     user's script explicitly names that place or object.

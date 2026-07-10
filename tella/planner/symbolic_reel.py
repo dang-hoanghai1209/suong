@@ -20,14 +20,15 @@ _OUTFIT_STYLE_FAMILY = "simple_timeless_muted_earth_clothing"
 _SUBJECT_SCALE_PROFILE = "small_to_medium_subject_with_negative_space"
 
 _SYMBOLIC_STYLE = (
-    "minimalist hand-drawn emotional doodle illustration, dark warm taupe "
-    "background, warm dusk-like muted brown-gray backdrop, soft low-key ambient "
-    "light, simple expressive character or symbolic object, soft rough pencil "
+    "minimalist hand-drawn emotional doodle illustration, moderately dark warm "
+    "taupe background, deeper and less bright than beige or cream, warm dusk-like "
+    "muted brown-gray backdrop, soft low-key ambient light with readable midtone "
+    "contrast, simple expressive character or symbolic object, soft rough pencil "
     "lines, flat muted earthy colors, consistent earthy palette, centered "
-    "composition, lots of negative space, low visual clutter, stronger emotional "
-    "depth, clear tonal contrast, gentle melancholic mood, not black, not cold "
-    "gray, no text, no watermark, no realistic rendering, no 3D, no anime, no "
-    "complex background"
+    "composition, lots of negative space, low visual clutter, calm melancholic "
+    "emotional depth, not black, not cold gray, not muddy, no pale cream or bright "
+    "beige background, no text, no watermark, no realistic rendering, no 3D, no "
+    "anime, no complex background"
 )
 
 _SYMBOLIC_VISUALS = (
