@@ -268,6 +268,82 @@ def test_exact_unrecognized_effort_aliases_use_unseen_effort_template():
     assert scene.cast_archetype == "adult_woman_or_man"
 
 
+def test_efforts_going_unnoticed_repairs_exact_dry_run_record_idempotently():
+    plan, scene = _preflight_scene(
+        "Efforts going unnoticed.",
+        "A small plant.",
+        metaphor="Unseen growth.",
+        cast_archetype="symbolic_object",
+        main_character_or_object="Plant",
+    )
+
+    expected_visual = (
+        "one adult carrying a visible stack of heavy boxes or stones while at "
+        "least two nearby adults walk past without noticing"
+    )
+    expected_object = "adult carrying visible weight while others pass"
+    first_state = (
+        scene.symbolic_visual,
+        scene.main_character_or_object,
+        scene.cast_archetype,
+        scene.symbolic_preflight_status,
+        list(scene.symbolic_preflight_failure_reasons),
+        scene.symbolic_preflight_repaired,
+    )
+    assert scene.symbolic_visual == expected_visual
+    assert scene.main_character_or_object == expected_object
+    assert scene.cast_archetype == "adult_woman_or_man"
+
+    enforce_symbolic_reel_plan(plan)
+
+    assert (
+        scene.symbolic_visual,
+        scene.main_character_or_object,
+        scene.cast_archetype,
+        scene.symbolic_preflight_status,
+        scene.symbolic_preflight_failure_reasons,
+        scene.symbolic_preflight_repaired,
+    ) == first_state
+
+
+def test_isolation_in_crowd_repairs_exact_dry_run_record_idempotently():
+    plan, scene = _preflight_scene(
+        "Isolation in a crowd.",
+        "One figure apart from many.",
+        metaphor="Loneliness.",
+        cast_archetype="adult_woman_or_man",
+        main_character_or_object="Isolated figure",
+    )
+
+    expected_visual = (
+        "one isolated adult spatially separated from one clearly visible group of "
+        "at least three adults"
+    )
+    expected_object = "isolated adult and a group of at least three adults"
+    first_state = (
+        scene.symbolic_visual,
+        scene.main_character_or_object,
+        scene.cast_archetype,
+        scene.symbolic_preflight_status,
+        list(scene.symbolic_preflight_failure_reasons),
+        scene.symbolic_preflight_repaired,
+    )
+    assert scene.symbolic_visual == expected_visual
+    assert scene.main_character_or_object == expected_object
+    assert scene.cast_archetype == "adult_woman_or_man"
+
+    enforce_symbolic_reel_plan(plan)
+
+    assert (
+        scene.symbolic_visual,
+        scene.main_character_or_object,
+        scene.cast_archetype,
+        scene.symbolic_preflight_status,
+        scene.symbolic_preflight_failure_reasons,
+        scene.symbolic_preflight_repaired,
+    ) == first_state
+
+
 def test_exact_nighttime_aliases_repair_object_only_anchor():
     _, scene = _preflight_scene(
         "Nighttime heaviness",
@@ -288,14 +364,14 @@ def test_exact_nighttime_aliases_repair_object_only_anchor():
 
 def test_latest_eight_scene_plan_uses_specific_repairs():
     scene_values = (
-        ("Carrying hidden emotional burdens", "Burden of silence", "A person carrying a stone"),
-        ("The facade of being okay", "Hiding exhaustion", "A simple mask"),
-        ("Feeling measured against others", "Comparison", "Two silhouettes"),
-        ("Unrecognized effort", "Invisible growth", "A small plant in shadows"),
-        ("Loneliness in a crowd", "Isolation", "Many dots"),
-        ("Nighttime heaviness", "Weight of night", "An anchor"),
-        ("Loss of words through silence", "Silence", "A closed mouth"),
-        ("The relief of letting go", "Release", "A balloon drifting away"),
+        ("Carrying hidden emotional burdens", "Burden of silence", "A person carrying a stone", "A person carrying a stone"),
+        ("The facade of being okay", "Hiding exhaustion", "A simple mask", "A simple mask"),
+        ("Feeling measured against others", "Comparison", "Two silhouettes", "Two silhouettes"),
+        ("Efforts going unnoticed.", "Unseen growth.", "A small plant.", "Plant"),
+        ("Isolation in a crowd.", "Loneliness.", "One figure apart from many.", "Isolated figure"),
+        ("Nighttime heaviness", "Weight of night", "An anchor", "An anchor"),
+        ("Loss of words through silence", "Silence", "A closed mouth", "A closed mouth"),
+        ("The relief of letting go", "Release", "A balloon drifting away", "A balloon drifting away"),
     )
     scenes = [
         Scene(
@@ -305,10 +381,13 @@ def test_latest_eight_scene_plan_uses_specific_repairs():
             scene_meaning=meaning,
             emotional_metaphor=metaphor,
             symbolic_visual=visual,
-            main_character_or_object=visual,
+            main_character_or_object=main_character_or_object,
             cast_archetype="symbolic_object" if index == 6 else "",
         )
-        for index, (meaning, metaphor, visual) in enumerate(scene_values, start=1)
+        for index, (meaning, metaphor, visual, main_character_or_object) in enumerate(
+            scene_values,
+            start=1,
+        )
     ]
     plan = TellaScenePlan(
         title="Latest symbolic dry-run regression",
@@ -332,8 +411,24 @@ def test_latest_eight_scene_plan_uses_specific_repairs():
         "one adult inside a quiet circle",
         "one adult placing a stone down",
     )
-    for scene, expected_start in zip(plan.scenes, expected_visual_starts, strict=True):
+    expected_objects = (
+        "adult carrying a heavy cracked stone",
+        "adult figure with calm smile and hidden burden",
+        "two adult figures and a visible comparison cue",
+        "adult carrying visible weight while others pass",
+        "isolated adult and a group of at least three adults",
+        "adult beneath a dim moon with a nearby heavy stone",
+        "adult in a quiet circle with empty speech bubbles",
+        "adult putting down a stone or releasing a bird",
+    )
+    for scene, expected_start, expected_object in zip(
+        plan.scenes,
+        expected_visual_starts,
+        expected_objects,
+        strict=True,
+    ):
         assert scene.symbolic_visual.startswith(expected_start)
+        assert scene.main_character_or_object == expected_object
         assert "paper heart or stone" not in scene.symbolic_visual.lower()
         assert scene.cast_archetype == "adult_woman_or_man"
 
