@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 
 from tella.planner.models import TellaScenePlan
+from tella.subtitles import sanitize_highlight_words, subtitle_text_for_style
 
 logger = logging.getLogger("tella.composer.compose")
 
@@ -63,8 +64,14 @@ def compose_timing(plan: TellaScenePlan) -> TellaScenePlan:
             "scene_index": scene.scene_index,
             "start": scene.start,
             "end": round(scene.start + scene.duration, 2),
-            "text": scene.voice_script,
-            "highlight_words": scene.subtitle_highlight_words,
+            "text": subtitle_text_for_style(
+                scene.voice_script,
+                plan.subtitle_style,
+            ).text,
+            "highlight_words": sanitize_highlight_words(
+                scene.subtitle_highlight_words,
+                plan.subtitle_style,
+            ),
         }
         for scene in body_scenes
     ]

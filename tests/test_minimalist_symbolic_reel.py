@@ -222,7 +222,7 @@ def test_symbolic_theme_uses_dark_warm_palette_with_readable_subtitles():
     assert _REEL_MINIMAL_HIGHLIGHT_COLOR == (226, 160, 111, 255)
     assert _REEL_MINIMAL_SHADOW_COLOR[3] >= 200
     assert _REEL_MINIMAL_STROKE_WIDTH == 1
-    assert 0.82 <= _REEL_MINIMAL_CAPTION_CENTER_Y_RATIO <= 0.86
+    assert _REEL_MINIMAL_CAPTION_CENTER_Y_RATIO == pytest.approx(0.79)
 
 
 def test_symbolic_scenes_inherit_one_global_visual_identity_profile():

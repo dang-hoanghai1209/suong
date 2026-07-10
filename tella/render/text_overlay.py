@@ -28,6 +28,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from tella.subtitles import sanitize_highlight_words, subtitle_text_for_style
+
 logger = logging.getLogger("tella.render.text_overlay")
 
 # Mirror the constants from pipeline.py (kept in sync so behaviour matches
@@ -52,7 +54,9 @@ _REEL_MINIMAL_SHADOW_COLOR = (38, 29, 26, 210)
 _REEL_MINIMAL_STROKE_COLOR = (48, 36, 31, 230)
 _REEL_MINIMAL_SHADOW_OFFSET = 3
 _REEL_MINIMAL_STROKE_WIDTH = 1
-_REEL_MINIMAL_CAPTION_CENTER_Y_RATIO = 0.84
+_REEL_MINIMAL_CAPTION_CENTER_Y_RATIO = 0.79
+_REEL_MINIMAL_CAPTION_SAFE_TOP_RATIO = 0.72
+_REEL_MINIMAL_CAPTION_SAFE_BOTTOM_RATIO = 0.84
 
 
 def _measure(font: ImageFont.FreeTypeFont, text: str) -> tuple[int, int]:
@@ -182,6 +186,8 @@ def _draw_reel_caption(
     wrap_w: int,
     highlight_words: list[str],
 ) -> None:
+    caption = subtitle_text_for_style(caption, "reel_minimal").text
+    highlight_words = sanitize_highlight_words(highlight_words, "reel_minimal")
     lines = _wrap_pixel(caption, font, wrap_w, 2)
     if not lines:
         return
@@ -194,11 +200,12 @@ def _draw_reel_caption(
     phrase_word_keys = _phrase_word_highlight_keys(caption, highlight_words)
     line_heights = [_measure(font, line)[1] for line in lines]
     block_h = sum(line_heights) + LINE_SPACING * max(0, len(lines) - 1)
-    target_top_y = int(
-        canvas_h * _REEL_MINIMAL_CAPTION_CENTER_Y_RATIO - block_h / 2
+    cur_y = _reel_minimal_caption_top_y(
+        canvas_h=canvas_h,
+        block_h=block_h,
+        safe_top=safe_top,
+        safe_bottom=safe_bottom,
     )
-    bottom_anchor_y = safe_bottom - block_h
-    cur_y = max(safe_top, min(target_top_y, bottom_anchor_y))
 
     for line, line_h in zip(lines, line_heights, strict=True):
         tokens = re.findall(r"\S+|\s+", line)
@@ -240,6 +247,24 @@ def _draw_reel_caption(
             )
             cur_x += token_w
         cur_y += line_h + LINE_SPACING
+
+
+def _reel_minimal_caption_top_y(
+    *,
+    canvas_h: int,
+    block_h: int,
+    safe_top: int,
+    safe_bottom: int,
+) -> int:
+    preferred_center = canvas_h * _REEL_MINIMAL_CAPTION_CENTER_Y_RATIO
+    region_top = max(safe_top, int(canvas_h * _REEL_MINIMAL_CAPTION_SAFE_TOP_RATIO))
+    region_bottom = min(
+        safe_bottom,
+        int(canvas_h * _REEL_MINIMAL_CAPTION_SAFE_BOTTOM_RATIO),
+    )
+    preferred_top = int(round(preferred_center - block_h / 2))
+    latest_top = max(region_top, region_bottom - block_h)
+    return max(region_top, min(preferred_top, latest_top))
 
 
 def _highlight_token_indexes(tokens: list[str], highlight_words: list[str]) -> set[int]:

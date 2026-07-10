@@ -31,6 +31,7 @@ Font: Windows-friendly default (Arial). Override via env
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -43,6 +44,7 @@ from tella.composer.safe_zone import render_dims_for, safe_zone_for
 from tella.composer.text_wrap import chars_per_line, wrap
 from tella.planner.models import TellaScenePlan
 from tella.render.text_overlay import render_overlay_png
+from tella.subtitles import sanitize_highlight_words, subtitle_text_for_style
 
 logger = logging.getLogger("tella.render.pipeline")
 
@@ -520,7 +522,21 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
         title_lines = [] if plan.theme in {"minimalist_emotional", "minimalist_symbolic_reel"} else wrap(
             scene.title, title_cpl, max_lines=TITLE_MAX_LINES
         )
-        caption_lines = wrap(scene.voice_script, caption_cpl, max_lines=CAPTION_MAX_LINES)
+        caption_result = subtitle_text_for_style(
+            scene.voice_script,
+            plan.subtitle_style,
+        )
+        if caption_result.removed_codepoints:
+            logger.info(
+                "subtitle text sanitized scene=%02d removed_codepoints=%s",
+                scene.scene_index,
+                json.dumps(list(caption_result.removed_codepoints)),
+            )
+        caption_lines = wrap(
+            caption_result.text,
+            caption_cpl,
+            max_lines=CAPTION_MAX_LINES,
+        )
         title_text = "\n".join(title_lines) if title_lines else None
         caption_text = "\n".join(caption_lines) if caption_lines else None
 
@@ -541,7 +557,10 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
             scene_index=scene.scene_index,
             ken_burns_max_scale=ken_burns_max_scale,
             subtitle_style=plan.subtitle_style,
-            highlight_words=scene.subtitle_highlight_words,
+            highlight_words=sanitize_highlight_words(
+                scene.subtitle_highlight_words,
+                plan.subtitle_style,
+            ),
             channel_name=brand_name or None,
             channel_avatar=brand_avatar or None,
         )
