@@ -2,15 +2,21 @@ from tella.planner.models import Scene, TellaScenePlan
 from tella.planner.symbolic_reel import enforce_symbolic_reel_plan
 
 
-def _preflight_scene(meaning: str, visual: str) -> tuple[TellaScenePlan, Scene]:
+def _preflight_scene(
+    meaning: str,
+    visual: str,
+    *,
+    voice_script: str | None = None,
+    metaphor: str | None = None,
+) -> tuple[TellaScenePlan, Scene]:
     scenes = [
         Scene(
             scene_index=1,
             title="Preflight target",
-            voice_script=meaning,
+            voice_script=voice_script or meaning,
             scene_meaning=meaning,
             symbolic_visual=visual,
-            emotional_metaphor=meaning,
+            emotional_metaphor=metaphor or meaning,
             main_character_or_object=visual,
         ),
         Scene(
@@ -56,7 +62,7 @@ def test_simple_mask_is_repaired_for_hidden_hurt_scene():
     assert scene.symbolic_preflight_repaired is True
     assert scene.symbolic_preflight_status == "repaired"
     assert "small calm smile" in visual
-    assert "heavy dark cloud or cracked shape" in visual
+    assert "dark cracked shape or heavy cloud" in visual
     assert "no mask" in visual
     assert plan.symbolic_preflight_repaired is True
     assert plan.symbolic_preflight_original_visual["1"] == "A simple mask"
@@ -70,7 +76,8 @@ def test_two_silhouettes_are_repaired_for_comparison_scene():
 
     visual = scene.symbolic_visual.lower()
     assert "two clearly drawn adult figures" in visual
-    assert "unequal measuring marks or a balance scale" in visual
+    assert "unequal measuring marks" in visual
+    assert "balance scale" in visual
     assert "no black silhouettes" in visual
     assert "silhouette_visual" in scene.symbolic_preflight_failure_reasons
 
@@ -82,8 +89,8 @@ def test_plant_in_shadow_is_repaired_for_unseen_effort_scene():
     )
 
     visual = scene.symbolic_visual.lower()
-    assert "adult carrying visible boxes, stones" in visual
-    assert "nearby adult figures pass without noticing" in visual
+    assert "adult carrying a visible stack of heavy boxes, stones" in visual
+    assert "at least two or three nearby adults walk past" in visual
     assert "not only a plant in shadow" in visual
 
 
@@ -94,8 +101,8 @@ def test_heavy_moon_is_repaired_for_nighttime_sadness_scene():
     )
 
     visual = scene.symbolic_visual.lower()
-    assert "adult sitting alone under a dim moon" in visual
-    assert "concrete stone weight nearby" in visual
+    assert "adult sitting alone beneath a large dim moon" in visual
+    assert "concrete stone weight resting nearby" in visual
     assert "no ghost, creature" in visual
 
 
@@ -121,3 +128,95 @@ def test_human_action_cannot_keep_symbolic_object_cast_archetype():
     assert "adult placing a stone down" in scene.symbolic_visual.lower()
     assert "opening both hands" in scene.symbolic_visual.lower()
     assert scene.symbolic_preflight_repaired is True
+
+
+def test_heavy_stone_burden_is_not_reclassified_as_silence():
+    _, scene = _preflight_scene(
+        "Carrying hidden emotional burdens",
+        "A person carrying a heavy stone",
+        voice_script="Có những nỗi buồn, mình không nói ra, nhưng vẫn mang theo rất lâu.",
+        metaphor="Burden of silence",
+    )
+
+    assert scene.symbolic_visual == "A person carrying a heavy stone"
+    assert scene.symbolic_preflight_status == "passed"
+    assert scene.symbolic_preflight_repaired is False
+    assert scene.cast_archetype == "adult_woman_or_man"
+    assert not any("silence" in reason for reason in scene.symbolic_preflight_failure_reasons)
+    assert "quiet circle" not in scene.image_prompt.lower()
+
+
+def test_many_dots_are_repaired_to_visible_adult_group():
+    _, scene = _preflight_scene(
+        "Loneliness in a crowd",
+        "One figure among many dots",
+        metaphor="Isolation despite being surrounded",
+    )
+
+    visual = scene.symbolic_visual.lower()
+    assert "one isolated adult spatially separated" in visual
+    assert "clearly visible group of at least three adults" in visual
+    assert "unreadable_object_only_metaphor" in scene.symbolic_preflight_failure_reasons
+
+
+def test_moon_and_anchor_are_repaired_to_human_nighttime_composition():
+    _, scene = _preflight_scene(
+        "Sadness feels heavier at night",
+        "A moon and anchor",
+        metaphor="Night makes sadness feel heavier",
+    )
+
+    visual = scene.symbolic_visual.lower()
+    assert "adult sitting alone beneath a large dim moon" in visual
+    assert "concrete stone weight resting nearby" in visual
+    assert "no ghost, creature, ocean or ship scene" in visual
+    assert scene.cast_archetype == "adult_woman_or_man"
+
+
+def test_releasing_balloon_or_bird_becomes_human_letting_go_action():
+    for original in ("A balloon drifting away", "A small bird flying away"):
+        _, scene = _preflight_scene("Letting go slowly", original)
+        visual = scene.symbolic_visual.lower()
+        assert "one adult placing a stone down" in visual
+        assert "opening both hands" in visual
+        assert "small bird flies away" in visual
+        assert scene.cast_archetype == "adult_woman_or_man"
+
+
+def test_known_scene_types_never_use_generic_fallback():
+    cases = (
+        ("Trying to appear okay while hurt inside", "A simple mask"),
+        ("Being compared with another person", "Two silhouettes"),
+        ("Effort is unseen", "A plant in shadow"),
+        ("Loneliness in a crowd", "Many dots"),
+        ("Sadness feels heavier at night", "A moon and anchor"),
+        ("Silence is the primary meaning", "A closed mouth"),
+        ("Letting go slowly", "A balloon drifting away"),
+    )
+    generic = "one ordinary adult interacting with one concrete paper heart or stone"
+
+    for meaning, visual in cases:
+        _, scene = _preflight_scene(meaning, visual)
+        assert generic not in scene.symbolic_visual.lower()
+
+
+def test_scene_type_precedence_is_deterministic():
+    plan, scene = _preflight_scene(
+        "Being compared with another person",
+        "A person carrying a heavy stone",
+        voice_script="They remain silent and do not say what they feel.",
+        metaphor="Unequal comparison",
+    )
+    first_visual = scene.symbolic_visual
+    first_reasons = list(scene.symbolic_preflight_failure_reasons)
+
+    enforce_symbolic_reel_plan(plan)
+
+    assert scene.symbolic_visual == first_visual
+    assert scene.symbolic_preflight_failure_reasons == first_reasons
+    primary_reasons = [
+        reason
+        for reason in first_reasons
+        if reason.startswith("scene_type_requires_concrete_composition:")
+    ]
+    assert primary_reasons == ["scene_type_requires_concrete_composition:comparison"]

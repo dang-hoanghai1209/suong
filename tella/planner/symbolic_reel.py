@@ -117,25 +117,31 @@ _EXPLICIT_NON_ADULT_TERMS = (
 )
 
 _PREFLIGHT_REPAIRS = {
+    "burden": (
+        "one adult carrying a large cracked stone on their shoulders, clear "
+        "adult proportions and a readable burden posture"
+    ),
     "hidden_hurt": (
-        "one adult figure with a small calm smile, a heavy dark cloud or cracked "
-        "shape behind the shoulders and chest, no mask"
+        "one adult showing a small calm smile, a dark cracked shape or heavy cloud "
+        "clearly visible behind their shoulders, no mask, no medical imagery"
     ),
     "comparison": (
-        "two clearly drawn adult figures with unequal measuring marks or a balance "
-        "scale and one idealized shadow, no black silhouettes"
+        "two clearly drawn adult figures with unequal measuring marks, a balance "
+        "scale, or another explicit comparison cue, no black silhouettes"
     ),
     "unseen_effort": (
-        "one adult carrying visible boxes, stones, or another clear weight while "
-        "nearby adult figures pass without noticing, not only a plant in shadow"
+        "one adult carrying a visible stack of heavy boxes, stones, or another "
+        "clear burden while at least two or three nearby adults walk past without "
+        "noticing, not only a plant in shadow"
     ),
     "lonely_crowd": (
-        "one isolated adult separated from one clearly visible group of at least "
-        "three adults"
+        "one isolated adult spatially separated from one clearly visible group of "
+        "at least three adults"
     ),
     "nighttime_sadness": (
-        "one adult sitting alone under a dim moon with one concrete stone weight "
-        "nearby, no ghost, creature, or heavy-moon object-only abstraction"
+        "one adult sitting alone beneath a large dim moon with one concrete stone "
+        "weight resting nearby, no ghost, creature, ocean or ship scene, and no "
+        "object-only poster composition"
     ),
     "silence": (
         "one adult inside a quiet circle with crossed-out or empty speech bubbles, "
@@ -148,6 +154,7 @@ _PREFLIGHT_REPAIRS = {
 }
 
 _PREFLIGHT_MAIN_SUBJECTS = {
+    "burden": "adult carrying a large cracked stone on their shoulders",
     "hidden_hurt": "adult figure with calm smile and hidden burden",
     "comparison": "two adult figures and a visible comparison cue",
     "unseen_effort": "adult carrying visible weight while others pass",
@@ -215,21 +222,18 @@ def preflight_symbolic_reel_plan(plan: TellaScenePlan) -> None:
     original_visuals: dict[str, str] = {}
     repaired_any = False
     for scene in (item for item in plan.scenes if item.kind == "scene"):
-        if scene.symbolic_preflight_status == "repaired" and scene.symbolic_preflight_original_visual:
-            original_visuals[str(scene.scene_index)] = scene.symbolic_preflight_original_visual
-            aggregate_reasons.extend(
-                f"scene_{scene.scene_index:02d}:{reason}"
-                for reason in scene.symbolic_preflight_failure_reasons
-            )
-            repaired_any = True
-            continue
-
-        original_visual = (scene.symbolic_visual or "").strip()
+        was_preflight_repaired = scene.symbolic_preflight_repaired
+        original_visual = (
+            scene.symbolic_preflight_original_visual or scene.symbolic_visual or ""
+        ).strip()
         original_visuals[str(scene.scene_index)] = original_visual
         scene.symbolic_preflight_original_visual = original_visual
+        scene.symbolic_visual = original_visual
+        if was_preflight_repaired:
+            scene.main_character_or_object = original_visual[:160]
         scene_type = _symbolic_scene_type(scene)
         reasons = _preflight_risk_reasons(original_visual)
-        if scene_type:
+        if scene_type and _scene_visual_needs_repair(scene_type, original_visual):
             reasons.append(f"scene_type_requires_concrete_composition:{scene_type}")
 
         reasons = _unique_strings(reasons)
@@ -249,6 +253,8 @@ def preflight_symbolic_reel_plan(plan: TellaScenePlan) -> None:
             )
             repaired_any = True
         else:
+            if scene_type:
+                scene.cast_archetype = "adult_woman_or_man"
             scene.symbolic_preflight_status = "passed"
             scene.symbolic_preflight_failure_reasons = []
             scene.symbolic_preflight_repaired = False
@@ -281,18 +287,27 @@ def _reset_symbolic_image_qc(scene) -> None:
 
 
 def _symbolic_scene_type(scene) -> str:
-    key = _ascii_key(
+    primary_key = _ascii_key(
         " ".join(
             part
-            for part in (
-                scene.title,
-                scene.voice_script,
-                scene.scene_meaning,
-                scene.emotional_metaphor,
-            )
+            for part in (scene.scene_meaning, scene.emotional_metaphor)
             if part
         )
     )
+    scene_type = _classify_symbolic_key(primary_key, allow_silence=True)
+    if scene_type:
+        return scene_type
+
+    visual_key = _ascii_key(scene.symbolic_visual)
+    scene_type = _classify_symbolic_key(visual_key, allow_silence=True)
+    if scene_type:
+        return scene_type
+
+    voice_key = _ascii_key(" ".join(part for part in (scene.title, scene.voice_script) if part))
+    return _classify_symbolic_key(voice_key, allow_silence=False)
+
+
+def _classify_symbolic_key(key: str, *, allow_silence: bool) -> str:
     if _contains_any_phrase(
         key,
         (
@@ -315,7 +330,9 @@ def _symbolic_scene_type(scene) -> str:
         key,
         (
             "lonely in a crowd",
+            "loneliness in a crowd",
             "alone in a crowd",
+            "isolation despite being surrounded",
             "co don giua dam dong",
             "mot minh giua dam dong",
         ),
@@ -338,38 +355,140 @@ def _symbolic_scene_type(scene) -> str:
         return "letting_go"
     if _contains_any_phrase(
         key,
+        (
+            "emotional burden",
+            "hidden burden",
+            "burden of silence",
+            "carrying a burden",
+            "carrying hidden",
+            "carry a heavy stone",
+            "carrying a heavy stone",
+            "heavy stone on shoulders",
+            "ganh nang",
+            "mang theo rat lau",
+        ),
+    ):
+        return "burden"
+    if allow_silence and _contains_any_phrase(
+        key,
         ("silence", "silent", "im lang", "khong noi ra"),
     ):
         return "silence"
     return ""
 
 
+def _scene_visual_needs_repair(scene_type: str, visual: str) -> bool:
+    key = _ascii_key(visual)
+    has_human = any(
+        term in f" {key} "
+        for term in (
+            " adult ",
+            " person ",
+            " figure ",
+            " woman ",
+            " man ",
+        )
+    )
+    if scene_type == "burden":
+        return not (
+            has_human
+            and any(term in key for term in ("carry", "carrying", "shoulder"))
+            and any(term in key for term in ("stone", "weight", "burden"))
+        )
+    if scene_type == "hidden_hurt":
+        return not (
+            has_human
+            and "smile" in key
+            and any(term in key for term in ("cloud", "crack"))
+        )
+    if scene_type == "comparison":
+        return not (
+            has_human
+            and any(term in key for term in ("two", "2"))
+            and any(
+                term in key
+                for term in ("measuring", "scale", "comparison", "unequal")
+            )
+        )
+    if scene_type == "unseen_effort":
+        return not (
+            has_human
+            and any(term in key for term in ("carry", "carrying"))
+            and any(term in key for term in ("boxes", "stones", "weight", "burden"))
+            and any(term in key for term in ("nearby", "pass", "not noticing"))
+        )
+    if scene_type == "lonely_crowd":
+        return not (
+            has_human
+            and any(term in key for term in ("group", "crowd", "adults"))
+            and any(term in key for term in ("three", "3"))
+            and any(term in key for term in ("separated", "apart", "isolated"))
+        )
+    if scene_type == "nighttime_sadness":
+        return not (
+            has_human
+            and "sitting" in key
+            and "moon" in key
+            and any(term in key for term in ("stone", "weight"))
+        )
+    if scene_type == "silence":
+        return not (
+            has_human
+            and "circle" in key
+            and any(term in key for term in ("speech bubble", "speech bubbles"))
+        )
+    if scene_type == "letting_go":
+        return not (
+            has_human
+            and any(
+                term in key
+                for term in ("placing a stone", "opening", "open hands", "releasing")
+            )
+            and any(term in key for term in ("bird", "stone"))
+        )
+    return True
+
+
 def _preflight_risk_reasons(visual: str) -> list[str]:
     key = _ascii_key(visual)
+    risk_key = key
+    for allowed_negative in (
+        "no medical mask",
+        "no mask",
+        "no black silhouettes",
+        "no silhouette",
+        "no blob",
+        "no ghost",
+        "no monster",
+        "no mouth or body part close up",
+        "not only a plant in shadow",
+        "no object only poster composition",
+    ):
+        risk_key = risk_key.replace(allowed_negative, "")
     reasons: list[str] = []
-    if "medical mask" in key:
+    if "medical mask" in risk_key:
         reasons.append("medical_mask_visual")
-    elif _contains_term(key, ("mask",)):
+    elif _contains_term(risk_key, ("mask",)):
         reasons.append("ambiguous_mask_visual")
-    if "silhouette" in key:
+    if "silhouette" in risk_key:
         reasons.append("silhouette_visual")
-    if _contains_term(key, ("blob",)):
+    if _contains_term(risk_key, ("blob",)):
         reasons.append("blob_visual")
-    if _contains_term(key, ("ghost",)):
+    if _contains_term(risk_key, ("ghost",)):
         reasons.append("ghost_visual")
-    if _contains_term(key, ("monster",)):
+    if _contains_term(risk_key, ("monster",)):
         reasons.append("monster_visual")
-    if "closed mouth" in key:
+    if "closed mouth" in risk_key:
         reasons.append("closed_mouth_close_up")
-    if "close up" in key and any(
-        part in key
+    if "close up" in risk_key and any(
+        part in risk_key
         for part in ("mouth", "eye", "hand", "arm", "leg", "chest", "body part")
     ):
         reasons.append("body_part_close_up")
-    if any(term in key for term in ("abstract shadow", "vague shadow")):
+    if any(term in risk_key for term in ("abstract shadow", "vague shadow")):
         reasons.append("vague_abstract_shadow")
     if any(
-        term in key
+        term in risk_key
         for term in (
             "object only",
             "abstract object",
@@ -377,7 +496,10 @@ def _preflight_risk_reasons(visual: str) -> list[str]:
             "unreadable object",
             "vague object",
             "plant in shadow",
+            "many dots",
+            "abstract dots",
             "heavy moon",
+            "moon and anchor",
         )
     ):
         reasons.append("unreadable_object_only_metaphor")
@@ -495,8 +617,10 @@ def _symbolic_qc_expectations(scene) -> tuple[list[str], list[str]]:
         key,
         (
             "lonely in a crowd",
+            "loneliness in a crowd",
             "alone in a crowd",
             "lonely among people",
+            "isolation despite being surrounded",
             "co don giua dam dong",
             "mot minh giua dam dong",
         ),

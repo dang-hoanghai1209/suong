@@ -599,4 +599,4 @@ def test_symbolic_dry_run_plan_writes_inspectable_metadata(monkeypatch, tmp_path
     assert first["symbolic_preflight_repaired"] is True
     assert first["symbolic_preflight_original_visual"] == "A simple mask"
     assert "small calm smile" in first["symbolic_visual"].lower()
-    assert "symbolic visual: one adult figure" in first["image_prompt"].lower()
+    assert "symbolic visual: one adult showing a small calm smile" in first["image_prompt"].lower()
