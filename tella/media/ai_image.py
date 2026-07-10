@@ -26,10 +26,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import contextvars
 import logging
 import os
 import random
+import re
 import time
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 
 import httpx
@@ -54,6 +57,9 @@ RETRY_BACKOFF_SECONDS = 2.0
 _MIN_REQUEST_INTERVAL = 0.45
 _throttle_lock = asyncio.Lock()
 _last_request_at = 0.0
+_before_request_hook: contextvars.ContextVar[
+    Callable[[], Awaitable[None]] | None
+] = contextvars.ContextVar("cloudflare_before_request_hook", default=None)
 
 
 class CloudflareAIError(RuntimeError):
@@ -66,11 +72,39 @@ class CloudflareAIError(RuntimeError):
         error_type: str = "unknown",
         status_code: int = 0,
         recoverable: bool = True,
+        policy_code: int = 0,
     ) -> None:
         super().__init__(message)
         self.error_type = error_type
         self.status_code = status_code
         self.recoverable = recoverable
+        self.policy_code = policy_code
+
+
+@contextlib.contextmanager
+def cloudflare_request_hook(
+    hook: Callable[[], Awaitable[None]],
+) -> Iterator[None]:
+    """Install a task-local callback immediately before each CF HTTP request."""
+    token = _before_request_hook.set(hook)
+    try:
+        yield
+    finally:
+        _before_request_hook.reset(token)
+
+
+async def _notify_before_cloudflare_request() -> None:
+    hook = _before_request_hook.get()
+    if hook is not None:
+        await hook()
+
+
+def _cloudflare_policy_code(status_code: int, body: str) -> int:
+    if status_code != 400:
+        return 0
+    if re.search(r'"code"\s*:\s*3030\b', body or ""):
+        return 3030
+    return 3030 if "3030" in (body or "") else 0
 
 
 def classify_cloudflare_error(status_code: int, body: str) -> tuple[str, bool]:
@@ -182,6 +216,7 @@ async def generate_image(
             try:
                 await _throttle()
                 async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+                    await _notify_before_cloudflare_request()
                     resp = await client.post(url, headers=headers, json=payload)
 
                 if resp.status_code == 200:
@@ -227,8 +262,11 @@ async def generate_image(
                     error_type=error_type,
                     status_code=resp.status_code,
                     recoverable=recoverable,
+                    policy_code=_cloudflare_policy_code(resp.status_code, resp.text),
                 )
                 logger.warning("cf-ai attempt %d -> %s", attempt, last_err)
+                if last_err.policy_code == 3030:
+                    raise last_err
                 if resp.status_code == 429:
                     quota_exhausted = True
                     break
@@ -248,6 +286,7 @@ async def generate_image(
             error_type=last_err.error_type,
             status_code=last_err.status_code,
             recoverable=last_err.recoverable,
+            policy_code=last_err.policy_code,
         ) from last_err
     raise CloudflareAIError(
         f"CF AI failed across all {len(creds)} account(s): {last_err}",
@@ -280,6 +319,7 @@ __all__ = [
     "DEFAULT_MODEL",
     "CloudflareAIError",
     "classify_cloudflare_error",
+    "cloudflare_request_hook",
     "generate_image",
     "resolve_all_credentials",
 ]

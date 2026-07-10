@@ -409,6 +409,17 @@ class Scene(BaseModel):
     original_prompt_summary: str = Field("", max_length=500)
     sanitized_prompt_summary: str = Field("", max_length=500)
     content_policy_blocked_count: int = 0
+    provider_prompt_initial: str = Field("", max_length=4000)
+    provider_prompt_initial_hash: str = Field("", max_length=80)
+    provider_prompt_retry: str = Field("", max_length=4000)
+    provider_prompt_retry_hash: str = Field("", max_length=80)
+    provider_prompt_stage_used: str = Field("", max_length=40)
+    content_policy_retry_used: bool = False
+    content_policy_attempt_count: int = 0
+    actual_cloudflare_request_count_for_scene: int = 0
+    last_cloudflare_policy_code: int = 0
+    image_request_budget_max: int = 0
+    image_request_budget_used_at_finish: int = 0
     ai_images_requested: int = 0
     ai_images_generated: int = 0
     ai_images_reused: int = 0
@@ -591,6 +602,8 @@ class TellaScenePlan(BaseModel):
     reused_asset_prompt_hash_mismatch: bool = False
     reuse_mode: str = Field("", max_length=40)
     content_policy_blocked_count: int = 0
+    image_request_budget_max: int = 0
+    image_request_budget_used_at_finish: int = 0
     ai_images_requested: int = 0
     ai_images_generated: int = 0
     ai_images_reused: int = 0

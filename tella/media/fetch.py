@@ -67,6 +67,77 @@ _VIDEO_SEED = 73501
 class _SymbolicQCFailure(RuntimeError):
     pass
 
+
+class AIImageRequestBudgetError(RuntimeError):
+    """Raised before network submission when the run request budget is spent."""
+
+    error_type = "image_request_budget_exhausted"
+    recoverable = False
+
+    def __init__(self, *, used: int, maximum: int) -> None:
+        super().__init__(
+            "AI image request budget exhausted before Cloudflare submission: "
+            f"used={used}, max={maximum}. No additional HTTP request was started."
+        )
+        self.used = used
+        self.maximum = maximum
+
+
+def _provider_prompt_hash(prompt: str) -> str:
+    return hashlib.sha256((prompt or "").encode("utf-8")).hexdigest()[:24]
+
+
+class _CloudflareRequestBudget:
+    def __init__(self, plan: TellaScenePlan, scenes: list, maximum: int | None) -> None:
+        self.plan = plan
+        self.scenes = scenes
+        self.maximum = maximum
+        self.used = 0
+        self._lock = asyncio.Lock()
+        budget_max = maximum or 0
+        plan.image_request_budget_max = budget_max
+        for scene in scenes:
+            scene.image_request_budget_max = budget_max
+
+    async def acquire(self, scene, prompt: str, stage: str) -> int:
+        async with self._lock:
+            if self.maximum is not None and self.used >= self.maximum:
+                raise AIImageRequestBudgetError(
+                    used=self.used,
+                    maximum=self.maximum,
+                )
+            self.used += 1
+            request_number = self.used
+            self.plan.ai_images_requested += 1
+            scene.ai_images_requested += 1
+            scene.actual_cloudflare_request_count_for_scene += 1
+            scene.provider_prompt_stage_used = stage
+            if stage == "policy_retry":
+                scene.content_policy_retry_used = True
+                scene.content_policy_attempt_count = max(
+                    scene.content_policy_attempt_count,
+                    2,
+                )
+            elif scene.content_policy_attempt_count == 0:
+                scene.content_policy_attempt_count = 1
+            denominator = str(self.maximum) if self.maximum is not None else "unlimited"
+            logger.info(
+                "cloudflare image request %d/%s scene=%02d stage=%s "
+                "provider_prompt=%s provider_prompt_hash=%s",
+                request_number,
+                denominator,
+                scene.scene_index,
+                stage,
+                json.dumps(prompt, ensure_ascii=False),
+                _provider_prompt_hash(prompt),
+            )
+            return request_number
+
+    def sync_finish_metadata(self) -> None:
+        self.plan.image_request_budget_used_at_finish = self.used
+        for scene in self.scenes:
+            scene.image_request_budget_used_at_finish = self.used
+
 # Generation dims fed to the AI image provider. Smaller than the 1080×1920 /
 # 1920×1080 final canvas on purpose — the renderer upscales/crops, and a
 # smaller image costs fewer CF Neurons so a free account lasts far longer.
@@ -398,13 +469,20 @@ _CLOUDFLARE_SAFE_RISKY_PATTERNS = (
 )
 
 _CLOUDFLARE_SAFE_SYMBOLIC_RISKY_PATTERNS = (
+    r"\badult\b",
     r"\bchild(?:ren)?\b",
     r"\bmedical\b",
     r"\bmask\b",
+    r"\bfully clothed\b",
+    r"\bnude\b",
+    r"\bnsfw\b",
     r"\bghost\b",
     r"\bmonster\b",
     r"\bblob\b",
+    r"\bcreature\b",
     r"\bsilhouettes?\b",
+    r"\bcracked\b",
+    r"\bshoulders?\b",
     r"\bmouth\b",
     r"\bbody[- ]part\b",
     r"\bclose[- ]up\b",
@@ -477,6 +555,13 @@ def _is_nsfw_prompt_rejection(exc: Exception) -> bool:
         return True
     msg = str(exc).lower()
     return any(marker in msg for marker in _NSFW_MARKERS)
+
+
+def _is_cloudflare_code_3030(exc: Exception) -> bool:
+    return (
+        getattr(exc, "policy_code", 0) == 3030
+        and getattr(exc, "error_type", "") == "content_policy_blocked"
+    )
 
 
 def _stock_fallback_disabled() -> bool:
@@ -869,38 +954,61 @@ def _cloudflare_safe_minimalist_prompt(scene) -> str:
     return _limit_minimalist_prompt(prompt.strip(" ,"), max_len=900)
 
 
-def _cloudflare_safe_symbolic_prompt(scene) -> str:
-    """Build a positive-only symbolic prompt for Cloudflare's safety filter."""
-    visual = re.split(
-        r",\s*(?:no|not|without|avoid)\b",
-        getattr(scene, "symbolic_visual", "") or "",
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0]
-    subject = getattr(scene, "main_character_or_object", "") or visual
-    for pattern in _CLOUDFLARE_SAFE_SYMBOLIC_RISKY_PATTERNS:
-        visual = re.sub(pattern, "", visual, flags=re.IGNORECASE)
-        subject = re.sub(pattern, "", subject, flags=re.IGNORECASE)
-    visual = re.sub(r"\s{2,}", " ", visual).strip(" ,.;")
-    subject = re.sub(r"\s{2,}", " ", subject).strip(" ,.;")
-
-    prompt = " ".join(
-        part
-        for part in (
-            "Minimalist hand-drawn emotional symbolic illustration.",
-            "Moderately dark warm taupe and muted brown-gray background, deeper "
-            "and less bright than beige, with soft low-key ambient light and "
-            "readable midtone contrast.",
-            "Soft rough pencil lines, flat muted earthy colors, calm melancholic "
-            "mood, centered composition, generous negative space, low visual clutter.",
-            f"Main scene: {visual}." if visual else "",
-            f"Main subject: {subject}." if subject else "",
-            "Understated editorial illustration with simple modest clothing for "
-            "human figures and clearly readable symbolic action.",
+def _symbolic_provider_subject(scene) -> str:
+    key = _ascii_key(
+        " ".join(
+            str(part or "")
+            for part in (
+                getattr(scene, "scene_meaning", ""),
+                getattr(scene, "emotional_metaphor", ""),
+                getattr(scene, "symbolic_visual", ""),
+                getattr(scene, "main_character_or_object", ""),
+            )
         )
-        if part
     )
-    return _limit_minimalist_prompt(prompt, max_len=1200)
+    if any(term in key for term in ("box", "unseen effort", "unnoticed")):
+        return "person carrying boxes while two other people pass nearby"
+    if any(term in key for term in ("measuring", "balance scale", "comparison")):
+        return "two people beside unequal measuring marks"
+    if any(term in key for term in ("isolated", "crowd", "group of at least three")):
+        return "one separated person beside a visible group of three people"
+    if "moon" in key:
+        return "seated person beneath a dim moon with a large stone nearby"
+    if any(term in key for term in ("speech bubble", "quiet circle")):
+        return "person inside a quiet circle with empty speech bubbles"
+    if any(term in key for term in ("bird", "letting go", "placing a stone")):
+        return "person placing down a stone while a small bird flies away"
+    if any(term in key for term in ("calm smile", "dark cloud", "heavy cloud")):
+        return "person with a calm expression and a dark cloud nearby"
+    if any(term in key for term in ("carrying", "heavy stone", "burden")):
+        return "person carrying a large stone"
+
+    subject = getattr(scene, "main_character_or_object", "") or "simple symbolic object"
+    for pattern in _CLOUDFLARE_SAFE_SYMBOLIC_RISKY_PATTERNS:
+        subject = re.sub(pattern, "", subject, flags=re.IGNORECASE)
+    return re.sub(r"\s{2,}", " ", subject).strip(" ,.;") or "simple symbolic object"
+
+
+def _cloudflare_safe_symbolic_prompt(scene) -> str:
+    """Build the positive-only initial symbolic provider prompt."""
+    subject = _symbolic_provider_subject(scene)
+    return (
+        "minimalist hand-drawn emotional symbolic illustration, "
+        f"{subject}, moderately dark warm taupe and muted brown-gray background, "
+        "soft low-key light with readable contrast, soft brown pencil lines, "
+        "flat muted earth colors, gentle calm melancholic mood, centered layout, "
+        "generous negative space, low visual clutter, clear readable symbolic action"
+    )
+
+
+def _cloudflare_compact_symbolic_retry_prompt(scene) -> str:
+    """Build one short policy retry independently from the long plan prompt."""
+    return (
+        "minimalist hand-drawn doodle, "
+        f"{_symbolic_provider_subject(scene)}, warm dark taupe background, "
+        "brown pencil lines, muted earth colors, gentle calm mood, "
+        "simple clear composition"
+    )
 
 
 def _choose_motif(text: str, scene_index: int, used: set[str], previous: str) -> str:
@@ -1598,7 +1706,7 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
     max_ai_images = _env_int_optional("TELLA_MAX_AI_IMAGES")
     reuse_index = _load_reuse_index(job_dir)
     loose_reuse_index = _load_loose_reuse_index(job_dir) if plan.reuse_mode == "loose_debug" else {}
-    ai_counter_lock = asyncio.Lock()
+    request_budget = _CloudflareRequestBudget(plan, body_scenes, max_ai_images)
 
     for scene in body_scenes:
         scene.local_fallback_allowed = local_fallback_allowed
@@ -1693,25 +1801,25 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         else None
     )
 
-    async def _reserve_ai_request(scene) -> None:
-        async with ai_counter_lock:
-            if max_ai_images is not None and plan.ai_images_requested >= max_ai_images:
-                raise RuntimeError(
-                    f"max AI image request limit reached ({max_ai_images}); "
-                    "use --preview-scenes or --reuse-assets for smaller test runs."
-                )
-            plan.ai_images_requested += 1
-            scene.ai_images_requested += 1
+    async def _generate_ai_image(
+        scene,
+        prompt: str,
+        out: Path,
+        *,
+        seed: int | None,
+        stage: str = "initial",
+    ) -> None:
+        async def _before_request() -> None:
+            await request_budget.acquire(scene, prompt, stage)
 
-    async def _generate_ai_image(scene, prompt: str, out: Path, *, seed: int | None) -> None:
-        await _reserve_ai_request(scene)
-        await ai_image.generate_image(
-            prompt,
-            out,
-            width=width,
-            height=height,
-            seed=seed,
-        )
+        with ai_image.cloudflare_request_hook(_before_request):
+            await ai_image.generate_image(
+                prompt,
+                out,
+                width=width,
+                height=height,
+                seed=seed,
+            )
         plan.ai_images_generated += 1
         scene.ai_images_generated += 1
 
@@ -1738,12 +1846,55 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                 else assets_dir / f"{base}_attempt_{attempt}.jpg"
             )
             scene.prompt_used = current_prompt
-            await _generate_ai_image(
-                scene,
-                current_prompt,
-                attempt_out,
-                seed=_seed_for_scene(plan, scene) + attempt * 17,
-            )
+            try:
+                await _generate_ai_image(
+                    scene,
+                    current_prompt,
+                    attempt_out,
+                    seed=_seed_for_scene(plan, scene) + attempt * 17,
+                    stage="initial",
+                )
+            except Exception as initial_exc:
+                if not _is_cloudflare_code_3030(initial_exc):
+                    raise
+                scene.last_cloudflare_policy_code = 3030
+                compact_prompt = _cloudflare_compact_symbolic_retry_prompt(scene)
+                if compact_prompt == current_prompt:
+                    raise RuntimeError(
+                        "symbolic policy retry prompt unexpectedly matched the rejected prompt"
+                    ) from initial_exc
+                scene.provider_prompt_retry = compact_prompt
+                scene.provider_prompt_retry_hash = _provider_prompt_hash(compact_prompt)
+                try:
+                    await _generate_ai_image(
+                        scene,
+                        compact_prompt,
+                        attempt_out,
+                        seed=_seed_for_scene(plan, scene) + attempt * 17 + 7,
+                        stage="policy_retry",
+                    )
+                    scene.prompt_used = compact_prompt
+                except Exception as retry_exc:
+                    if not _is_cloudflare_code_3030(retry_exc):
+                        raise
+                    scene.last_cloudflare_policy_code = 3030
+                    maximum = (
+                        str(request_budget.maximum)
+                        if request_budget.maximum is not None
+                        else "unlimited"
+                    )
+                    raise ai_image.CloudflareAIError(
+                        "Initial provider-safe prompt was rejected with Cloudflare "
+                        "code 3030; one compact retry was attempted and rejected; "
+                        "no third request was made. "
+                        f"Scene requests={scene.actual_cloudflare_request_count_for_scene}; "
+                        f"run requests={request_budget.used}/{maximum}. Relevant "
+                        "provider prompt metadata is available in plan.json.",
+                        error_type="content_policy_blocked",
+                        status_code=400,
+                        recoverable=True,
+                        policy_code=3030,
+                    ) from retry_exc
             if attempt > 1:
                 plan.total_scene_regeneration_attempts += 1
 
@@ -1952,6 +2103,8 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         )
         theme_label = str(plan.theme)
         provider_message = scene.ai_provider_error_message[:180]
+        if error_type == "image_request_budget_exhausted":
+            raise RuntimeError(message) from exc
         if error_type == "quota_exhausted":
             raise RuntimeError(
                 "Cloudflare AI quota exhausted. No AI images were generated. "
@@ -1960,6 +2113,8 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                 f"{provider_message}"
             ) from exc
         if error_type == "content_policy_blocked":
+            if "no third request was made" in message.lower():
+                raise RuntimeError(message) from exc
             raise RuntimeError(
                 "Cloudflare AI content policy blocked a harmless scene prompt "
                 "after provider-safe sanitation or retry. No placeholder video was rendered. "
@@ -2036,6 +2191,17 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                 )
                 scene.asset_prompt_hash = prompt_hash
                 if plan.theme == "minimalist_symbolic_reel":
+                    scene.provider_prompt_initial = prompt_for_cf
+                    scene.provider_prompt_initial_hash = _provider_prompt_hash(
+                        prompt_for_cf
+                    )
+                    scene.provider_prompt_retry = ""
+                    scene.provider_prompt_retry_hash = ""
+                    scene.provider_prompt_stage_used = ""
+                    scene.content_policy_retry_used = False
+                    scene.content_policy_attempt_count = 0
+                    scene.actual_cloudflare_request_count_for_scene = 0
+                    scene.last_cloudflare_policy_code = 0
                     scene.original_prompt_hash = scene.original_prompt_hash or _asset_prompt_hash(
                         original_prompt_for_cf,
                         width=width,
@@ -2358,7 +2524,10 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         "fetch_assets: %d scenes, source=%s, %dx%d",
         len(body_scenes), plan.media_source, width, height,
     )
-    await asyncio.gather(*[_one(i, s) for i, s in enumerate(body_scenes)])
+    try:
+        await asyncio.gather(*[_one(i, s) for i, s in enumerate(body_scenes)])
+    finally:
+        request_budget.sync_finish_metadata()
     logger.info("fetch_assets: all %d scenes done", len(body_scenes))
 
 
