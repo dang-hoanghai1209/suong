@@ -122,26 +122,25 @@ _PREFLIGHT_REPAIRS = {
         "adult proportions and a readable burden posture"
     ),
     "hidden_hurt": (
-        "one adult showing a small calm smile, a dark cracked shape or heavy cloud "
-        "clearly visible behind their shoulders, no mask, no medical imagery"
+        "one adult showing a small calm smile while a dark cracked shape or heavy "
+        "cloud is clearly visible behind their shoulders, no mask and no medical "
+        "imagery"
     ),
     "comparison": (
         "two clearly drawn adult figures with unequal measuring marks, a balance "
         "scale, or another explicit comparison cue, no black silhouettes"
     ),
     "unseen_effort": (
-        "one adult carrying a visible stack of heavy boxes, stones, or another "
-        "clear burden while at least two or three nearby adults walk past without "
-        "noticing, not only a plant in shadow"
+        "one adult carrying a visible stack of heavy boxes or stones while at "
+        "least two nearby adults walk past without noticing"
     ),
     "lonely_crowd": (
         "one isolated adult spatially separated from one clearly visible group of "
         "at least three adults"
     ),
     "nighttime_sadness": (
-        "one adult sitting alone beneath a large dim moon with one concrete stone "
-        "weight resting nearby, no ghost, creature, ocean or ship scene, and no "
-        "object-only poster composition"
+        "one adult sitting alone beneath a large dim moon with a heavy stone "
+        "resting beside them, no ocean, ship, anchor poster, ghost, or creature"
     ),
     "silence": (
         "one adult inside a quiet circle with crossed-out or empty speech bubbles, "
@@ -233,6 +232,8 @@ def preflight_symbolic_reel_plan(plan: TellaScenePlan) -> None:
             scene.main_character_or_object = original_visual[:160]
         scene_type = _symbolic_scene_type(scene)
         reasons = _preflight_risk_reasons(original_visual)
+        if scene_type == "nighttime_sadness" and not _visual_has_human(original_visual):
+            reasons.append("unreadable_object_only_metaphor")
         if scene_type and _scene_visual_needs_repair(scene_type, original_visual):
             reasons.append(f"scene_type_requires_concrete_composition:{scene_type}")
 
@@ -313,8 +314,16 @@ def _classify_symbolic_key(key: str, *, allow_silence: bool) -> str:
         (
             "trying to appear okay while hurt",
             "trying to look okay while hurt",
+            "the facade of being okay",
+            "hiding exhaustion",
+            "pretending to be okay",
+            "trying to look okay",
+            "appearing okay while hurt",
+            "emotional facade",
             "look okay while hurt",
             "hurt inside",
+            "co to ra on",
+            "gia vo on",
             "to ra on nhung dau ben trong",
         ),
     ):
@@ -323,7 +332,18 @@ def _classify_symbolic_key(key: str, *, allow_silence: bool) -> str:
         return "comparison"
     if _contains_any_phrase(
         key,
-        ("effort is unseen", "unseen effort", "co gang khong ai thay"),
+        (
+            "unrecognized effort",
+            "invisible growth",
+            "effort is unseen",
+            "unseen effort",
+            "effort unnoticed",
+            "effort not recognized",
+            "no one sees the effort",
+            "co gang khong duoc nhin thay",
+            "no luc khong ai thay",
+            "co gang khong ai thay",
+        ),
     ):
         return "unseen_effort"
     if _contains_any_phrase(
@@ -342,8 +362,14 @@ def _classify_symbolic_key(key: str, *, allow_silence: bool) -> str:
         key,
         (
             "sadness feels heavier at night",
+            "nighttime heaviness",
+            "weight of night",
+            "nighttime sadness",
+            "night feels heavier",
             "sadness at night",
             "heavier at night",
+            "dem xuong nang hon",
+            "noi buon ve dem",
             "noi buon trong dem",
         ),
     ):
@@ -379,16 +405,7 @@ def _classify_symbolic_key(key: str, *, allow_silence: bool) -> str:
 
 def _scene_visual_needs_repair(scene_type: str, visual: str) -> bool:
     key = _ascii_key(visual)
-    has_human = any(
-        term in f" {key} "
-        for term in (
-            " adult ",
-            " person ",
-            " figure ",
-            " woman ",
-            " man ",
-        )
-    )
+    has_human = _visual_has_human(visual)
     if scene_type == "burden":
         return not (
             has_human
@@ -447,6 +464,20 @@ def _scene_visual_needs_repair(scene_type: str, visual: str) -> bool:
             and any(term in key for term in ("bird", "stone"))
         )
     return True
+
+
+def _visual_has_human(visual: str) -> bool:
+    key = _ascii_key(visual)
+    return any(
+        term in f" {key} "
+        for term in (
+            " adult ",
+            " person ",
+            " figure ",
+            " woman ",
+            " man ",
+        )
+    )
 
 
 def _preflight_risk_reasons(visual: str) -> list[str]:

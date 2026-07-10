@@ -8,6 +8,7 @@ def _preflight_scene(
     *,
     voice_script: str | None = None,
     metaphor: str | None = None,
+    cast_archetype: str = "",
 ) -> tuple[TellaScenePlan, Scene]:
     scenes = [
         Scene(
@@ -18,6 +19,7 @@ def _preflight_scene(
             symbolic_visual=visual,
             emotional_metaphor=metaphor or meaning,
             main_character_or_object=visual,
+            cast_archetype=cast_archetype,
         ),
         Scene(
             scene_index=2,
@@ -89,9 +91,8 @@ def test_plant_in_shadow_is_repaired_for_unseen_effort_scene():
     )
 
     visual = scene.symbolic_visual.lower()
-    assert "adult carrying a visible stack of heavy boxes, stones" in visual
-    assert "at least two or three nearby adults walk past" in visual
-    assert "not only a plant in shadow" in visual
+    assert "adult carrying a visible stack of heavy boxes or stones" in visual
+    assert "at least two nearby adults walk past" in visual
 
 
 def test_heavy_moon_is_repaired_for_nighttime_sadness_scene():
@@ -102,8 +103,8 @@ def test_heavy_moon_is_repaired_for_nighttime_sadness_scene():
 
     visual = scene.symbolic_visual.lower()
     assert "adult sitting alone beneath a large dim moon" in visual
-    assert "concrete stone weight resting nearby" in visual
-    assert "no ghost, creature" in visual
+    assert "heavy stone resting beside them" in visual
+    assert "no ocean, ship, anchor poster, ghost, or creature" in visual
 
 
 def test_closed_mouth_is_repaired_for_silence_scene():
@@ -168,8 +169,8 @@ def test_moon_and_anchor_are_repaired_to_human_nighttime_composition():
 
     visual = scene.symbolic_visual.lower()
     assert "adult sitting alone beneath a large dim moon" in visual
-    assert "concrete stone weight resting nearby" in visual
-    assert "no ghost, creature, ocean or ship scene" in visual
+    assert "heavy stone resting beside them" in visual
+    assert "no ocean, ship, anchor poster, ghost, or creature" in visual
     assert scene.cast_archetype == "adult_woman_or_man"
 
 
@@ -191,6 +192,7 @@ def test_known_scene_types_never_use_generic_fallback():
         ("Loneliness in a crowd", "Many dots"),
         ("Sadness feels heavier at night", "A moon and anchor"),
         ("Silence is the primary meaning", "A closed mouth"),
+        ("Carrying hidden emotional burdens", "An abstract shape"),
         ("Letting go slowly", "A balloon drifting away"),
     )
     generic = "one ordinary adult interacting with one concrete paper heart or stone"
@@ -220,3 +222,102 @@ def test_scene_type_precedence_is_deterministic():
         if reason.startswith("scene_type_requires_concrete_composition:")
     ]
     assert primary_reasons == ["scene_type_requires_concrete_composition:comparison"]
+
+
+def test_exact_facade_aliases_use_hidden_hurt_template():
+    _, scene = _preflight_scene(
+        "The facade of being okay",
+        "A simple mask",
+        metaphor="Hiding exhaustion",
+    )
+
+    expected = (
+        "one adult showing a small calm smile while a dark cracked shape or heavy "
+        "cloud is clearly visible behind their shoulders, no mask and no medical "
+        "imagery"
+    )
+    assert scene.symbolic_visual == expected
+    assert "paper heart or stone" not in scene.symbolic_visual.lower()
+    assert scene.cast_archetype == "adult_woman_or_man"
+
+
+def test_exact_unrecognized_effort_aliases_use_unseen_effort_template():
+    _, scene = _preflight_scene(
+        "Unrecognized effort",
+        "A small plant in shadows",
+        metaphor="Invisible growth",
+    )
+
+    expected = (
+        "one adult carrying a visible stack of heavy boxes or stones while at "
+        "least two nearby adults walk past without noticing"
+    )
+    assert scene.symbolic_visual == expected
+    assert "paper heart or stone" not in scene.symbolic_visual.lower()
+    assert scene.cast_archetype == "adult_woman_or_man"
+
+
+def test_exact_nighttime_aliases_repair_object_only_anchor():
+    _, scene = _preflight_scene(
+        "Nighttime heaviness",
+        "An anchor",
+        metaphor="Weight of night",
+        cast_archetype="symbolic_object",
+    )
+
+    expected = (
+        "one adult sitting alone beneath a large dim moon with a heavy stone "
+        "resting beside them, no ocean, ship, anchor poster, ghost, or creature"
+    )
+    assert scene.symbolic_visual == expected
+    assert scene.cast_archetype == "adult_woman_or_man"
+    assert "unreadable_object_only_metaphor" in scene.symbolic_preflight_failure_reasons
+
+
+def test_latest_eight_scene_plan_uses_specific_repairs():
+    scene_values = (
+        ("Carrying hidden emotional burdens", "Burden of silence", "A person carrying a stone"),
+        ("The facade of being okay", "Hiding exhaustion", "A simple mask"),
+        ("Feeling measured against others", "Comparison", "Two silhouettes"),
+        ("Unrecognized effort", "Invisible growth", "A small plant in shadows"),
+        ("Loneliness in a crowd", "Isolation", "Many dots"),
+        ("Nighttime heaviness", "Weight of night", "An anchor"),
+        ("Loss of words through silence", "Silence", "A closed mouth"),
+        ("The relief of letting go", "Release", "A balloon drifting away"),
+    )
+    scenes = [
+        Scene(
+            scene_index=index,
+            title=f"Scene {index}",
+            voice_script=meaning,
+            scene_meaning=meaning,
+            emotional_metaphor=metaphor,
+            symbolic_visual=visual,
+            main_character_or_object=visual,
+            cast_archetype="symbolic_object" if index == 6 else "",
+        )
+        for index, (meaning, metaphor, visual) in enumerate(scene_values, start=1)
+    ]
+    plan = TellaScenePlan(
+        title="Latest symbolic dry-run regression",
+        language="en",
+        aspect_ratio="9:16",
+        media_source="ai_image",
+        duration_mode="short",
+        theme="minimalist_symbolic_reel",
+        scenes=scenes,
+    )
+
+    enforce_symbolic_reel_plan(plan)
+
+    assert plan.scenes[1].symbolic_visual.startswith(
+        "one adult showing a small calm smile"
+    )
+    assert plan.scenes[3].symbolic_visual.startswith(
+        "one adult carrying a visible stack of heavy boxes or stones"
+    )
+    assert plan.scenes[5].symbolic_visual.startswith(
+        "one adult sitting alone beneath a large dim moon"
+    )
+    for index in (1, 3, 5):
+        assert "paper heart or stone" not in plan.scenes[index].symbolic_visual.lower()
