@@ -578,4 +578,7 @@ def test_symbolic_dry_run_plan_writes_inspectable_metadata(monkeypatch, tmp_path
         assert scene["line_style_id"] == data["line_style_id"]
         assert scene["age_policy"] == data["age_policy"]
         assert scene["cast_archetype"] in data["cast_archetype_set"]
+        assert scene["symbolic_qc_expected_subjects"]
+        assert scene["symbolic_qc_expectations"]
+        assert scene["symbolic_qc_final_status"] == "planned"
         assert "scene meaning:" in scene["image_prompt"]

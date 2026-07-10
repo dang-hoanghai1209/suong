@@ -202,6 +202,25 @@ class SceneQCResult(BaseModel):
     raw_response_path: str = Field("", max_length=300)
     image_path: str = Field("", max_length=300)
 
+    symbolic_qc_passed: bool = False
+    symbolic_qc_attempts: int = 0
+    symbolic_qc_failure_reasons: list[str] = Field(default_factory=list)
+    symbolic_qc_last_failure_reason: str = Field("", max_length=120)
+    symbolic_qc_repaired_prompt_used: bool = False
+    symbolic_qc_final_status: str = Field("", max_length=40)
+    symbolic_meaning_matches: bool = True
+    symbolic_visual_matches: bool = True
+    metaphor_is_readable: bool = True
+    visual_identity_matches: bool = True
+    adult_age_policy_matches: bool = True
+    style_matches_symbolic_reel: bool = True
+    subject_scale_matches: bool = True
+    forbidden_drift_detected: bool = False
+    forbidden_drift_types: list[str] = Field(default_factory=list)
+    symbolic_qc_hard_fail_reasons: list[str] = Field(default_factory=list)
+    symbolic_qc_soft_fail_reasons: list[str] = Field(default_factory=list)
+    symbolic_soft_fail_streaks: dict[str, int] = Field(default_factory=dict)
+
     shot_type: str = Field("", max_length=60)
     body_visibility: str = Field("", max_length=80)
     pose_type: str = Field("", max_length=80)
@@ -302,6 +321,26 @@ class Scene(BaseModel):
     line_style_id: str = Field("", max_length=80)
     outfit_style_family: str = Field("", max_length=120)
     subject_scale_profile: str = Field("", max_length=120)
+    symbolic_qc_expected_subjects: list[str] = Field(default_factory=list)
+    symbolic_qc_expectations: list[str] = Field(default_factory=list)
+    symbolic_qc_passed: bool = False
+    symbolic_qc_attempts: int = 0
+    symbolic_qc_failure_reasons: list[str] = Field(default_factory=list)
+    symbolic_qc_last_failure_reason: str = Field("", max_length=120)
+    symbolic_qc_repaired_prompt_used: bool = False
+    symbolic_qc_final_status: str = Field("", max_length=40)
+    symbolic_meaning_matches: bool = True
+    symbolic_visual_matches: bool = True
+    metaphor_is_readable: bool = True
+    visual_identity_matches: bool = True
+    adult_age_policy_matches: bool = True
+    style_matches_symbolic_reel: bool = True
+    subject_scale_matches: bool = True
+    forbidden_drift_detected: bool = False
+    forbidden_drift_types: list[str] = Field(default_factory=list)
+    symbolic_qc_hard_fail_reasons: list[str] = Field(default_factory=list)
+    symbolic_qc_soft_fail_reasons: list[str] = Field(default_factory=list)
+    symbolic_soft_fail_streaks: dict[str, int] = Field(default_factory=dict)
 
     # 1-3 assets per scene. 1 = static Ken Burns; 2-3 = mini-montage with
     # crossfades inside the scene window.

@@ -147,6 +147,11 @@ def enforce_symbolic_reel_plan(plan: TellaScenePlan) -> None:
         scene.line_style_id = plan.line_style_id
         scene.outfit_style_family = plan.outfit_style_family
         scene.subject_scale_profile = plan.subject_scale_profile
+        (
+            scene.symbolic_qc_expected_subjects,
+            scene.symbolic_qc_expectations,
+        ) = _symbolic_qc_expectations(scene)
+        scene.symbolic_qc_final_status = "planned"
         scene.image_prompt = _symbolic_prompt(scene)
         scene.stock_query = scene.stock_query or "symbolic emotional doodle"
         scene.character_names = []
@@ -232,6 +237,88 @@ def _cast_archetype_for_scene(scene) -> str:
 def _contains_term(key: str, terms: tuple[str, ...]) -> bool:
     padded = f" {key} "
     return any(f" {term} " in padded for term in terms)
+
+
+def _symbolic_qc_expectations(scene) -> tuple[list[str], list[str]]:
+    key = _ascii_key(
+        " ".join(
+            part
+            for part in (
+                scene.voice_script,
+                scene.scene_meaning,
+                scene.emotional_metaphor,
+                scene.symbolic_visual,
+            )
+            if part
+        )
+    )
+    subjects: list[str]
+    if _contains_any_phrase(
+        key,
+        (
+            "lonely in a crowd",
+            "alone in a crowd",
+            "lonely among people",
+            "co don giua dam dong",
+            "mot minh giua dam dong",
+        ),
+    ):
+        subjects = [
+            "one clearly isolated adult figure",
+            "one clearly visible small group or crowd",
+        ]
+    elif any(term in key for term in ("compar", "so sanh")):
+        subjects = [
+            "at least two adult human figures or one unmistakable comparison symbol",
+        ]
+    elif _contains_any_phrase(
+        key,
+        ("look okay while hurt", "okay while hurt inside", "fine while hurt inside"),
+    ):
+        subjects = [
+            "one ordinary adult figure",
+            "one readable inner-hurt symbol such as a cracked paper heart",
+        ]
+    elif _contains_any_phrase(
+        key,
+        ("sadness feels heavier at night", "heavier at night", "sadness at night"),
+    ):
+        subjects = [
+            "one ordinary adult or concrete sadness symbol",
+            "one clear night cue",
+            "one readable weight or heaviness symbol",
+        ]
+    elif _contains_any_phrase(
+        key,
+        ("effort is unseen", "unseen effort", "co gang khong ai thay"),
+    ):
+        subjects = [
+            "one readable effort or carrying symbol",
+            "one ordinary adult or concrete effort object",
+        ]
+    else:
+        subjects = [
+            scene.symbolic_visual
+            or scene.main_character_or_object
+            or "one concrete readable symbolic subject"
+        ]
+
+    expectations = [
+        "scene meaning is recognizable from the actual image",
+        "required symbolic subjects are visibly present",
+        "emotional metaphor is readable at a glance",
+        f"visual identity matches {scene.visual_identity_id}",
+        f"human age follows {scene.age_policy}",
+        f"palette matches {scene.palette_id}",
+        f"line style matches {scene.line_style_id}",
+        f"subject scale follows {scene.subject_scale_profile}",
+        "no forbidden archetype or photorealistic drift",
+    ]
+    return subjects, expectations
+
+
+def _contains_any_phrase(key: str, phrases: tuple[str, ...]) -> bool:
+    return any(phrase in key for phrase in phrases)
 
 
 def _meaning_from_text(text: str) -> str:

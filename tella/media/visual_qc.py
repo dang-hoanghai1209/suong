@@ -20,6 +20,26 @@ logger = logging.getLogger("tella.media.visual_qc")
 
 _DEFAULT_VISION_MODEL = "gemini-flash-latest"
 _SOFT_STREAK_LIMIT = 2
+_SYMBOLIC_SOFT_FAILURES = (
+    "metaphor_unreadable",
+    "palette_drift",
+    "line_style_drift",
+    "composition_scale_drift",
+)
+_SYMBOLIC_REQUIRED_QC_FIELDS = (
+    "symbolic_meaning_matches",
+    "symbolic_visual_matches",
+    "required_subjects_present",
+    "metaphor_is_readable",
+    "visual_identity_matches",
+    "adult_age_policy_matches",
+    "style_matches_symbolic_reel",
+    "subject_scale_matches",
+    "palette_matches",
+    "line_style_matches",
+    "forbidden_drift_detected",
+    "forbidden_drift_types",
+)
 _HARD_FAILURE_RE = re.compile(
     r"(extra\s+(?:limb|arm|leg|hand|foot)|duplicate\s+(?:face|head|body)|"
     r"duplicated\s+(?:foot|feet|leg|head)|third\s+leg|two\s+heads|"
@@ -320,6 +340,7 @@ def rank_qc_attempt(result: SceneQCResult, order_index: int = 0) -> tuple:
     hard_anatomy = result.has_extra_limbs or result.has_duplicate_face or too_many_heads
     identity_score = int(result.hairstyle_matches_spec) + int(result.outfit_matches_spec)
     return (
+        int(bool(result.symbolic_qc_hard_fail_reasons)),
         int(hard_anatomy),
         int(result.has_text_or_watermark),
         int(too_many_people),
@@ -410,6 +431,27 @@ def apply_qc_result_to_scene(
     scene.remaining_scene_attempts = int(result.remaining_scene_attempts)
     scene.regeneration_reasons = list(result.regeneration_reasons)
     scene.original_reference_paths = list(result.original_reference_paths)
+    scene.symbolic_qc_passed = bool(result.symbolic_qc_passed)
+    scene.symbolic_qc_attempts = max(
+        int(result.symbolic_qc_attempts),
+        int(attempts_actually_ran),
+    )
+    scene.symbolic_qc_failure_reasons = list(result.symbolic_qc_failure_reasons)
+    scene.symbolic_qc_last_failure_reason = result.symbolic_qc_last_failure_reason
+    scene.symbolic_qc_repaired_prompt_used = bool(result.symbolic_qc_repaired_prompt_used)
+    scene.symbolic_qc_final_status = result.symbolic_qc_final_status
+    scene.symbolic_meaning_matches = bool(result.symbolic_meaning_matches)
+    scene.symbolic_visual_matches = bool(result.symbolic_visual_matches)
+    scene.metaphor_is_readable = bool(result.metaphor_is_readable)
+    scene.visual_identity_matches = bool(result.visual_identity_matches)
+    scene.adult_age_policy_matches = bool(result.adult_age_policy_matches)
+    scene.style_matches_symbolic_reel = bool(result.style_matches_symbolic_reel)
+    scene.subject_scale_matches = bool(result.subject_scale_matches)
+    scene.forbidden_drift_detected = bool(result.forbidden_drift_detected)
+    scene.forbidden_drift_types = list(result.forbidden_drift_types)
+    scene.symbolic_qc_hard_fail_reasons = list(result.symbolic_qc_hard_fail_reasons)
+    scene.symbolic_qc_soft_fail_reasons = list(result.symbolic_qc_soft_fail_reasons)
+    scene.symbolic_soft_fail_streaks = dict(result.symbolic_soft_fail_streaks)
 
 
 def _basic_qc(image_path: Path, expected: dict[str, Any]) -> dict[str, Any]:
@@ -496,6 +538,34 @@ def _result(
     confidence = float(extra.pop("confidence", score))
     raw_model_passed = bool(extra.pop("model_passed", model_qc_passed))
     regeneration_reasons = list(extra.pop("regeneration_reasons", failures))
+    symbolic_qc = _is_symbolic_qc(scene, expected)
+    if symbolic_qc and "symbolic_qc_final_status" not in extra:
+        if mode == "off":
+            symbolic_status = "disabled"
+        elif mode == "vision" and not vision_available:
+            symbolic_status = "vision_unavailable"
+        else:
+            symbolic_status = "not_run"
+        extra.update(
+            symbolic_qc_passed=False,
+            symbolic_qc_attempts=int(expected.get("attempt", scene.attempt_count or 0)),
+            symbolic_qc_failure_reasons=[],
+            symbolic_qc_last_failure_reason="",
+            symbolic_qc_repaired_prompt_used=bool(expected.get("repaired_prompt_used")),
+            symbolic_qc_final_status=symbolic_status,
+        )
+    if failures:
+        if symbolic_qc:
+            symbolic_failures = list(extra.get("symbolic_qc_failure_reasons", [])) or failures
+            repaired = _symbolic_repair_prompt(
+                scene,
+                scene.prompt_used or scene.image_prompt,
+                symbolic_failures,
+            )
+        else:
+            repaired = repair_prompt(scene.prompt_used or scene.image_prompt, failures)
+    else:
+        repaired = ""
     return SceneQCResult(
         scene_index=scene.scene_index,
         passed=passed,
@@ -507,7 +577,7 @@ def _result(
         score=round(max(0.0, min(1.0, score)), 3),
         checks=checks,
         failure_reasons=failures,
-        repair_prompt=(repair_prompt(scene.prompt_used or scene.image_prompt, failures)[:1500] if failures else ""),
+        repair_prompt=repaired[:1500],
         attempt_count=scene.attempt_count,
         qc_mode=mode,
         vision_available=vision_available,
@@ -584,6 +654,15 @@ def _run_vision_qc(
                 )
                 continue
             if isinstance(data, dict):
+                missing_symbolic = _missing_symbolic_qc_fields(data) if _is_symbolic_qc(scene, expected) else []
+                if missing_symbolic:
+                    prompt = (
+                        _vision_prompt(scene, visual_bible, expected, anatomy)
+                        + "\n\nYour previous JSON omitted required symbolic QC fields: "
+                        + ", ".join(missing_symbolic)
+                        + ". Return the complete schema with every field populated."
+                    )
+                    continue
                 return {
                     "available": True,
                     "data": data,
@@ -689,6 +768,14 @@ def _result_from_vision(
 
     vision_failures = _string_list(_pick(data, "failure_reasons", "failures", "issues"))
     failures.extend(vision_failures)
+    symbolic = _symbolic_qc_analysis(
+        scene,
+        data,
+        expected,
+        character_count=character_count,
+        model_passed=model_passed,
+    )
+    failures.extend(symbolic["failure_reasons"])
     override_reasons = _deterministic_overrides(
         failures,
         expected_count=expected_count,
@@ -747,13 +834,22 @@ def _result_from_vision(
         major_action_reasons.append("major action mismatch: requested scene action/location/object is completely wrong or missing")
 
     model_fail_reasons = []
-    if not model_passed and not action_soft_fail:
+    symbolic_soft_only = bool(
+        symbolic["soft_reasons"] and not symbolic["hard_reasons"]
+    )
+    if not model_passed and not action_soft_fail and not symbolic_soft_only:
         model_fail_reasons.append("vision model marked scene as failed")
 
     hard_reasons = _unique_failures(
-        override_reasons + major_action_reasons + repeated_reasons + exhaustion_reasons + model_fail_reasons
+        override_reasons
+        + symbolic["hard_reasons"]
+        + major_action_reasons
+        + repeated_reasons
+        + exhaustion_reasons
+        + model_fail_reasons
     )
-    soft_reasons_for_failure = [] if hard_reasons else final_soft_reasons
+    all_soft_reasons = _unique_failures(final_soft_reasons + symbolic["soft_reasons"])
+    soft_reasons_for_failure = [] if hard_reasons else all_soft_reasons
     failures.extend(hard_reasons)
     failures.extend(soft_reasons_for_failure)
 
@@ -767,15 +863,28 @@ def _result_from_vision(
         score -= 0.25
     if soft_reasons_for_failure:
         score -= 0.15
+    if symbolic["hard_reasons"]:
+        score -= 0.45
     if model_fail_reasons and not hard_reasons:
         score -= 0.25
 
     identity_hard_fail = bool(identity_soft_fail and (repeated_reasons or exhaustion_reasons))
     action_hard_fail = bool(action_hard_fail or (action_soft_fail and (repeated_reasons or exhaustion_reasons)))
-    soft_fail_on_final = bool(is_final_attempt and final_soft_reasons and not repeated_reasons)
+    soft_fail_on_final = bool(
+        is_final_attempt
+        and all_soft_reasons
+        and not repeated_reasons
+        and not symbolic["repeated_reasons"]
+    )
     loop_stop_reason = hard_reasons[0] if hard_reasons else ""
     loop_stop_reasons_all = list(hard_reasons)
-    hard_priority = _hard_priority(override_reasons, major_action_reasons, repeated_reasons, exhaustion_reasons)
+    hard_priority = _hard_priority(
+        override_reasons,
+        symbolic["hard_reasons"],
+        major_action_reasons,
+        repeated_reasons,
+        exhaustion_reasons,
+    )
 
     checks.update(
         {
@@ -792,6 +901,14 @@ def _result_from_vision(
             "outfit_matches_spec": outfit_matches,
             "scene_matches_requested_action": action_matches,
             "action_mismatch_severity_valid": action_severity in {"none", "minor", "major"},
+            "symbolic_meaning_matches": symbolic["symbolic_meaning_matches"],
+            "symbolic_visual_matches": symbolic["symbolic_visual_matches"],
+            "metaphor_is_readable": symbolic["metaphor_is_readable"],
+            "visual_identity_matches": symbolic["visual_identity_matches"],
+            "adult_age_policy_matches": symbolic["adult_age_policy_matches"],
+            "style_matches_symbolic_reel": symbolic["style_matches_symbolic_reel"],
+            "subject_scale_matches": symbolic["subject_scale_matches"],
+            "no_forbidden_symbolic_drift": not symbolic["forbidden_drift_detected"],
         }
     )
 
@@ -803,7 +920,10 @@ def _result_from_vision(
         failures=failures,
         score=max(0.0, score),
         basic_qc_passed=basic_passed,
-        model_qc_passed=bool(model_passed or (action_soft_fail and not hard_reasons)),
+        model_qc_passed=bool(
+            model_passed
+            or ((action_soft_fail or symbolic_soft_only) and not hard_reasons)
+        ),
         mode="vision",
         anatomy=anatomy,
         expected=expected,
@@ -841,23 +961,251 @@ def _result_from_vision(
         hairstyle_mismatch_streak=int(streaks["hairstyle"]),
         outfit_mismatch_streak=int(streaks["outfit"]),
         action_mismatch_streak=int(streaks["action"]),
-        repeated_soft_fail_escalation_applied=bool(repeated_reasons),
-        repeated_soft_fail_escalation_reasons=repeated_reasons,
-        stopped_retry_loop_early_due_to_repeated_soft_fail=bool(repeated_reasons),
+        repeated_soft_fail_escalation_applied=bool(
+            repeated_reasons or symbolic["repeated_reasons"]
+        ),
+        repeated_soft_fail_escalation_reasons=_unique_failures(
+            repeated_reasons + symbolic["repeated_reasons"]
+        ),
+        stopped_retry_loop_early_due_to_repeated_soft_fail=bool(
+            repeated_reasons or symbolic["repeated_reasons"]
+        ),
         soft_fail_on_final_attempt=soft_fail_on_final,
         previous_attempt_identity_failures=previous_soft_failures,
         repeated_identity_failures=repeated_identity_failures,
-        escalation_applied=bool(repeated_reasons or exhaustion_reasons),
-        escalation_reasons=_unique_failures(repeated_reasons + exhaustion_reasons),
+        escalation_applied=bool(
+            repeated_reasons
+            or exhaustion_reasons
+            or symbolic["repeated_reasons"]
+            or symbolic["exhaustion_reasons"]
+        ),
+        escalation_reasons=_unique_failures(
+            repeated_reasons
+            + exhaustion_reasons
+            + symbolic["repeated_reasons"]
+            + symbolic["exhaustion_reasons"]
+        ),
         anatomy_hard_fail=bool(override_reasons),
         deterministic_override_applied=bool(override_reasons),
         deterministic_override_reasons=override_reasons,
         final_attempt_hard_fail_reasons=hard_reasons,
-        final_attempt_soft_fail_reasons=final_soft_reasons,
+        final_attempt_soft_fail_reasons=all_soft_reasons,
         loop_stop_reason=loop_stop_reason,
         loop_stop_reasons_all=loop_stop_reasons_all,
         hard_fail_priority_reason=hard_priority,
+        symbolic_qc_passed=symbolic["passed"],
+        symbolic_qc_attempts=int(expected.get("attempt", scene.attempt_count or 0)),
+        symbolic_qc_failure_reasons=symbolic["failure_reasons"],
+        symbolic_qc_last_failure_reason=(symbolic["failure_reasons"][-1] if symbolic["failure_reasons"] else ""),
+        symbolic_qc_repaired_prompt_used=bool(expected.get("repaired_prompt_used")),
+        symbolic_qc_final_status=symbolic["final_status"],
+        symbolic_meaning_matches=symbolic["symbolic_meaning_matches"],
+        symbolic_visual_matches=symbolic["symbolic_visual_matches"],
+        metaphor_is_readable=symbolic["metaphor_is_readable"],
+        visual_identity_matches=symbolic["visual_identity_matches"],
+        adult_age_policy_matches=symbolic["adult_age_policy_matches"],
+        style_matches_symbolic_reel=symbolic["style_matches_symbolic_reel"],
+        subject_scale_matches=symbolic["subject_scale_matches"],
+        forbidden_drift_detected=symbolic["forbidden_drift_detected"],
+        forbidden_drift_types=symbolic["forbidden_drift_types"],
+        symbolic_qc_hard_fail_reasons=symbolic["hard_reasons"],
+        symbolic_qc_soft_fail_reasons=symbolic["soft_reasons"],
+        symbolic_soft_fail_streaks=symbolic["soft_fail_streaks"],
     )
+
+
+def _symbolic_qc_analysis(
+    scene: Scene,
+    data: dict[str, Any],
+    expected: dict[str, Any],
+    *,
+    character_count: int,
+    model_passed: bool,
+) -> dict[str, Any]:
+    if not _is_symbolic_qc(scene, expected):
+        return {
+            "passed": False,
+            "final_status": "not_applicable",
+            "failure_reasons": [],
+            "hard_reasons": [],
+            "soft_reasons": [],
+            "repeated_reasons": [],
+            "exhaustion_reasons": [],
+            "soft_fail_streaks": {},
+            "symbolic_meaning_matches": True,
+            "symbolic_visual_matches": True,
+            "metaphor_is_readable": True,
+            "visual_identity_matches": True,
+            "adult_age_policy_matches": True,
+            "style_matches_symbolic_reel": True,
+            "subject_scale_matches": True,
+            "forbidden_drift_detected": False,
+            "forbidden_drift_types": [],
+        }
+
+    def value(name: str) -> Any:
+        return _deep_pick(data, ("symbolic", name), (name,))
+
+    meaning_matches = _as_bool(value("symbolic_meaning_matches"), True)
+    visual_matches = _as_bool(value("symbolic_visual_matches"), True)
+    required_subjects_present = _as_bool(value("required_subjects_present"), visual_matches)
+    metaphor_readable = _as_bool(value("metaphor_is_readable"), True)
+    identity_matches = _as_bool(value("visual_identity_matches"), True)
+    age_matches = _as_bool(value("adult_age_policy_matches"), True)
+    style_matches = _as_bool(value("style_matches_symbolic_reel"), True)
+    scale_matches = _as_bool(value("subject_scale_matches"), True)
+    palette_matches = _as_bool(value("palette_matches"), True)
+    line_style_matches = _as_bool(value("line_style_matches"), True)
+
+    drift_types = [_normalize_symbolic_drift_type(item) for item in _string_list(value("forbidden_drift_types"))]
+    drift_flags = {
+        "child": _as_bool(value("child_detected"), False),
+        "medical_mask": _as_bool(value("medical_mask_detected"), False),
+        "ghost": _as_bool(value("ghost_detected"), False),
+        "monster": _as_bool(value("monster_detected"), False),
+        "blob_creature": _as_bool(value("blob_creature_detected"), False),
+        "horror": _as_bool(value("horror_imagery_detected"), False),
+        "photorealistic": _as_bool(value("photorealistic_figure_detected"), False),
+    }
+    drift_types.extend(name for name, detected in drift_flags.items() if detected)
+    drift_types = _unique_failures(drift_types)
+    forbidden_drift = _as_bool(value("forbidden_drift_detected"), bool(drift_types)) or bool(drift_types)
+
+    expected_subjects = list(
+        expected.get("symbolic_qc_expected_subjects")
+        or scene.symbolic_qc_expected_subjects
+    )
+    expected_subject_text = " ".join(expected_subjects).lower()
+    crowd_visible = _as_bool(value("crowd_visible"), character_count >= 2)
+    comparison_symbol_visible = _as_bool(value("comparison_symbols_present"), False)
+    effort_symbol_visible = _as_bool(
+        value("effort_or_carrying_symbol_visible"),
+        visual_matches,
+    )
+    if "crowd" in expected_subject_text and not crowd_visible:
+        required_subjects_present = False
+    if "comparison symbol" in expected_subject_text and character_count < 2 and not comparison_symbol_visible:
+        required_subjects_present = False
+    if "effort or carrying symbol" in expected_subject_text and not effort_symbol_visible:
+        required_subjects_present = False
+
+    hard_reasons: list[str] = []
+    soft_reasons: list[str] = []
+    if not meaning_matches:
+        hard_reasons.append("semantic_symbol_mismatch")
+    if not visual_matches or not required_subjects_present:
+        hard_reasons.append("required_subject_missing")
+    if not identity_matches:
+        hard_reasons.append("visual_identity_drift")
+    if not age_matches:
+        hard_reasons.append("age_drift")
+    if not metaphor_readable:
+        soft_reasons.append("metaphor_unreadable")
+    if not palette_matches:
+        soft_reasons.append("palette_drift")
+    if not line_style_matches:
+        soft_reasons.append("line_style_drift")
+    if not scale_matches:
+        soft_reasons.append("composition_scale_drift")
+
+    for drift_type in drift_types:
+        if drift_type == "child":
+            hard_reasons.append("age_drift")
+        elif drift_type == "medical_mask":
+            hard_reasons.append("medical_mask_drift")
+        elif drift_type in {"ghost", "monster", "blob_creature", "creature"}:
+            hard_reasons.append("creature_drift")
+        elif drift_type == "horror":
+            hard_reasons.append("horror_drift")
+        elif drift_type == "photorealistic":
+            hard_reasons.append("photorealistic_drift")
+        else:
+            hard_reasons.append("visual_identity_drift")
+    if not style_matches and palette_matches and line_style_matches and not drift_types:
+        hard_reasons.append("visual_identity_drift")
+    if forbidden_drift and not drift_types:
+        hard_reasons.append("visual_identity_drift")
+    if not model_passed and not hard_reasons and not soft_reasons:
+        hard_reasons.append("semantic_symbol_mismatch")
+
+    hard_reasons = _unique_failures(hard_reasons)
+    soft_reasons = _unique_failures(soft_reasons)
+    previous_streaks = dict(expected.get("symbolic_soft_fail_streaks", {}))
+    soft_fail_streaks = {
+        reason: int(previous_streaks.get(reason, 0)) + 1 if reason in soft_reasons else 0
+        for reason in _SYMBOLIC_SOFT_FAILURES
+    }
+    repeated_reasons = [
+        f"repeated_soft_fail_escalated:{reason}"
+        for reason, streak in soft_fail_streaks.items()
+        if streak >= _SOFT_STREAK_LIMIT
+    ]
+    repeated_codes = [
+        reason
+        for reason, streak in soft_fail_streaks.items()
+        if streak >= _SOFT_STREAK_LIMIT
+    ]
+    exhaustion_reasons: list[str] = []
+    if bool(expected.get("is_final_attempt")):
+        exhaustion_reasons = [
+            f"final_attempt_soft_fail_escalated:{reason}"
+            for reason in soft_reasons
+            if reason not in repeated_codes
+        ]
+    hard_reasons = _unique_failures(
+        hard_reasons + repeated_codes + repeated_reasons + exhaustion_reasons
+    )
+    failure_reasons = _unique_failures(
+        [reason for reason in hard_reasons if ":" not in reason] + soft_reasons
+    )
+    passed = not hard_reasons and not soft_reasons
+    if passed:
+        final_status = "passed"
+    elif repeated_reasons or exhaustion_reasons:
+        final_status = "soft_failed_escalated"
+    elif hard_reasons:
+        final_status = "hard_failed"
+    else:
+        final_status = "soft_failed"
+
+    return {
+        "passed": passed,
+        "final_status": final_status,
+        "failure_reasons": failure_reasons,
+        "hard_reasons": hard_reasons,
+        "soft_reasons": soft_reasons,
+        "repeated_reasons": repeated_reasons,
+        "exhaustion_reasons": exhaustion_reasons,
+        "soft_fail_streaks": soft_fail_streaks,
+        "symbolic_meaning_matches": meaning_matches,
+        "symbolic_visual_matches": visual_matches and required_subjects_present,
+        "metaphor_is_readable": metaphor_readable,
+        "visual_identity_matches": identity_matches,
+        "adult_age_policy_matches": age_matches,
+        "style_matches_symbolic_reel": style_matches,
+        "subject_scale_matches": scale_matches,
+        "forbidden_drift_detected": forbidden_drift,
+        "forbidden_drift_types": drift_types,
+    }
+
+
+def _normalize_symbolic_drift_type(value: Any) -> str:
+    key = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+    if "mask" in key:
+        return "medical_mask"
+    if "photo" in key or "realistic" in key or "cinematic_figure" in key:
+        return "photorealistic"
+    if "blob" in key:
+        return "blob_creature"
+    if "ghost" in key:
+        return "ghost"
+    if "monster" in key:
+        return "monster"
+    if "horror" in key:
+        return "horror"
+    if "child" in key or "kid" in key or "baby" in key:
+        return "child"
+    return key or "unknown"
 
 
 def _deterministic_overrides(
@@ -985,6 +1333,7 @@ def _vision_prompt(
     expected: dict[str, Any],
     anatomy: dict[str, str],
 ) -> str:
+    symbolic_qc = _is_symbolic_qc(scene, expected)
     character = visual_bible.character_specs[0] if visual_bible.character_specs else None
     identity = ""
     if character:
@@ -1024,6 +1373,65 @@ def _vision_prompt(
         "failure_reasons": [],
         "repair_prompt": "",
     }
+    symbolic_context = ""
+    if symbolic_qc:
+        schema.update(
+            {
+                "symbolic_meaning_matches": True,
+                "symbolic_visual_matches": True,
+                "required_subjects_present": True,
+                "metaphor_is_readable": True,
+                "visual_identity_matches": True,
+                "adult_age_policy_matches": True,
+                "style_matches_symbolic_reel": True,
+                "subject_scale_matches": True,
+                "palette_matches": True,
+                "line_style_matches": True,
+                "forbidden_drift_detected": False,
+                "forbidden_drift_types": [],
+                "child_detected": False,
+                "medical_mask_detected": False,
+                "ghost_detected": False,
+                "monster_detected": False,
+                "blob_creature_detected": False,
+                "horror_imagery_detected": False,
+                "photorealistic_figure_detected": False,
+                "crowd_visible": False,
+                "comparison_symbols_present": False,
+                "effort_or_carrying_symbol_visible": False,
+                "symbolic_notes": "",
+            }
+        )
+        expected_subjects = list(
+            expected.get("symbolic_qc_expected_subjects")
+            or scene.symbolic_qc_expected_subjects
+        )
+        symbolic_context = (
+            "\nSYMBOLIC REEL SEMANTIC QC: inspect the actual attached image, not "
+            "the prompt text alone. Evaluate every symbolic field in the schema.\n"
+            f"Scene meaning: {scene.scene_meaning}\n"
+            f"Required symbolic visual: {scene.symbolic_visual}\n"
+            f"Emotional metaphor: {scene.emotional_metaphor}\n"
+            f"Required subjects: {json.dumps(expected_subjects, ensure_ascii=False)}\n"
+            f"Visual identity id: {scene.visual_identity_id}\n"
+            f"Cast archetype: {scene.cast_archetype}\n"
+            f"Age policy: {scene.age_policy}\n"
+            f"Palette id: {scene.palette_id}\n"
+            f"Line style id: {scene.line_style_id}\n"
+            f"Subject scale profile: {scene.subject_scale_profile}\n"
+            "Hard symbolic failures: missing required subject, child under the "
+            "adult policy, medical mask, ghost, monster, blob creature, horror "
+            "imagery, photorealistic/cinematic figure, unreadable scene meaning, "
+            "or global visual identity drift. Soft-only failures: unreadable "
+            "metaphor, palette drift, line-style drift, or subject-scale drift. "
+            "For soft-only failures keep passed=true; use passed=false for hard "
+            "failures. Record forbidden drift types with structured labels.\n"
+            "Concrete rules: lonely-in-a-crowd requires one isolated adult plus "
+            "a visible group; comparison requires two people or an unmistakable "
+            "comparison symbol; looking okay while hurt must not become illness "
+            "or a medical mask; sadness at night must not become a ghost, monster, "
+            "or horror scene; unseen effort needs a concrete effort/carrying symbol.\n"
+        )
     return (
         "Review the attached generated illustration for Tella scene QC. "
         "Return only valid JSON matching this schema. Do not include markdown.\n"
@@ -1038,6 +1446,7 @@ def _vision_prompt(
         f"Scene title: {scene.title}\n"
         f"Scene narration: {scene.voice_script}\n"
         f"Scene action/prompt: {scene.prompt_used or scene.image_prompt}\n"
+        f"{symbolic_context}"
         "Use action_mismatch_severity='none' when the action is correct, 'minor' for a usable but slightly off action, "
         "and 'major' when the main action, location, or central requested object is completely wrong or missing. "
         "Use passed=false for hard failures only; for a minor action mismatch only, keep passed=true and set "
@@ -1045,6 +1454,92 @@ def _vision_prompt(
         "Do not infer severity from prose alone; set the structured severity field. "
         "Hard anatomy issues include extra limbs, duplicate face/head, visible text/watermark, missing readable head, "
         "bad medium/wide crop, broken body, or duplicated feet/legs."
+    )
+
+
+def _is_symbolic_qc(scene: Scene, expected: dict[str, Any]) -> bool:
+    return bool(
+        expected.get("theme") == "minimalist_symbolic_reel"
+        or scene.visual_mode == "symbolic_listicle"
+        or scene.visual_identity_id.startswith("symbolic_")
+    )
+
+
+def _missing_symbolic_qc_fields(data: dict[str, Any]) -> list[str]:
+    missing = []
+    for field in _SYMBOLIC_REQUIRED_QC_FIELDS:
+        if _deep_pick(data, ("symbolic", field), (field,)) is None:
+            missing.append(field)
+    return missing
+
+
+def _symbolic_repair_prompt(
+    scene: Scene,
+    base_prompt: str,
+    failure_reasons: list[str],
+) -> str:
+    reasons = _unique_failures(failure_reasons)
+    corrections: list[str] = []
+    if any("semantic_symbol_mismatch" in reason for reason in reasons):
+        corrections.append(
+            f"make this scene meaning immediately recognizable: {scene.scene_meaning}"
+        )
+    if any("required_subject_missing" in reason for reason in reasons):
+        required = "; ".join(scene.symbolic_qc_expected_subjects)
+        corrections.append(
+            "show every required subject clearly and separately: "
+            + (required or scene.symbolic_visual)
+        )
+    if any("age_drift" in reason for reason in reasons):
+        corrections.append(
+            "use an ordinary adult aged 22-35 with adult proportions; no child or childlike body"
+        )
+    if any("medical_mask_drift" in reason for reason in reasons):
+        corrections.append(
+            "show an ordinary unobstructed adult face; no medical mask, illness, hospital, or medical symbolism"
+        )
+    if any(
+        marker in reason
+        for reason in reasons
+        for marker in ("creature_drift", "horror_drift")
+    ):
+        corrections.append(
+            "use an ordinary adult or gentle concrete emotional symbol; no supernatural creature, ghost, monster, blob, or horror imagery"
+        )
+    if any("photorealistic_drift" in reason for reason in reasons):
+        corrections.append(
+            "return to a flat minimalist hand-drawn doodle; no photorealism or cinematic figure"
+        )
+    if any("visual_identity_drift" in reason for reason in reasons):
+        corrections.append(
+            f"match visual identity {scene.visual_identity_id}, palette {scene.palette_id}, and line style {scene.line_style_id}"
+        )
+    if any("metaphor_unreadable" in reason for reason in reasons):
+        corrections.append(
+            f"use one concrete readable symbol for the metaphor: {scene.symbolic_visual}; remove unrelated abstractions"
+        )
+    if any("palette_drift" in reason for reason in reasons):
+        corrections.append(
+            f"use only the limited muted earthy palette {scene.palette_id}"
+        )
+    if any("line_style_drift" in reason for reason in reasons):
+        corrections.append(
+            f"restore the consistent soft rough pencil line feel {scene.line_style_id}"
+        )
+    if any("composition_scale_drift" in reason for reason in reasons):
+        corrections.append(
+            f"follow subject scale {scene.subject_scale_profile}; keep the subject clearly readable with generous negative space"
+        )
+    if not corrections:
+        corrections.append(
+            "make the requested symbolic subject concrete, readable, and faithful to the shared visual identity"
+        )
+    return (
+        "SYMBOLIC QC REPAIR. Mandatory corrections: "
+        + "; ".join(corrections)
+        + ". Preserve the original scene meaning and low-detail symbolic style. "
+        + "Revised source prompt: "
+        + base_prompt
     )
 
 

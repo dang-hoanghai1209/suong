@@ -47,7 +47,7 @@ from tella.media.visual_qc import (
     strict_visual_qc,
     summarize_qc_attempts,
 )
-from tella.planner.models import SceneQCResult, TellaScenePlan
+from tella.planner.models import SceneQCResult, StyleBible, TellaScenePlan, VisualBible
 from tella.planner.visual_bible import build_visual_bible, save_visual_bible
 from tella.planner.visual_prompts import build_scene_visual_plan, repair_prompt
 
@@ -62,6 +62,10 @@ MAX_CONCURRENT = 3
 # same across scenes (FLUX has no cross-call memory; a fixed seed + the
 # locked identity text is the best text-only consistency lever we have).
 _VIDEO_SEED = 73501
+
+
+class _SymbolicQCFailure(RuntimeError):
+    pass
 
 # Generation dims fed to the AI image provider. Smaller than the 1080×1920 /
 # 1920×1080 final canvas on purpose — the renderer upscales/crops, and a
@@ -1250,6 +1254,13 @@ def _seed_for_scene(plan: TellaScenePlan, scene) -> int:
     return _VIDEO_SEED
 
 
+def _symbolic_expected_character_count(scene) -> int:
+    required = " ".join(scene.symbolic_qc_expected_subjects).lower()
+    if "crowd" in required or "at least two adult human figures" in required:
+        return 2
+    return 0 if scene.cast_archetype == "symbolic_object" else 1
+
+
 async def _fetch_minimalist_reference_assets(
     plan: TellaScenePlan,
     body_scenes,
@@ -1629,6 +1640,11 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
 
     sem = asyncio.Semaphore(MAX_CONCURRENT)
     ai_fallback_state = sprite_composer.JobState(job_id=f"{job_dir.name}:fallback")
+    symbolic_visual_bible = (
+        VisualBible(style_bible=StyleBible())
+        if plan.media_source == "ai_image" and plan.theme == "minimalist_symbolic_reel"
+        else None
+    )
 
     async def _reserve_ai_request(scene) -> None:
         async with ai_counter_lock:
@@ -1651,6 +1667,145 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         )
         plan.ai_images_generated += 1
         scene.ai_images_generated += 1
+
+    async def _generate_symbolic_image_with_qc(
+        scene,
+        prompt: str,
+        final_out: Path,
+        base: str,
+    ) -> Path:
+        assert symbolic_visual_bible is not None
+        attempt_limit = max_attempts()
+        scene.max_attempts_allowed = attempt_limit
+        current_prompt = prompt
+        symbolic_soft_fail_streaks: dict[str, int] = {}
+        attempt_records: list[tuple[Path, SceneQCResult]] = []
+        selected_out: Path | None = None
+        selected_qc: SceneQCResult | None = None
+
+        for attempt in range(1, attempt_limit + 1):
+            scene.attempt_count = attempt
+            attempt_out = (
+                final_out
+                if attempt == attempt_limit
+                else assets_dir / f"{base}_attempt_{attempt}.jpg"
+            )
+            scene.prompt_used = current_prompt
+            await _generate_ai_image(
+                scene,
+                current_prompt,
+                attempt_out,
+                seed=_seed_for_scene(plan, scene) + attempt * 17,
+            )
+            if attempt > 1:
+                plan.total_scene_regeneration_attempts += 1
+
+            qc_result = evaluate_scene_image(
+                scene,
+                attempt_out,
+                symbolic_visual_bible,
+                {
+                    "theme": plan.theme,
+                    "aspect": plan.aspect_ratio,
+                    "width": width,
+                    "height": height,
+                    "job_dir": job_dir,
+                    "attempt": attempt,
+                    "max_attempts_allowed": attempt_limit,
+                    "is_final_attempt": attempt >= attempt_limit,
+                    "expected_character_count": _symbolic_expected_character_count(scene),
+                    "symbolic_qc_expected_subjects": list(
+                        scene.symbolic_qc_expected_subjects
+                    ),
+                    "symbolic_soft_fail_streaks": symbolic_soft_fail_streaks,
+                    "repaired_prompt_used": attempt > 1,
+                },
+            )
+            selected_qc = qc_result
+            attempt_records.append((attempt_out, qc_result))
+            plan.total_vision_qc_calls += int(qc_result.vision_qc_call_count)
+            plan.total_qc_json_parse_attempts += int(
+                qc_result.qc_json_parse_attempt_count
+            )
+            symbolic_soft_fail_streaks = dict(
+                qc_result.symbolic_soft_fail_streaks
+            )
+            save_qc_result(qc_result, job_dir, attempt=attempt, final=False)
+            if qc_result.passed:
+                selected_out = attempt_out
+                break
+            if qc_result.stopped_retry_loop_early_due_to_repeated_soft_fail:
+                logger.warning(
+                    "scene %d symbolic QC stopped after repeated soft-fail "
+                    "escalation: %s",
+                    scene.scene_index,
+                    qc_result.symbolic_qc_hard_fail_reasons,
+                )
+                break
+            current_prompt = qc_result.repair_prompt or repair_prompt(
+                prompt,
+                qc_result.failure_reasons,
+            )
+            logger.warning(
+                "scene %d symbolic QC failed attempt %d/%d reasons=%s",
+                scene.scene_index,
+                attempt,
+                attempt_limit,
+                qc_result.symbolic_qc_failure_reasons,
+            )
+
+        selected_best_failed_attempt = False
+        selected_best_failed_attempt_reason = ""
+        ranking_summary = ""
+        if selected_out is None and attempt_records:
+            ranked_records = sorted(
+                enumerate(attempt_records),
+                key=lambda item: rank_qc_attempt(item[1][1], item[0]),
+            )
+            _, (selected_out, selected_qc) = ranked_records[0]
+            selected_best_failed_attempt = True
+            selected_best_failed_attempt_reason = (
+                "all symbolic QC attempts failed; selected least-bad attempt "
+                "for diagnostics only"
+            )
+            ranking_summary = summarize_qc_attempts(
+                [record[1] for record in attempt_records]
+            )
+
+        if selected_qc is not None:
+            save_qc_result(selected_qc, job_dir, final=True)
+        if selected_out is not None and selected_out != final_out:
+            final_out.write_bytes(selected_out.read_bytes())
+        if selected_qc is not None and selected_out is not None:
+            try:
+                selected_attempt_path = str(selected_out.relative_to(job_dir))
+            except ValueError:
+                selected_attempt_path = str(selected_out)
+            apply_qc_result_to_scene(
+                scene,
+                selected_qc,
+                selected_attempt_path=selected_attempt_path,
+                attempts_actually_ran=len(attempt_records),
+                max_attempts_allowed=attempt_limit,
+                selected_best_failed_attempt=selected_best_failed_attempt,
+                selected_best_failed_attempt_reason=(
+                    selected_best_failed_attempt_reason
+                ),
+                best_attempt_ranking_summary=ranking_summary,
+            )
+
+        if selected_best_failed_attempt:
+            reasons = (
+                selected_qc.symbolic_qc_failure_reasons
+                if selected_qc is not None
+                else ["symbolic QC failed without a result"]
+            )
+            scene.asset_error = f"symbolic visual QC failed: {reasons}"[:300]
+            raise _SymbolicQCFailure(
+                f"scene {scene.scene_index} failed symbolic visual QC after "
+                f"{len(attempt_records)} attempt(s): {reasons}"
+            )
+        return final_out
 
     def _apply_reused_asset(
         scene,
@@ -1861,17 +2016,25 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                         "Use --images-from-job with matching prompt hashes or disable --skip-image-generation."
                     )
                 try:
-                    await _generate_ai_image(
-                        scene,
-                        prompt_for_cf,
-                        out,
-                        # Other themes keep one video seed for continuity.
-                        # Minimalist emotional gets a deterministic per-scene
-                        # seed because prompt collapse showed up as duplicate
-                        # images; the strict character/style lock carries
-                        # identity consistency for that theme.
-                        seed=_seed_for_scene(plan, scene),
-                    )
+                    if plan.theme == "minimalist_symbolic_reel":
+                        await _generate_symbolic_image_with_qc(
+                            scene,
+                            prompt_for_cf,
+                            out,
+                            base,
+                        )
+                    else:
+                        await _generate_ai_image(
+                            scene,
+                            prompt_for_cf,
+                            out,
+                            # Other themes keep one video seed for continuity.
+                            # Minimalist emotional gets a deterministic per-scene
+                            # seed because prompt collapse showed up as duplicate
+                            # images; the strict character/style lock carries
+                            # identity consistency for that theme.
+                            seed=_seed_for_scene(plan, scene),
+                        )
                     scene.image_filenames = [f"assets/{out.name}"]
                     scene.asset_status = "done"
                     scene.asset_error = ""
@@ -1904,8 +2067,10 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                             job_dir=job_dir,
                             used_local_fallback=False,
                         )
-                        scene.prompt_used = prompt_for_cf
+                        scene.prompt_used = scene.prompt_used or prompt_for_cf
                     _record_asset(scene, out)
+                except _SymbolicQCFailure:
+                    raise
                 except Exception as exc:
                     scene.asset_error = str(exc)[:300]
                     if plan.theme == "minimalist_emotional":
