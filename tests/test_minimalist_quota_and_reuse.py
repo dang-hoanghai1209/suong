@@ -68,6 +68,7 @@ def _clear_fetch_env(monkeypatch):
         "TELLA_REUSE_PLAN_PATH",
         "TELLA_MAX_AI_IMAGES",
         "TELLA_MINIMALIST_VISUAL_MODE",
+        "TELLA_SCENE_QC",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -199,6 +200,37 @@ def _write_source_reuse_job(source_job: Path, scene_count: int = 3) -> None:
     )
 
 
+def _symbolic_preview_plan() -> TellaScenePlan:
+    scene = Scene(
+        scene_index=1,
+        kind="scene",
+        title="Burden",
+        voice_script="Có những nỗi buồn.",
+        image_prompt="new symbolic prompt that intentionally differs",
+        stock_query="symbolic burden",
+        scene_meaning="The weight of unspoken sorrow",
+        symbolic_visual="person carrying a large stone",
+        emotional_metaphor="Emotional burden",
+        main_character_or_object="person carrying a stone",
+        visual_mode="symbolic_listicle",
+    )
+    plan = TellaScenePlan(
+        title="Symbolic reuse preview",
+        language="vi",
+        aspect_ratio="9:16",
+        media_source="ai_image",
+        duration_mode="short",
+        theme="minimalist_symbolic_reel",
+        scenes=[
+            scene,
+            scene.model_copy(update={"scene_index": 2, "title": "Two"}),
+            scene.model_copy(update={"scene_index": 3, "title": "Three"}),
+        ],
+    )
+    plan.scenes = plan.scenes[:1]
+    return plan
+
+
 def test_strict_reuse_rejects_mismatched_prompt_hashes(monkeypatch, tmp_path):
     _clear_fetch_env(monkeypatch)
     source_job = tmp_path / "source_mismatch"
@@ -214,7 +246,7 @@ def test_strict_reuse_rejects_mismatched_prompt_hashes(monkeypatch, tmp_path):
     monkeypatch.setenv("TELLA_IMAGES_FROM_JOB", str(source_job))
     plan = _plan()
 
-    with pytest.raises(RuntimeError, match="Image generation skipped"):
+    with pytest.raises(RuntimeError, match="no reusable asset could be resolved"):
         asyncio.run(fetch.fetch_assets(plan, current_job))
 
     assert plan.ai_images_requested == 0
@@ -273,8 +305,163 @@ def test_loose_debug_aborts_when_source_job_has_too_few_images(monkeypatch, tmp_
     monkeypatch.setenv("TELLA_IMAGES_FROM_JOB", str(source_job))
     plan = _plan()
 
-    with pytest.raises(RuntimeError, match="fewer usable images"):
+    with pytest.raises(RuntimeError, match="no reusable asset could be resolved"):
         asyncio.run(fetch.fetch_assets(plan, current_job))
 
     assert plan.ai_images_requested == 0
     assert plan.ai_images_generated == 0
+
+
+def test_symbolic_loose_skip_reuses_one_asset_with_zero_provider_calls(
+    monkeypatch,
+    tmp_path,
+):
+    _clear_fetch_env(monkeypatch)
+    source_job = tmp_path / "symbolic_cf_budget_preview_01"
+    current_job = tmp_path / "symbolic_subtitle_reuse_01"
+    _write_source_reuse_job(source_job, scene_count=1)
+    provider_calls: list[str] = []
+
+    async def fail_provider(*args, **kwargs):
+        provider_calls.append("provider")
+        raise AssertionError("no provider may run with skip-image-generation")
+
+    def fail_qc(*args, **kwargs):
+        raise AssertionError("TELLA_SCENE_QC=off must not invoke vision QC")
+
+    monkeypatch.setattr(fetch.ai_image, "generate_image", fail_provider)
+    monkeypatch.setattr(fetch.stock_photo, "search_and_download", fail_provider)
+    monkeypatch.setattr(fetch.stock_video, "search_and_download", fail_provider)
+    monkeypatch.setattr(fetch, "evaluate_scene_image", fail_qc)
+    monkeypatch.setenv("TELLA_REUSE_ASSETS", "1")
+    monkeypatch.setenv("TELLA_REUSE_ASSETS_MODE", "loose")
+    monkeypatch.setenv("TELLA_SKIP_IMAGE_GENERATION", "1")
+    monkeypatch.setenv("TELLA_IMAGES_FROM_JOB", str(source_job))
+    monkeypatch.setenv("TELLA_SCENE_QC", "off")
+    plan = _symbolic_preview_plan()
+
+    asyncio.run(fetch.fetch_assets(plan, current_job))
+
+    scene = plan.scenes[0]
+    assert provider_calls == []
+    assert scene.image_source == "reused_asset"
+    assert scene.reused_asset is True
+    assert scene.reused_from_job == source_job.name
+    assert scene.reused_from_scene == 1
+    assert scene.reused_asset_path == "assets/source_scene_1.jpg"
+    assert scene.reuse_assets_mode == "loose"
+    assert scene.reuse_prompt_match is False
+    assert scene.reuse_mismatch_allowed is True
+    assert scene.skip_image_generation is True
+    assert scene.provider_request_count_for_scene == 0
+    assert scene.actual_cloudflare_request_count_for_scene == 0
+    assert plan.ai_images_requested == 0
+    assert plan.image_request_budget_used_at_finish == 0
+    assert (current_job / scene.asset_path).is_file()
+    assert (source_job / scene.reused_asset_path).is_file()
+
+
+def test_skip_reuse_missing_asset_fails_before_provider(monkeypatch, tmp_path):
+    _clear_fetch_env(monkeypatch)
+    source_job = tmp_path / "source_missing_asset"
+    source_job.mkdir(parents=True)
+    (source_job / "plan.json").write_text(
+        json.dumps(
+            {
+                "scenes": [
+                    {
+                        "scene_index": 1,
+                        "kind": "scene",
+                        "asset_prompt_hash": "old_hash",
+                        "asset_path": "assets/missing.jpg",
+                        "image_source": "ai_image_provider",
+                        "image_provider": "cloudflare",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider_calls: list[str] = []
+
+    async def fail_provider(*args, **kwargs):
+        provider_calls.append("provider")
+        raise AssertionError("provider must not run")
+
+    monkeypatch.setattr(fetch.ai_image, "generate_image", fail_provider)
+    monkeypatch.setenv("TELLA_REUSE_ASSETS", "1")
+    monkeypatch.setenv("TELLA_REUSE_ASSETS_MODE", "loose")
+    monkeypatch.setenv("TELLA_SKIP_IMAGE_GENERATION", "1")
+    monkeypatch.setenv("TELLA_IMAGES_FROM_JOB", str(source_job))
+
+    with pytest.raises(RuntimeError, match="candidate asset file is missing"):
+        asyncio.run(fetch.fetch_assets(_symbolic_preview_plan(), tmp_path / "current"))
+
+    assert provider_calls == []
+
+
+def test_skip_reuse_no_candidate_fails_before_provider(monkeypatch, tmp_path):
+    _clear_fetch_env(monkeypatch)
+    source_job = tmp_path / "source_empty"
+    source_job.mkdir(parents=True)
+    (source_job / "plan.json").write_text(
+        json.dumps({"scenes": []}),
+        encoding="utf-8",
+    )
+    provider_calls: list[str] = []
+
+    async def fail_provider(*args, **kwargs):
+        provider_calls.append("provider")
+        raise AssertionError("provider must not run")
+
+    monkeypatch.setattr(fetch.ai_image, "generate_image", fail_provider)
+    monkeypatch.setenv("TELLA_REUSE_ASSETS", "1")
+    monkeypatch.setenv("TELLA_SKIP_IMAGE_GENERATION", "1")
+    monkeypatch.setenv("TELLA_IMAGES_FROM_JOB", str(source_job))
+
+    with pytest.raises(RuntimeError, match="source plan has no candidate"):
+        asyncio.run(fetch.fetch_assets(_symbolic_preview_plan(), tmp_path / "current"))
+
+    assert provider_calls == []
+
+
+def test_skip_provider_submission_guard_raises_before_network(monkeypatch):
+    _clear_fetch_env(monkeypatch)
+    monkeypatch.setenv("TELLA_SKIP_IMAGE_GENERATION", "1")
+
+    with pytest.raises(RuntimeError, match="Internal invariant violated"):
+        fetch._assert_provider_submission_allowed()
+
+
+def test_reused_symbolic_asset_does_not_run_qc_or_regenerate_when_qc_enabled(
+    monkeypatch,
+    tmp_path,
+):
+    _clear_fetch_env(monkeypatch)
+    source_job = tmp_path / "source_qc"
+    _write_source_reuse_job(source_job, scene_count=1)
+    provider_calls: list[str] = []
+
+    async def fail_provider(*args, **kwargs):
+        provider_calls.append("provider")
+        raise AssertionError("QC must not regenerate a reused image")
+
+    def fail_qc(*args, **kwargs):
+        raise AssertionError("current reuse policy does not inspect reused assets")
+
+    monkeypatch.setattr(fetch.ai_image, "generate_image", fail_provider)
+    monkeypatch.setattr(fetch, "evaluate_scene_image", fail_qc)
+    monkeypatch.setenv("TELLA_REUSE_ASSETS", "1")
+    monkeypatch.setenv("TELLA_REUSE_ASSETS_MODE", "loose")
+    monkeypatch.setenv("TELLA_SKIP_IMAGE_GENERATION", "1")
+    monkeypatch.setenv("TELLA_IMAGES_FROM_JOB", str(source_job))
+    monkeypatch.setenv("TELLA_SCENE_QC", "strict")
+
+    asyncio.run(
+        fetch.fetch_assets(
+            _symbolic_preview_plan(),
+            tmp_path / "current_qc",
+        )
+    )
+
+    assert provider_calls == []

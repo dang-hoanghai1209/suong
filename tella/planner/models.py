@@ -398,8 +398,16 @@ class Scene(BaseModel):
     local_fallback_allowed: bool = False
     reused_asset: bool = False
     reused_from_job_id: str = Field("", max_length=160)
+    reused_from_job: str = Field("", max_length=300)
+    reused_from_scene: int = 0
+    reused_asset_path: str = Field("", max_length=300)
     reused_asset_prompt_hash_mismatch: bool = False
     reuse_mode: str = Field("", max_length=40)
+    reuse_assets_mode: str = Field("", max_length=40)
+    reuse_prompt_match: bool = False
+    reuse_mismatch_allowed: bool = False
+    skip_image_generation: bool = False
+    provider_request_count_for_scene: int = 0
     asset_prompt_hash: str = Field("", max_length=80)
     nsfw_retry_attempted: bool = False
     nsfw_retry_succeeded: bool = False

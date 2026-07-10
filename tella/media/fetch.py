@@ -111,6 +111,7 @@ class _CloudflareRequestBudget:
             self.plan.ai_images_requested += 1
             scene.ai_images_requested += 1
             scene.actual_cloudflare_request_count_for_scene += 1
+            scene.provider_request_count_for_scene += 1
             scene.provider_prompt_stage_used = stage
             if stage == "policy_retry":
                 scene.content_policy_retry_used = True
@@ -616,6 +617,14 @@ def _skip_image_generation() -> bool:
     return _env_bool("TELLA_SKIP_IMAGE_GENERATION")
 
 
+def _assert_provider_submission_allowed() -> None:
+    if _skip_image_generation():
+        raise RuntimeError(
+            "Internal invariant violated: provider generation attempted while "
+            "--skip-image-generation is active"
+        )
+
+
 def _asset_prompt_hash(prompt: str, *, width: int, height: int, seed: int | None) -> str:
     payload = json.dumps(
         {
@@ -701,7 +710,11 @@ def _load_reuse_index(job_dir: Path) -> dict[tuple[int, str], dict]:
             continue
         if item.get("used_local_fallback"):
             continue
-        if item.get("image_source") not in {"ai_image_provider", "reference_guided_ai_image"}:
+        if item.get("image_source") not in {
+            "ai_image_provider",
+            "reference_guided_ai_image",
+            "reused_asset",
+        }:
             continue
         src = source_dir / asset_path
         if not src.is_file():
@@ -711,6 +724,7 @@ def _load_reuse_index(job_dir: Path) -> dict[tuple[int, str], dict]:
             "source_asset_path": asset_path,
             "source_prompt_hash": prompt_hash,
             "source_job_id": source_dir.name,
+            "source_scene_index": int(item.get("scene_index") or 0),
             "image_source": item.get("image_source") or "ai_image_provider",
             "image_provider": item.get("image_provider") or "cloudflare",
             "asset_status": item.get("asset_status") or "done",
@@ -743,7 +757,11 @@ def _load_loose_reuse_index(job_dir: Path) -> dict[int, dict]:
             continue
         if item.get("used_local_fallback"):
             continue
-        if item.get("image_source") not in {"ai_image_provider", "reference_guided_ai_image"}:
+        if item.get("image_source") not in {
+            "ai_image_provider",
+            "reference_guided_ai_image",
+            "reused_asset",
+        }:
             continue
         src = source_dir / asset_path
         if not src.is_file():
@@ -756,12 +774,91 @@ def _load_loose_reuse_index(job_dir: Path) -> dict[int, dict]:
             "source_asset_path": asset_path,
             "source_prompt_hash": str(item.get("asset_prompt_hash") or ""),
             "source_job_id": source_dir.name,
+            "source_scene_index": scene_index,
             "image_source": item.get("image_source") or "ai_image_provider",
             "image_provider": item.get("image_provider") or "cloudflare",
             "asset_status": item.get("asset_status") or "done",
         }
     logger.info("loose reuse index loaded: %d reusable scene assets", len(index))
     return index
+
+
+def _reuse_rejection_details(
+    job_dir: Path,
+    *,
+    scene_index: int,
+    prompt_hash: str,
+    reuse_mode: str,
+) -> tuple[bool, str]:
+    source_dir = _source_job_dir(job_dir)
+    if source_dir is None:
+        return False, "no source job was configured"
+    explicit_plan = (os.environ.get("TELLA_REUSE_PLAN_PATH") or "").strip()
+    plan_path = Path(explicit_plan) if explicit_plan else source_dir / "plan.json"
+    if not plan_path.is_file():
+        return False, f"source plan is missing: {plan_path}"
+    try:
+        data = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"source plan could not be read: {exc}"
+
+    candidates = [
+        item
+        for item in data.get("scenes", [])
+        if isinstance(item, dict)
+        and item.get("kind") == "scene"
+        and int(item.get("scene_index") or 0) == scene_index
+    ]
+    if not candidates:
+        return False, "source plan has no candidate for this scene index"
+
+    reasons: list[str] = []
+    for item in candidates:
+        asset_path = str(
+            item.get("asset_path") or (item.get("image_filenames") or [""])[0]
+        )
+        if not asset_path:
+            reasons.append("candidate has no asset path")
+            continue
+        if not (source_dir / asset_path).is_file():
+            reasons.append(f"candidate asset file is missing: {asset_path}")
+            continue
+        if item.get("used_local_fallback"):
+            reasons.append("candidate used local fallback")
+            continue
+        source_hash = str(item.get("asset_prompt_hash") or "")
+        if reuse_mode == "strict" and source_hash != prompt_hash:
+            reasons.append("candidate prompt hash does not match")
+            continue
+        reasons.append("candidate metadata was not eligible for reuse")
+    return True, "; ".join(dict.fromkeys(reasons))
+
+
+def _skip_image_generation_reuse_error(
+    job_dir: Path,
+    scene,
+    *,
+    prompt_hash: str,
+    reuse_mode: str,
+    index_had_candidates: bool,
+) -> RuntimeError:
+    source_dir = _source_job_dir(job_dir)
+    source_label = str(source_dir) if source_dir is not None else "<none>"
+    had_plan_candidates, rejection_reason = _reuse_rejection_details(
+        job_dir,
+        scene_index=scene.scene_index,
+        prompt_hash=prompt_hash,
+        reuse_mode=reuse_mode,
+    )
+    return RuntimeError(
+        "Image generation is disabled by --skip-image-generation, but no "
+        f"reusable asset could be resolved for scene {scene.scene_index:02d} "
+        f"from job {source_label}. No provider request was made. "
+        f"reuse_mode={reuse_mode}; index_had_candidates="
+        f"{str(index_had_candidates).lower()}; source_plan_had_candidates="
+        f"{str(had_plan_candidates).lower()}; rejection_reason="
+        f"{rejection_reason or 'unknown'}"
+    )
 
 
 def _minimalist_visual_mode() -> str:
@@ -1694,6 +1791,9 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
 
     width, height = _GEN_DIMS.get(plan.aspect_ratio, _GEN_DIMS["9:16"])
     local_fallback_allowed = _local_image_fallback_allowed()
+    skip_image_generation = _skip_image_generation()
+    if skip_image_generation:
+        logger.info("skip-image-generation active: provider submissions disabled")
     plan.local_fallback_allowed = local_fallback_allowed
     plan.used_local_fallback = False
     plan.reused_asset = False
@@ -1711,28 +1811,18 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
     for scene in body_scenes:
         scene.local_fallback_allowed = local_fallback_allowed
         scene.reuse_mode = plan.reuse_mode
+        scene.skip_image_generation = skip_image_generation
 
     if plan.reuse_mode == "loose_debug":
         logger.warning(
             "Using mismatched reused assets for debug only. Visuals may not match the current prompt."
         )
-        missing = [
-            scene.scene_index
-            for scene in body_scenes
-            if scene.scene_index not in loose_reuse_index
-        ]
-        if missing:
-            raise RuntimeError(
-                "loose_debug asset reuse requires one reusable source image per "
-                f"scene; missing scene indexes: {missing}. Source job "
-                f"{_source_job_id(job_dir)!r} has fewer usable images than required."
-            )
 
     if plan.media_source == "ai_image" and plan.theme == "minimalist_emotional":
         visual_mode = _minimalist_visual_mode()
         logger.info("minimalist_emotional visual_mode=%s", visual_mode)
         _prepare_minimalist_image_prompts(body_scenes)
-        if visual_mode == "reference":
+        if visual_mode == "reference" and not skip_image_generation:
             await _fetch_minimalist_reference_assets(
                 plan,
                 body_scenes,
@@ -1742,7 +1832,7 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                 height,
             )
             return
-        if visual_mode in {"curated_sprite", "rig"}:
+        if visual_mode in {"curated_sprite", "rig"} and not skip_image_generation:
             logger.info(
                 "minimalist_emotional local composition active; "
                 "Cloudflare full-scene image generation is not called by default"
@@ -1809,6 +1899,8 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         seed: int | None,
         stage: str = "initial",
     ) -> None:
+        _assert_provider_submission_allowed()
+
         async def _before_request() -> None:
             await request_budget.acquire(scene, prompt, stage)
 
@@ -2015,6 +2107,8 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         prompt_hash_mismatch: bool,
     ) -> bool:
         src = Path(cached["source_path"])
+        if not src.is_file():
+            return False
         out.parent.mkdir(parents=True, exist_ok=True)
         if src.resolve() != out.resolve():
             shutil.copy2(src, out)
@@ -2025,8 +2119,19 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         scene.ai_images_reused += 1
         scene.asset_prompt_hash = prompt_hash
         scene.reused_from_job_id = str(cached.get("source_job_id") or "")
+        scene.reused_from_job = scene.reused_from_job_id
+        scene.reused_from_scene = int(cached.get("source_scene_index") or 0)
+        scene.reused_asset_path = str(cached.get("source_asset_path") or src)
         scene.reused_asset_prompt_hash_mismatch = bool(prompt_hash_mismatch)
         scene.reuse_mode = reuse_mode
+        scene.reuse_assets_mode = (
+            "loose" if reuse_mode == "loose_debug" else reuse_mode
+        )
+        scene.reuse_prompt_match = not prompt_hash_mismatch
+        scene.reuse_mismatch_allowed = reuse_mode == "loose_debug"
+        scene.skip_image_generation = _skip_image_generation()
+        scene.provider_request_count_for_scene = 0
+        scene.actual_cloudflare_request_count_for_scene = 0
         plan.reused_asset = True
         plan.reused_from_job_id = scene.reused_from_job_id
         plan.reused_asset_prompt_hash_mismatch = (
@@ -2041,7 +2146,7 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         )
         _set_image_source_metadata(
             scene,
-            image_source=str(cached.get("image_source") or "ai_image_provider"),
+            image_source="reused_asset",
             image_provider=str(cached.get("image_provider") or "cloudflare"),
             asset_path=out,
             job_dir=job_dir,
@@ -2049,12 +2154,14 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         )
         _record_asset(scene, out)
         logger.info(
-            "scene %d reused AI asset from %s (prompt_hash=%s, mode=%s, mismatch=%s)",
+            "scene %02d reused asset from job=%s source_scene=%02d mode=%s "
+            "prompt_match=%s provider_requests=0 source=%s",
             scene.scene_index,
+            scene.reused_from_job_id,
+            scene.reused_from_scene,
+            scene.reuse_assets_mode,
+            str(scene.reuse_prompt_match).lower(),
             src,
-            prompt_hash,
-            reuse_mode,
-            prompt_hash_mismatch,
         )
         return True
 
@@ -2135,6 +2242,7 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         is the safest fallback — no NSFW safety filter false-positives,
         no per-account quota that resets only daily.
         """
+        _assert_provider_submission_allowed()
         out = assets_dir / f"{base}_fallback.jpg"
         if _ai_image_stock_fallback_forbidden(plan):
             provider_message = (
@@ -2224,29 +2332,37 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                         prompt_for_cf,
                         max_len=500,
                     )
+                if _try_reuse_asset(scene, prompt_hash, out):
+                    scene.prompt_used = prompt_for_cf
+                    return
                 if (
-                    plan.theme == "minimalist_emotional"
-                    and plan.reuse_mode == "loose_debug"
+                    plan.reuse_mode == "loose_debug"
                     and _try_loose_reuse_asset(scene, prompt_hash, out)
                 ):
                     scene.prompt_used = prompt_for_cf
                     return
-                if plan.theme == "minimalist_emotional" and _try_reuse_asset(scene, prompt_hash, out):
-                    scene.prompt_used = prompt_for_cf
-                    return
-                if plan.theme == "minimalist_emotional" and _skip_image_generation():
+                if skip_image_generation:
                     scene.ai_provider_error_type = "image_generation_skipped"
                     scene.ai_provider_error_message = (
-                        "skip image generation enabled and no valid reusable asset was found"
+                        "skip image generation enabled and no reusable asset was resolved"
                     )
                     scene.ai_provider_recoverable = False
                     scene.asset_status = "ai_provider_failed"
                     plan.ai_provider_error_type = scene.ai_provider_error_type
                     plan.ai_provider_error_message = scene.ai_provider_error_message
                     plan.ai_provider_recoverable = scene.ai_provider_recoverable
-                    raise RuntimeError(
-                        "Image generation skipped and no valid reusable asset found. "
-                        "Use --images-from-job with matching prompt hashes or disable --skip-image-generation."
+                    raise _skip_image_generation_reuse_error(
+                        job_dir,
+                        scene,
+                        prompt_hash=prompt_hash,
+                        reuse_mode=(
+                            "loose"
+                            if plan.reuse_mode == "loose_debug"
+                            else plan.reuse_mode
+                        ),
+                        index_had_candidates=bool(
+                            reuse_index or loose_reuse_index
+                        ),
                     )
                 try:
                     if plan.theme == "minimalist_symbolic_reel":
@@ -2484,6 +2600,7 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                     )
                     await _fallback_to_stock_photo(scene, base)
             elif plan.media_source == "stock_photo":
+                _assert_provider_submission_allowed()
                 out = assets_dir / f"{base}.jpg"
                 await stock_photo.search_and_download(
                     scene.stock_query or scene.image_prompt[:60],
@@ -2496,6 +2613,7 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                 scene.asset_error = ""
                 _record_asset(scene, out)
             elif plan.media_source == "stock_video":
+                _assert_provider_submission_allowed()
                 out = assets_dir / f"{base}.mp4"
                 try:
                     final = await stock_video.search_and_download(
