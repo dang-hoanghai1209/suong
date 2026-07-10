@@ -295,6 +295,13 @@ class Scene(BaseModel):
     emotional_metaphor: str = Field("", max_length=300)
     main_character_or_object: str = Field("", max_length=160)
     subtitle_highlight_words: list[str] = Field(default_factory=list)
+    visual_identity_id: str = Field("", max_length=80)
+    cast_archetype: str = Field("", max_length=80)
+    age_policy: str = Field("", max_length=120)
+    palette_id: str = Field("", max_length=80)
+    line_style_id: str = Field("", max_length=80)
+    outfit_style_family: str = Field("", max_length=120)
+    subject_scale_profile: str = Field("", max_length=120)
 
     # 1-3 assets per scene. 1 = static Ken Burns; 2-3 = mini-montage with
     # crossfades inside the scene window.
@@ -473,6 +480,16 @@ class TellaScenePlan(BaseModel):
     primary_character: CharacterBrief | None = None
     secondary_character: CharacterBrief | None = None
     setting_brief: SettingBrief | None = None
+
+    # Symbolic reels share a visual family without requiring one recurring
+    # story character. Scene-level fields mirror this profile for inspection.
+    visual_identity_id: str = Field("", max_length=80)
+    cast_archetype_set: list[str] = Field(default_factory=list)
+    age_policy: str = Field("", max_length=120)
+    palette_id: str = Field("", max_length=80)
+    line_style_id: str = Field("", max_length=80)
+    outfit_style_family: str = Field("", max_length=120)
+    subject_scale_profile: str = Field("", max_length=120)
 
     scenes: list[Scene] = Field(..., min_length=3, max_length=40)
 

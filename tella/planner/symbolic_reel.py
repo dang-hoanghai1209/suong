@@ -6,6 +6,19 @@ import unicodedata
 
 from tella.planner.models import TellaScenePlan
 
+_VISUAL_IDENTITY_ID = "symbolic_dusk_taupe_v1"
+_PALETTE_ID = "dusk_taupe_earth_limited_v1"
+_LINE_STYLE_ID = "soft_rough_pencil_consistent_v1"
+_CAST_ARCHETYPE_SET = (
+    "symbolic_object",
+    "adult_woman",
+    "adult_man",
+    "adult_woman_or_man",
+)
+_AGE_POLICY = "adult_only_unless_script_explicitly_requests_other_age"
+_OUTFIT_STYLE_FAMILY = "simple_timeless_muted_earth_clothing"
+_SUBJECT_SCALE_PROFILE = "small_to_medium_subject_with_negative_space"
+
 _SYMBOLIC_STYLE = (
     "minimalist hand-drawn emotional doodle illustration, dark warm taupe "
     "background, warm dusk-like muted brown-gray backdrop, soft low-key ambient "
@@ -64,6 +77,45 @@ _SETTING_TERMS = {
     "cua so": "simple window shape requested by the script",
 }
 
+_FEMALE_ARCHETYPE_TERMS = (
+    "woman",
+    "female",
+    "co ay",
+    "nguoi phu nu",
+)
+
+_MALE_ARCHETYPE_TERMS = (
+    "man",
+    "male",
+    "anh ay",
+    "nguoi dan ong",
+)
+
+_HUMAN_ARCHETYPE_TERMS = (
+    *_FEMALE_ARCHETYPE_TERMS,
+    *_MALE_ARCHETYPE_TERMS,
+    "person",
+    "people",
+    "human",
+    "figure",
+    "nguoi",
+)
+
+_EXPLICIT_NON_ADULT_TERMS = (
+    "child",
+    "children",
+    "kid",
+    "little boy",
+    "little girl",
+    "baby",
+    "infant",
+    "tre em",
+    "dua tre",
+    "em be",
+    "be trai",
+    "be gai",
+)
+
 
 def enforce_symbolic_reel_plan(plan: TellaScenePlan) -> None:
     """Stamp symbolic scene metadata and safe plain-background prompts."""
@@ -71,6 +123,13 @@ def enforce_symbolic_reel_plan(plan: TellaScenePlan) -> None:
         return
 
     plan.subtitle_style = "reel_minimal"
+    plan.visual_identity_id = _VISUAL_IDENTITY_ID
+    plan.cast_archetype_set = list(_CAST_ARCHETYPE_SET)
+    plan.age_policy = _AGE_POLICY
+    plan.palette_id = _PALETTE_ID
+    plan.line_style_id = _LINE_STYLE_ID
+    plan.outfit_style_family = _OUTFIT_STYLE_FAMILY
+    plan.subject_scale_profile = _SUBJECT_SCALE_PROFILE
     for idx, scene in enumerate((s for s in plan.scenes if s.kind == "scene"), start=1):
         seed_text = " ".join(
             p for p in (scene.title, scene.voice_script, scene.scene_meaning) if p
@@ -81,6 +140,13 @@ def enforce_symbolic_reel_plan(plan: TellaScenePlan) -> None:
         scene.main_character_or_object = scene.main_character_or_object or scene.symbolic_visual
         scene.subtitle_highlight_words = scene.subtitle_highlight_words or _highlight_words(scene.voice_script)
         scene.visual_mode = "symbolic_listicle"
+        scene.visual_identity_id = plan.visual_identity_id
+        scene.cast_archetype = _cast_archetype_for_scene(scene)
+        scene.age_policy = plan.age_policy
+        scene.palette_id = plan.palette_id
+        scene.line_style_id = plan.line_style_id
+        scene.outfit_style_family = plan.outfit_style_family
+        scene.subject_scale_profile = plan.subject_scale_profile
         scene.image_prompt = _symbolic_prompt(scene)
         scene.stock_query = scene.stock_query or "symbolic emotional doodle"
         scene.character_names = []
@@ -94,6 +160,7 @@ def _symbolic_prompt(scene) -> str:
     )
     parts = [
         _SYMBOLIC_STYLE,
+        _symbolic_identity_prompt(scene),
         f"scene meaning: {scene.scene_meaning}",
         f"symbolic visual: {scene.symbolic_visual}",
         f"emotional metaphor: {scene.emotional_metaphor}",
@@ -105,6 +172,66 @@ def _symbolic_prompt(scene) -> str:
         "very limited background detail, plain symbolic composition, no multiple unnecessary characters"
     )
     return ", ".join(p.strip(" ,") for p in parts if p and p.strip(" ,"))
+
+
+def _symbolic_identity_prompt(scene) -> str:
+    explicit_non_adult = _contains_term(
+        _ascii_key(scene.voice_script),
+        _EXPLICIT_NON_ADULT_TERMS,
+    )
+    age_constraint = (
+        "this scene explicitly requests a non-adult age; follow only that "
+        "explicit script age"
+        if explicit_non_adult
+        else "adult woman or adult man only unless the script explicitly asks "
+        "otherwise, adult age band, no child"
+    )
+    return (
+        f"global visual identity id: {scene.visual_identity_id}, "
+        f"palette id: {scene.palette_id}, line style id: {scene.line_style_id}, "
+        "use the same illustration language and the same line thickness feel "
+        "across every scene, use the same limited dusk-taupe earthy palette, "
+        "all human figures must belong to the same understated adult symbolic "
+        f"visual family, cast archetype: {scene.cast_archetype}, {age_constraint}, "
+        f"outfit style family: {scene.outfit_style_family}, simple timeless "
+        "muted-earth clothing for any human figure, subject scale profile: "
+        f"{scene.subject_scale_profile}, small-to-medium subjects with generous "
+        "negative space, human figures may vary by scene and no single recurring "
+        "protagonist is required, no medical mask, no ghost, no monster, no blob "
+        "creature, no unrelated photorealistic figures"
+    )
+
+
+def _cast_archetype_for_scene(scene) -> str:
+    if _contains_term(_ascii_key(scene.voice_script), _EXPLICIT_NON_ADULT_TERMS):
+        return "script_explicit_non_adult_human"
+    key = _ascii_key(
+        " ".join(
+            part
+            for part in (
+                scene.title,
+                scene.voice_script,
+                scene.scene_meaning,
+                scene.symbolic_visual,
+                scene.main_character_or_object,
+            )
+            if part
+        )
+    )
+    has_female = _contains_term(key, _FEMALE_ARCHETYPE_TERMS)
+    has_male = _contains_term(key, _MALE_ARCHETYPE_TERMS)
+    if has_female and not has_male:
+        return "adult_woman"
+    if has_male and not has_female:
+        return "adult_man"
+    if has_female or has_male or _contains_term(key, _HUMAN_ARCHETYPE_TERMS):
+        return "adult_woman_or_man"
+    return "symbolic_object"
+
+
+def _contains_term(key: str, terms: tuple[str, ...]) -> bool:
+    padded = f" {key} "
+    return any(f" {term} " in padded for term in terms)
 
 
 def _meaning_from_text(text: str) -> str:

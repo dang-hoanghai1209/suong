@@ -219,6 +219,78 @@ def test_symbolic_theme_uses_dark_warm_palette_with_readable_subtitles():
     assert _REEL_MINIMAL_STROKE_WIDTH == 1
 
 
+def test_symbolic_scenes_inherit_one_global_visual_identity_profile():
+    plan = _symbolic_plan()
+
+    enforce_symbolic_reel_plan(plan)
+
+    assert plan.visual_identity_id == "symbolic_dusk_taupe_v1"
+    assert plan.palette_id == "dusk_taupe_earth_limited_v1"
+    assert plan.line_style_id == "soft_rough_pencil_consistent_v1"
+    assert plan.cast_archetype_set == [
+        "symbolic_object",
+        "adult_woman",
+        "adult_man",
+        "adult_woman_or_man",
+    ]
+    assert plan.age_policy == "adult_only_unless_script_explicitly_requests_other_age"
+    assert plan.outfit_style_family == "simple_timeless_muted_earth_clothing"
+    assert plan.subject_scale_profile == "small_to_medium_subject_with_negative_space"
+
+    for scene in plan.scenes:
+        assert scene.visual_identity_id == plan.visual_identity_id
+        assert scene.palette_id == plan.palette_id
+        assert scene.line_style_id == plan.line_style_id
+        assert scene.age_policy == plan.age_policy
+        assert scene.outfit_style_family == plan.outfit_style_family
+        assert scene.subject_scale_profile == plan.subject_scale_profile
+        assert scene.cast_archetype in plan.cast_archetype_set
+
+
+def test_symbolic_prompts_enforce_adult_archetypes_and_exclusions():
+    plan = _symbolic_plan()
+    plan.scenes[0].symbolic_visual = "simple adult woman beside a paper heart"
+    plan.scenes[0].main_character_or_object = "adult woman"
+    plan.scenes[1].symbolic_visual = "simple adult man holding a folded note"
+    plan.scenes[1].main_character_or_object = "adult man"
+
+    enforce_symbolic_reel_plan(plan)
+
+    assert plan.scenes[0].cast_archetype == "adult_woman"
+    assert plan.scenes[1].cast_archetype == "adult_man"
+    for scene in plan.scenes:
+        prompt = scene.image_prompt.lower()
+        assert "same illustration language" in prompt
+        assert "same line thickness feel" in prompt
+        assert "same limited dusk-taupe earthy palette" in prompt
+        assert "same understated adult symbolic visual family" in prompt
+        assert "adult woman or adult man only" in prompt
+        assert "no child" in prompt
+        assert "no medical mask" in prompt
+        assert "no ghost" in prompt
+        assert "no monster" in prompt
+        assert "no blob creature" in prompt
+        assert "no unrelated photorealistic figures" in prompt
+        assert "no single recurring protagonist is required" in prompt
+
+
+def test_symbolic_age_policy_allows_only_explicit_script_exception():
+    plan = _symbolic_plan()
+    plan.scenes[0].voice_script = "A little child holds a paper heart."
+
+    enforce_symbolic_reel_plan(plan)
+
+    prompt = plan.scenes[0].image_prompt.lower()
+    assert plan.scenes[0].cast_archetype == "script_explicit_non_adult_human"
+    assert "this scene explicitly requests a non-adult age" in prompt
+    assert "no child" not in prompt
+    assert "no ghost" in prompt
+    assert "no monster" in prompt
+    for scene in plan.scenes[1:]:
+        assert "adult woman or adult man only" in scene.image_prompt.lower()
+        assert "no child" in scene.image_prompt.lower()
+
+
 def test_symbolic_prompts_do_not_keep_room_defaults_without_explicit_setting():
     plan = _symbolic_plan()
 
@@ -490,6 +562,10 @@ def test_symbolic_dry_run_plan_writes_inspectable_metadata(monkeypatch, tmp_path
     assert data["tts_max_pause_ms"] == 700
     assert data["tts_metadata"]["tts_continuous"] is True
     assert data["global_narration_text"]
+    assert data["visual_identity_id"] == "symbolic_dusk_taupe_v1"
+    assert data["palette_id"] == "dusk_taupe_earth_limited_v1"
+    assert data["line_style_id"] == "soft_rough_pencil_consistent_v1"
+    assert data["cast_archetype_set"]
     for scene in data["scenes"]:
         assert scene["visual_mode"] == "symbolic_listicle"
         assert scene["scene_meaning"]
@@ -497,4 +573,9 @@ def test_symbolic_dry_run_plan_writes_inspectable_metadata(monkeypatch, tmp_path
         assert scene["emotional_metaphor"]
         assert scene["main_character_or_object"]
         assert scene["subtitle_highlight_words"]
+        assert scene["visual_identity_id"] == data["visual_identity_id"]
+        assert scene["palette_id"] == data["palette_id"]
+        assert scene["line_style_id"] == data["line_style_id"]
+        assert scene["age_policy"] == data["age_policy"]
+        assert scene["cast_archetype"] in data["cast_archetype_set"]
         assert "scene meaning:" in scene["image_prompt"]
