@@ -466,6 +466,13 @@ def _stock_fallback_disabled() -> bool:
     return (os.environ.get("TELLA_DISABLE_STOCK_FALLBACK") or "").strip() == "1"
 
 
+def _ai_image_stock_fallback_forbidden(plan: TellaScenePlan) -> bool:
+    return (
+        plan.media_source == "ai_image"
+        and plan.theme in {"minimalist_emotional", "minimalist_symbolic_reel"}
+    )
+
+
 def _minimalist_use_ai_scenes() -> bool:
     return (os.environ.get("TELLA_MINIMALIST_USE_AI_SCENES") or "").strip() == "1"
 
@@ -1741,24 +1748,29 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
             for s in plan.scenes
             if s.kind == "scene"
         )
+        theme_label = str(plan.theme)
+        provider_message = scene.ai_provider_error_message[:180]
         if error_type == "quota_exhausted":
             raise RuntimeError(
                 "Cloudflare AI quota exhausted. No AI images were generated. "
                 "Local fallback is disabled for production-quality "
-                "minimalist_emotional renders."
+                f"{theme_label} renders. Original AI provider error: "
+                f"{provider_message}"
             ) from exc
         if error_type == "content_policy_blocked":
             raise RuntimeError(
                 "Cloudflare AI content policy blocked a harmless scene prompt "
                 "after sanitized retry. No placeholder video was rendered. "
                 "Local fallback is disabled for production-quality "
-                "minimalist_emotional renders. Inspect plan.json for "
-                "original_prompt_summary and sanitized_prompt_summary."
+                f"{theme_label} renders. Inspect plan.json for "
+                "original_prompt_summary and sanitized_prompt_summary. "
+                f"Original AI provider error: {provider_message}"
             ) from exc
         raise RuntimeError(
             "Cloudflare AI image generation failed. Local fallback is disabled "
-            "for production-quality minimalist_emotional renders. "
-            f"Provider error type: {error_type}. {scene.ai_provider_error_message[:180]}"
+            f"for production-quality {theme_label} renders. "
+            f"Provider error type: {error_type}. Original AI provider error: "
+            f"{provider_message}"
         ) from exc
 
     async def _fallback_to_stock_photo(scene, base: str) -> None:
@@ -1767,6 +1779,17 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         no per-account quota that resets only daily.
         """
         out = assets_dir / f"{base}_fallback.jpg"
+        if _ai_image_stock_fallback_forbidden(plan):
+            provider_message = (
+                scene.ai_provider_error_message
+                or scene.asset_error
+                or "unknown AI provider failure"
+            )
+            raise RuntimeError(
+                "Stock photo fallback is disabled for "
+                f"{plan.theme} with --media ai_image. Original AI provider "
+                f"error: {provider_message[:180]}"
+            )
         if _stock_fallback_disabled():
             raise RuntimeError(
                 "stock fallback disabled by TELLA_DISABLE_STOCK_FALLBACK=1"
@@ -2003,6 +2026,42 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                         _finalize_minimalist_scene_metadata(
                             scene,
                             visual_mode="ai_scene",
+                            provider="local_fallback",
+                        )
+                        _set_image_source_metadata(
+                            scene,
+                            image_source="fallback",
+                            image_provider="local_composer",
+                            asset_path=fallback_out,
+                            job_dir=job_dir,
+                            used_local_fallback=True,
+                        )
+                        _record_asset(scene, fallback_out)
+                        return
+
+                    if plan.theme == "minimalist_symbolic_reel":
+                        _record_ai_provider_error(scene, exc)
+                        if not local_fallback_allowed:
+                            _raise_minimalist_provider_error(scene, exc)
+
+                        fallback_out = assets_dir / f"{base}_fallback.jpg"
+                        result = sprite_composer.compose_scene(
+                            scene,
+                            fallback_out,
+                            width,
+                            height,
+                            ai_fallback_state,
+                        )
+                        scene.image_filenames = [f"assets/{fallback_out.name}"]
+                        scene.asset_status = "abstract_fallback"
+                        scene.asset_hash = result.asset_hash
+                        plan.ai_provider_error_type = scene.ai_provider_error_type
+                        plan.ai_provider_error_message = scene.ai_provider_error_message
+                        plan.ai_provider_recoverable = scene.ai_provider_recoverable
+                        plan.used_local_fallback = True
+                        _finalize_minimalist_scene_metadata(
+                            scene,
+                            visual_mode="symbolic_listicle",
                             provider="local_fallback",
                         )
                         _set_image_source_metadata(
