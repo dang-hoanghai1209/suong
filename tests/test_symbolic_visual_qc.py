@@ -10,7 +10,13 @@ from tella.media.visual_qc import (
     _result_from_vision,
     apply_qc_result_to_scene,
 )
-from tella.planner.models import Scene, StyleBible, TellaScenePlan, VisualBible
+from tella.planner.models import (
+    Scene,
+    SceneQCResult,
+    StyleBible,
+    TellaScenePlan,
+    VisualBible,
+)
 from tella.planner.symbolic_reel import enforce_symbolic_reel_plan
 
 
@@ -300,6 +306,28 @@ def test_symbolic_qc_metadata_is_preserved_on_scene():
     assert scene.symbolic_qc_final_status == "hard_failed"
     assert "photorealistic_drift" in scene.symbolic_qc_failure_reasons
     assert scene.forbidden_drift_types == ["photorealistic"]
+
+
+def test_symbolic_dimensions_remain_null_without_vision_result():
+    scene = _scene()
+    result = SceneQCResult(
+        scene_index=scene.scene_index,
+        passed=True,
+        final_passed=True,
+        basic_qc_passed=True,
+        model_qc_passed=True,
+        qc_mode="basic",
+        vision_available=False,
+        symbolic_qc_final_status="not_run",
+    )
+
+    apply_qc_result_to_scene(scene, result)
+
+    assert scene.symbolic_meaning_matches is None
+    assert scene.symbolic_visual_matches is None
+    assert scene.adult_age_policy_matches is None
+    assert scene.visual_identity_matches is None
+    assert scene.style_matches_symbolic_reel is None
 
 
 def test_missing_symbolic_qc_schema_fields_are_detected_for_retry():

@@ -321,6 +321,10 @@ class Scene(BaseModel):
     line_style_id: str = Field("", max_length=80)
     outfit_style_family: str = Field("", max_length=120)
     subject_scale_profile: str = Field("", max_length=120)
+    symbolic_preflight_status: str = Field("", max_length=40)
+    symbolic_preflight_failure_reasons: list[str] = Field(default_factory=list)
+    symbolic_preflight_repaired: bool = False
+    symbolic_preflight_original_visual: str = Field("", max_length=300)
     symbolic_qc_expected_subjects: list[str] = Field(default_factory=list)
     symbolic_qc_expectations: list[str] = Field(default_factory=list)
     symbolic_qc_passed: bool = False
@@ -329,14 +333,14 @@ class Scene(BaseModel):
     symbolic_qc_last_failure_reason: str = Field("", max_length=120)
     symbolic_qc_repaired_prompt_used: bool = False
     symbolic_qc_final_status: str = Field("", max_length=40)
-    symbolic_meaning_matches: bool = True
-    symbolic_visual_matches: bool = True
-    metaphor_is_readable: bool = True
-    visual_identity_matches: bool = True
-    adult_age_policy_matches: bool = True
-    style_matches_symbolic_reel: bool = True
-    subject_scale_matches: bool = True
-    forbidden_drift_detected: bool = False
+    symbolic_meaning_matches: bool | None = None
+    symbolic_visual_matches: bool | None = None
+    metaphor_is_readable: bool | None = None
+    visual_identity_matches: bool | None = None
+    adult_age_policy_matches: bool | None = None
+    style_matches_symbolic_reel: bool | None = None
+    subject_scale_matches: bool | None = None
+    forbidden_drift_detected: bool | None = None
     forbidden_drift_types: list[str] = Field(default_factory=list)
     symbolic_qc_hard_fail_reasons: list[str] = Field(default_factory=list)
     symbolic_qc_soft_fail_reasons: list[str] = Field(default_factory=list)
@@ -529,6 +533,10 @@ class TellaScenePlan(BaseModel):
     line_style_id: str = Field("", max_length=80)
     outfit_style_family: str = Field("", max_length=120)
     subject_scale_profile: str = Field("", max_length=120)
+    symbolic_preflight_status: str = Field("", max_length=40)
+    symbolic_preflight_failure_reasons: list[str] = Field(default_factory=list)
+    symbolic_preflight_repaired: bool = False
+    symbolic_preflight_original_visual: dict[str, str] = Field(default_factory=dict)
 
     scenes: list[Scene] = Field(..., min_length=3, max_length=40)
 

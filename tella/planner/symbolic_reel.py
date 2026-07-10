@@ -116,6 +116,47 @@ _EXPLICIT_NON_ADULT_TERMS = (
     "be gai",
 )
 
+_PREFLIGHT_REPAIRS = {
+    "hidden_hurt": (
+        "one adult figure with a small calm smile, a heavy dark cloud or cracked "
+        "shape behind the shoulders and chest, no mask"
+    ),
+    "comparison": (
+        "two clearly drawn adult figures with unequal measuring marks or a balance "
+        "scale and one idealized shadow, no black silhouettes"
+    ),
+    "unseen_effort": (
+        "one adult carrying visible boxes, stones, or another clear weight while "
+        "nearby adult figures pass without noticing, not only a plant in shadow"
+    ),
+    "lonely_crowd": (
+        "one isolated adult separated from one clearly visible group of at least "
+        "three adults"
+    ),
+    "nighttime_sadness": (
+        "one adult sitting alone under a dim moon with one concrete stone weight "
+        "nearby, no ghost, creature, or heavy-moon object-only abstraction"
+    ),
+    "silence": (
+        "one adult inside a quiet circle with crossed-out or empty speech bubbles, "
+        "no mouth or body-part close-up"
+    ),
+    "letting_go": (
+        "one adult placing a stone down or opening both hands while a small bird "
+        "flies away"
+    ),
+}
+
+_PREFLIGHT_MAIN_SUBJECTS = {
+    "hidden_hurt": "adult figure with calm smile and hidden burden",
+    "comparison": "two adult figures and a visible comparison cue",
+    "unseen_effort": "adult carrying visible weight while others pass",
+    "lonely_crowd": "isolated adult and a group of at least three adults",
+    "nighttime_sadness": "adult under a dim moon with a nearby stone",
+    "silence": "adult in a quiet circle with empty speech bubbles",
+    "letting_go": "adult putting down a stone or releasing a bird",
+}
+
 
 def enforce_symbolic_reel_plan(plan: TellaScenePlan) -> None:
     """Stamp symbolic scene metadata and safe plain-background prompts."""
@@ -130,7 +171,8 @@ def enforce_symbolic_reel_plan(plan: TellaScenePlan) -> None:
     plan.line_style_id = _LINE_STYLE_ID
     plan.outfit_style_family = _OUTFIT_STYLE_FAMILY
     plan.subject_scale_profile = _SUBJECT_SCALE_PROFILE
-    for idx, scene in enumerate((s for s in plan.scenes if s.kind == "scene"), start=1):
+    body_scenes = [scene for scene in plan.scenes if scene.kind == "scene"]
+    for idx, scene in enumerate(body_scenes, start=1):
         seed_text = " ".join(
             p for p in (scene.title, scene.voice_script, scene.scene_meaning) if p
         ).strip()
@@ -147,6 +189,11 @@ def enforce_symbolic_reel_plan(plan: TellaScenePlan) -> None:
         scene.line_style_id = plan.line_style_id
         scene.outfit_style_family = plan.outfit_style_family
         scene.subject_scale_profile = plan.subject_scale_profile
+        _reset_symbolic_image_qc(scene)
+
+    preflight_symbolic_reel_plan(plan)
+
+    for scene in body_scenes:
         (
             scene.symbolic_qc_expected_subjects,
             scene.symbolic_qc_expectations,
@@ -157,6 +204,197 @@ def enforce_symbolic_reel_plan(plan: TellaScenePlan) -> None:
         scene.character_names = []
         scene.requested_characters = []
         scene.required_characters = []
+
+
+def preflight_symbolic_reel_plan(plan: TellaScenePlan) -> None:
+    """Repair risky symbolic visuals before any image-provider request."""
+    if plan.theme != "minimalist_symbolic_reel":
+        return
+
+    aggregate_reasons: list[str] = []
+    original_visuals: dict[str, str] = {}
+    repaired_any = False
+    for scene in (item for item in plan.scenes if item.kind == "scene"):
+        if scene.symbolic_preflight_status == "repaired" and scene.symbolic_preflight_original_visual:
+            original_visuals[str(scene.scene_index)] = scene.symbolic_preflight_original_visual
+            aggregate_reasons.extend(
+                f"scene_{scene.scene_index:02d}:{reason}"
+                for reason in scene.symbolic_preflight_failure_reasons
+            )
+            repaired_any = True
+            continue
+
+        original_visual = (scene.symbolic_visual or "").strip()
+        original_visuals[str(scene.scene_index)] = original_visual
+        scene.symbolic_preflight_original_visual = original_visual
+        scene_type = _symbolic_scene_type(scene)
+        reasons = _preflight_risk_reasons(original_visual)
+        if scene_type:
+            reasons.append(f"scene_type_requires_concrete_composition:{scene_type}")
+
+        reasons = _unique_strings(reasons)
+        if reasons:
+            replacement = _PREFLIGHT_REPAIRS.get(scene_type) or _generic_preflight_repair(scene)
+            scene.symbolic_visual = replacement
+            scene.main_character_or_object = _PREFLIGHT_MAIN_SUBJECTS.get(
+                scene_type,
+                "ordinary adult and one concrete readable emotional symbol",
+            )
+            scene.cast_archetype = "adult_woman_or_man"
+            scene.symbolic_preflight_status = "repaired"
+            scene.symbolic_preflight_failure_reasons = reasons
+            scene.symbolic_preflight_repaired = True
+            aggregate_reasons.extend(
+                f"scene_{scene.scene_index:02d}:{reason}" for reason in reasons
+            )
+            repaired_any = True
+        else:
+            scene.symbolic_preflight_status = "passed"
+            scene.symbolic_preflight_failure_reasons = []
+            scene.symbolic_preflight_repaired = False
+
+    plan.symbolic_preflight_status = "repaired" if repaired_any else "passed"
+    plan.symbolic_preflight_failure_reasons = _unique_strings(aggregate_reasons)
+    plan.symbolic_preflight_repaired = repaired_any
+    plan.symbolic_preflight_original_visual = original_visuals
+
+
+def _reset_symbolic_image_qc(scene) -> None:
+    scene.symbolic_qc_passed = False
+    scene.symbolic_qc_attempts = 0
+    scene.symbolic_qc_failure_reasons = []
+    scene.symbolic_qc_last_failure_reason = ""
+    scene.symbolic_qc_repaired_prompt_used = False
+    scene.symbolic_qc_final_status = "planned"
+    scene.symbolic_meaning_matches = None
+    scene.symbolic_visual_matches = None
+    scene.metaphor_is_readable = None
+    scene.visual_identity_matches = None
+    scene.adult_age_policy_matches = None
+    scene.style_matches_symbolic_reel = None
+    scene.subject_scale_matches = None
+    scene.forbidden_drift_detected = None
+    scene.forbidden_drift_types = []
+    scene.symbolic_qc_hard_fail_reasons = []
+    scene.symbolic_qc_soft_fail_reasons = []
+    scene.symbolic_soft_fail_streaks = {}
+
+
+def _symbolic_scene_type(scene) -> str:
+    key = _ascii_key(
+        " ".join(
+            part
+            for part in (
+                scene.title,
+                scene.voice_script,
+                scene.scene_meaning,
+                scene.emotional_metaphor,
+            )
+            if part
+        )
+    )
+    if _contains_any_phrase(
+        key,
+        (
+            "trying to appear okay while hurt",
+            "trying to look okay while hurt",
+            "look okay while hurt",
+            "hurt inside",
+            "to ra on nhung dau ben trong",
+        ),
+    ):
+        return "hidden_hurt"
+    if any(term in key for term in ("compar", "so sanh")):
+        return "comparison"
+    if _contains_any_phrase(
+        key,
+        ("effort is unseen", "unseen effort", "co gang khong ai thay"),
+    ):
+        return "unseen_effort"
+    if _contains_any_phrase(
+        key,
+        (
+            "lonely in a crowd",
+            "alone in a crowd",
+            "co don giua dam dong",
+            "mot minh giua dam dong",
+        ),
+    ):
+        return "lonely_crowd"
+    if _contains_any_phrase(
+        key,
+        (
+            "sadness feels heavier at night",
+            "sadness at night",
+            "heavier at night",
+            "noi buon trong dem",
+        ),
+    ):
+        return "nighttime_sadness"
+    if _contains_any_phrase(
+        key,
+        ("letting go", "let go", "buong xuong"),
+    ):
+        return "letting_go"
+    if _contains_any_phrase(
+        key,
+        ("silence", "silent", "im lang", "khong noi ra"),
+    ):
+        return "silence"
+    return ""
+
+
+def _preflight_risk_reasons(visual: str) -> list[str]:
+    key = _ascii_key(visual)
+    reasons: list[str] = []
+    if "medical mask" in key:
+        reasons.append("medical_mask_visual")
+    elif _contains_term(key, ("mask",)):
+        reasons.append("ambiguous_mask_visual")
+    if "silhouette" in key:
+        reasons.append("silhouette_visual")
+    if _contains_term(key, ("blob",)):
+        reasons.append("blob_visual")
+    if _contains_term(key, ("ghost",)):
+        reasons.append("ghost_visual")
+    if _contains_term(key, ("monster",)):
+        reasons.append("monster_visual")
+    if "closed mouth" in key:
+        reasons.append("closed_mouth_close_up")
+    if "close up" in key and any(
+        part in key
+        for part in ("mouth", "eye", "hand", "arm", "leg", "chest", "body part")
+    ):
+        reasons.append("body_part_close_up")
+    if any(term in key for term in ("abstract shadow", "vague shadow")):
+        reasons.append("vague_abstract_shadow")
+    if any(
+        term in key
+        for term in (
+            "object only",
+            "abstract object",
+            "abstract shape",
+            "unreadable object",
+            "vague object",
+            "plant in shadow",
+            "heavy moon",
+        )
+    ):
+        reasons.append("unreadable_object_only_metaphor")
+    return reasons
+
+
+def _generic_preflight_repair(scene) -> str:
+    meaning = (scene.scene_meaning or "one clear emotional idea").strip()
+    return (
+        "one ordinary adult interacting with one concrete paper heart or stone "
+        f"through a clear action representing {meaning}, no mask, silhouette, "
+        "blob, ghost, monster, or body-part close-up"
+    )[:300]
+
+
+def _unique_strings(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))
 
 
 def _symbolic_prompt(scene) -> str:
@@ -366,4 +604,4 @@ def _ascii_key(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", ascii_only).strip()
 
 
-__all__ = ["enforce_symbolic_reel_plan"]
+__all__ = ["enforce_symbolic_reel_plan", "preflight_symbolic_reel_plan"]

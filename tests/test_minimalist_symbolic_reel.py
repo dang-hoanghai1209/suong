@@ -516,6 +516,10 @@ def test_symbolic_dry_run_plan_writes_inspectable_metadata(monkeypatch, tmp_path
 
     async def fake_plan_story(**kwargs):
         plan = _symbolic_plan()
+        plan.scenes[0].voice_script = "Trying to appear okay while hurt inside"
+        plan.scenes[0].scene_meaning = "trying to appear okay while hurt inside"
+        plan.scenes[0].symbolic_visual = "A simple mask"
+        plan.scenes[0].main_character_or_object = "A simple mask"
         enforce_symbolic_reel_plan(plan)
         return plan
 
@@ -566,6 +570,10 @@ def test_symbolic_dry_run_plan_writes_inspectable_metadata(monkeypatch, tmp_path
     assert data["palette_id"] == "dusk_taupe_earth_limited_v1"
     assert data["line_style_id"] == "soft_rough_pencil_consistent_v1"
     assert data["cast_archetype_set"]
+    assert data["symbolic_preflight_status"] == "repaired"
+    assert data["symbolic_preflight_repaired"] is True
+    assert data["symbolic_preflight_failure_reasons"]
+    assert data["symbolic_preflight_original_visual"]["1"] == "A simple mask"
     for scene in data["scenes"]:
         assert scene["visual_mode"] == "symbolic_listicle"
         assert scene["scene_meaning"]
@@ -581,4 +589,14 @@ def test_symbolic_dry_run_plan_writes_inspectable_metadata(monkeypatch, tmp_path
         assert scene["symbolic_qc_expected_subjects"]
         assert scene["symbolic_qc_expectations"]
         assert scene["symbolic_qc_final_status"] == "planned"
+        assert scene["symbolic_meaning_matches"] is None
+        assert scene["symbolic_visual_matches"] is None
+        assert scene["adult_age_policy_matches"] is None
+        assert scene["visual_identity_matches"] is None
+        assert scene["style_matches_symbolic_reel"] is None
         assert "scene meaning:" in scene["image_prompt"]
+    first = data["scenes"][0]
+    assert first["symbolic_preflight_repaired"] is True
+    assert first["symbolic_preflight_original_visual"] == "A simple mask"
+    assert "small calm smile" in first["symbolic_visual"].lower()
+    assert "symbolic visual: one adult figure" in first["image_prompt"].lower()

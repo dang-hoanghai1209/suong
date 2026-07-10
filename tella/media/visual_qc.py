@@ -440,15 +440,39 @@ def apply_qc_result_to_scene(
     scene.symbolic_qc_last_failure_reason = result.symbolic_qc_last_failure_reason
     scene.symbolic_qc_repaired_prompt_used = bool(result.symbolic_qc_repaired_prompt_used)
     scene.symbolic_qc_final_status = result.symbolic_qc_final_status
-    scene.symbolic_meaning_matches = bool(result.symbolic_meaning_matches)
-    scene.symbolic_visual_matches = bool(result.symbolic_visual_matches)
-    scene.metaphor_is_readable = bool(result.metaphor_is_readable)
-    scene.visual_identity_matches = bool(result.visual_identity_matches)
-    scene.adult_age_policy_matches = bool(result.adult_age_policy_matches)
-    scene.style_matches_symbolic_reel = bool(result.style_matches_symbolic_reel)
-    scene.subject_scale_matches = bool(result.subject_scale_matches)
-    scene.forbidden_drift_detected = bool(result.forbidden_drift_detected)
-    scene.forbidden_drift_types = list(result.forbidden_drift_types)
+    symbolic_image_evaluated = bool(
+        result.qc_mode == "vision"
+        and result.vision_available
+        and result.symbolic_qc_final_status
+        not in {"not_run", "vision_unavailable", "disabled", "not_applicable"}
+    )
+    scene.symbolic_meaning_matches = (
+        bool(result.symbolic_meaning_matches) if symbolic_image_evaluated else None
+    )
+    scene.symbolic_visual_matches = (
+        bool(result.symbolic_visual_matches) if symbolic_image_evaluated else None
+    )
+    scene.metaphor_is_readable = (
+        bool(result.metaphor_is_readable) if symbolic_image_evaluated else None
+    )
+    scene.visual_identity_matches = (
+        bool(result.visual_identity_matches) if symbolic_image_evaluated else None
+    )
+    scene.adult_age_policy_matches = (
+        bool(result.adult_age_policy_matches) if symbolic_image_evaluated else None
+    )
+    scene.style_matches_symbolic_reel = (
+        bool(result.style_matches_symbolic_reel) if symbolic_image_evaluated else None
+    )
+    scene.subject_scale_matches = (
+        bool(result.subject_scale_matches) if symbolic_image_evaluated else None
+    )
+    scene.forbidden_drift_detected = (
+        bool(result.forbidden_drift_detected) if symbolic_image_evaluated else None
+    )
+    scene.forbidden_drift_types = (
+        list(result.forbidden_drift_types) if symbolic_image_evaluated else []
+    )
     scene.symbolic_qc_hard_fail_reasons = list(result.symbolic_qc_hard_fail_reasons)
     scene.symbolic_qc_soft_fail_reasons = list(result.symbolic_qc_soft_fail_reasons)
     scene.symbolic_soft_fail_streaks = dict(result.symbolic_soft_fail_streaks)
