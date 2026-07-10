@@ -9,6 +9,7 @@ def _preflight_scene(
     voice_script: str | None = None,
     metaphor: str | None = None,
     cast_archetype: str = "",
+    main_character_or_object: str | None = None,
 ) -> tuple[TellaScenePlan, Scene]:
     scenes = [
         Scene(
@@ -18,7 +19,7 @@ def _preflight_scene(
             scene_meaning=meaning,
             symbolic_visual=visual,
             emotional_metaphor=metaphor or meaning,
-            main_character_or_object=visual,
+            main_character_or_object=main_character_or_object or visual,
             cast_archetype=cast_archetype,
         ),
         Scene(
@@ -104,7 +105,10 @@ def test_heavy_moon_is_repaired_for_nighttime_sadness_scene():
     visual = scene.symbolic_visual.lower()
     assert "adult sitting alone beneath a large dim moon" in visual
     assert "heavy stone resting beside them" in visual
-    assert "no ocean, ship, anchor poster, ghost, or creature" in visual
+    assert (
+        "no ocean, ship, anchor poster, ghost, creature, or object-only composition"
+        in visual
+    )
 
 
 def test_closed_mouth_is_repaired_for_silence_scene():
@@ -139,9 +143,13 @@ def test_heavy_stone_burden_is_not_reclassified_as_silence():
         metaphor="Burden of silence",
     )
 
-    assert scene.symbolic_visual == "A person carrying a heavy stone"
-    assert scene.symbolic_preflight_status == "passed"
-    assert scene.symbolic_preflight_repaired is False
+    assert scene.symbolic_visual == (
+        "one clearly drawn adult carrying a large cracked stone on their "
+        "shoulders, visible facial features, no black silhouette"
+    )
+    assert scene.main_character_or_object == "adult carrying a heavy cracked stone"
+    assert scene.symbolic_preflight_status == "repaired"
+    assert scene.symbolic_preflight_repaired is True
     assert scene.cast_archetype == "adult_woman_or_man"
     assert not any("silence" in reason for reason in scene.symbolic_preflight_failure_reasons)
     assert "quiet circle" not in scene.image_prompt.lower()
@@ -170,7 +178,10 @@ def test_moon_and_anchor_are_repaired_to_human_nighttime_composition():
     visual = scene.symbolic_visual.lower()
     assert "adult sitting alone beneath a large dim moon" in visual
     assert "heavy stone resting beside them" in visual
-    assert "no ocean, ship, anchor poster, ghost, or creature" in visual
+    assert (
+        "no ocean, ship, anchor poster, ghost, creature, or object-only composition"
+        in visual
+    )
     assert scene.cast_archetype == "adult_woman_or_man"
 
 
@@ -267,7 +278,8 @@ def test_exact_nighttime_aliases_repair_object_only_anchor():
 
     expected = (
         "one adult sitting alone beneath a large dim moon with a heavy stone "
-        "resting beside them, no ocean, ship, anchor poster, ghost, or creature"
+        "resting beside them, no ocean, ship, anchor poster, ghost, creature, or "
+        "object-only composition"
     )
     assert scene.symbolic_visual == expected
     assert scene.cast_archetype == "adult_woman_or_man"
@@ -310,14 +322,124 @@ def test_latest_eight_scene_plan_uses_specific_repairs():
 
     enforce_symbolic_reel_plan(plan)
 
-    assert plan.scenes[1].symbolic_visual.startswith(
-        "one adult showing a small calm smile"
+    expected_visual_starts = (
+        "one clearly drawn adult carrying a large cracked stone",
+        "one adult showing a small calm smile",
+        "two clearly drawn adult figures",
+        "one adult carrying a visible stack of heavy boxes or stones",
+        "one isolated adult spatially separated",
+        "one adult sitting alone beneath a large dim moon",
+        "one adult inside a quiet circle",
+        "one adult placing a stone down",
     )
-    assert plan.scenes[3].symbolic_visual.startswith(
-        "one adult carrying a visible stack of heavy boxes or stones"
+    for scene, expected_start in zip(plan.scenes, expected_visual_starts, strict=True):
+        assert scene.symbolic_visual.startswith(expected_start)
+        assert "paper heart or stone" not in scene.symbolic_visual.lower()
+        assert scene.cast_archetype == "adult_woman_or_man"
+
+
+def test_nighttime_weight_and_nocturnal_melancholy_repair_heavy_crescent():
+    plan, scene = _preflight_scene(
+        "Nighttime weight.",
+        "A heavy crescent moon.",
+        metaphor="Nocturnal melancholy.",
+        cast_archetype="symbolic_object",
+        main_character_or_object="Crescent moon",
     )
-    assert plan.scenes[5].symbolic_visual.startswith(
-        "one adult sitting alone beneath a large dim moon"
+
+    expected_visual = (
+        "one adult sitting alone beneath a large dim moon with a heavy stone "
+        "resting beside them, no ocean, ship, anchor poster, ghost, creature, or "
+        "object-only composition"
     )
-    for index in (1, 3, 5):
-        assert "paper heart or stone" not in plan.scenes[index].symbolic_visual.lower()
+    expected_object = "adult beneath a dim moon with a nearby heavy stone"
+    first_metadata = (
+        scene.symbolic_preflight_status,
+        list(scene.symbolic_preflight_failure_reasons),
+        scene.symbolic_preflight_repaired,
+        scene.symbolic_preflight_original_visual,
+    )
+    assert scene.symbolic_visual == expected_visual
+    assert scene.main_character_or_object == expected_object
+    assert scene.cast_archetype == "adult_woman_or_man"
+
+    enforce_symbolic_reel_plan(plan)
+
+    assert scene.symbolic_visual == expected_visual
+    assert scene.main_character_or_object == expected_object
+    assert scene.cast_archetype == "adult_woman_or_man"
+    assert (
+        scene.symbolic_preflight_status,
+        scene.symbolic_preflight_failure_reasons,
+        scene.symbolic_preflight_repaired,
+        scene.symbolic_preflight_original_visual,
+    ) == first_metadata
+
+
+def test_stale_silhouette_object_normalizes_burden_metadata_and_prompt():
+    plan, scene = _preflight_scene(
+        "The weight of unspoken emotions.",
+        "A person carrying a heavy stone.",
+        main_character_or_object="Silhouette with stone",
+    )
+
+    expected_visual = (
+        "one clearly drawn adult carrying a large cracked stone on their "
+        "shoulders, visible facial features, no black silhouette"
+    )
+    expected_object = "adult carrying a heavy cracked stone"
+    first_state = (
+        scene.symbolic_visual,
+        scene.cast_archetype,
+        scene.main_character_or_object,
+        scene.symbolic_preflight_status,
+        list(scene.symbolic_preflight_failure_reasons),
+        scene.symbolic_preflight_repaired,
+    )
+    assert scene.symbolic_visual == expected_visual
+    assert scene.main_character_or_object == expected_object
+    assert scene.cast_archetype == "adult_woman_or_man"
+    assert "silhouette with stone" not in scene.image_prompt.lower()
+    assert f"main character or object: {expected_object}" in scene.image_prompt
+
+    enforce_symbolic_reel_plan(plan)
+
+    assert (
+        scene.symbolic_visual,
+        scene.cast_archetype,
+        scene.main_character_or_object,
+        scene.symbolic_preflight_status,
+        scene.symbolic_preflight_failure_reasons,
+        scene.symbolic_preflight_repaired,
+    ) == first_state
+
+
+def test_negative_black_silhouette_constraint_does_not_trigger_repair():
+    visual = (
+        "one clearly drawn adult carrying a large cracked stone on their "
+        "shoulders, visible facial features, no black silhouette"
+    )
+    _, scene = _preflight_scene(
+        "The weight of unspoken emotions.",
+        visual,
+        main_character_or_object="adult carrying a heavy cracked stone",
+    )
+
+    assert scene.symbolic_visual == visual
+    assert scene.symbolic_preflight_status == "passed"
+    assert scene.symbolic_preflight_repaired is False
+
+
+def test_plain_crescent_moon_without_emotional_weight_is_not_nighttime_heaviness():
+    _, scene = _preflight_scene(
+        "A quiet evening sky.",
+        "A crescent moon.",
+        metaphor="Simple evening calm.",
+        cast_archetype="symbolic_object",
+        main_character_or_object="Crescent moon",
+    )
+
+    assert scene.symbolic_visual == "A crescent moon."
+    assert scene.main_character_or_object == "Crescent moon"
+    assert scene.cast_archetype == "symbolic_object"
+    assert scene.symbolic_preflight_status == "passed"

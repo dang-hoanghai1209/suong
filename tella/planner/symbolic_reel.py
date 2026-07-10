@@ -116,10 +116,27 @@ _EXPLICIT_NON_ADULT_TERMS = (
     "be gai",
 )
 
+_NIGHT_SIGNALS = (
+    "night",
+    "nighttime",
+    "nocturnal",
+    "moon",
+    "crescent moon",
+)
+
+_NIGHT_WEIGHT_SIGNALS = (
+    "weight",
+    "heavy",
+    "heaviness",
+    "sadness",
+    "melancholy",
+    "burden",
+)
+
 _PREFLIGHT_REPAIRS = {
     "burden": (
-        "one adult carrying a large cracked stone on their shoulders, clear "
-        "adult proportions and a readable burden posture"
+        "one clearly drawn adult carrying a large cracked stone on their "
+        "shoulders, visible facial features, no black silhouette"
     ),
     "hidden_hurt": (
         "one adult showing a small calm smile while a dark cracked shape or heavy "
@@ -140,7 +157,8 @@ _PREFLIGHT_REPAIRS = {
     ),
     "nighttime_sadness": (
         "one adult sitting alone beneath a large dim moon with a heavy stone "
-        "resting beside them, no ocean, ship, anchor poster, ghost, or creature"
+        "resting beside them, no ocean, ship, anchor poster, ghost, creature, or "
+        "object-only composition"
     ),
     "silence": (
         "one adult inside a quiet circle with crossed-out or empty speech bubbles, "
@@ -153,12 +171,12 @@ _PREFLIGHT_REPAIRS = {
 }
 
 _PREFLIGHT_MAIN_SUBJECTS = {
-    "burden": "adult carrying a large cracked stone on their shoulders",
+    "burden": "adult carrying a heavy cracked stone",
     "hidden_hurt": "adult figure with calm smile and hidden burden",
     "comparison": "two adult figures and a visible comparison cue",
     "unseen_effort": "adult carrying visible weight while others pass",
     "lonely_crowd": "isolated adult and a group of at least three adults",
-    "nighttime_sadness": "adult under a dim moon with a nearby stone",
+    "nighttime_sadness": "adult beneath a dim moon with a nearby heavy stone",
     "silence": "adult in a quiet circle with empty speech bubbles",
     "letting_go": "adult putting down a stone or releasing a bird",
 }
@@ -222,6 +240,7 @@ def preflight_symbolic_reel_plan(plan: TellaScenePlan) -> None:
     repaired_any = False
     for scene in (item for item in plan.scenes if item.kind == "scene"):
         was_preflight_repaired = scene.symbolic_preflight_repaired
+        previous_reasons = list(scene.symbolic_preflight_failure_reasons)
         original_visual = (
             scene.symbolic_preflight_original_visual or scene.symbolic_visual or ""
         ).strip()
@@ -231,16 +250,40 @@ def preflight_symbolic_reel_plan(plan: TellaScenePlan) -> None:
         if was_preflight_repaired:
             scene.main_character_or_object = original_visual[:160]
         scene_type = _symbolic_scene_type(scene)
-        reasons = _preflight_risk_reasons(original_visual)
+        visual_reasons = _preflight_risk_reasons(original_visual)
         if scene_type == "nighttime_sadness" and not _visual_has_human(original_visual):
-            reasons.append("unreadable_object_only_metaphor")
+            visual_reasons.append("unreadable_object_only_metaphor")
         if scene_type and _scene_visual_needs_repair(scene_type, original_visual):
-            reasons.append(f"scene_type_requires_concrete_composition:{scene_type}")
+            visual_reasons.append(
+                f"scene_type_requires_concrete_composition:{scene_type}"
+            )
 
-        reasons = _unique_strings(reasons)
+        object_reasons: list[str] = []
+        object_text = scene.main_character_or_object or ""
+        if _ascii_key(object_text) != _ascii_key(original_visual):
+            object_reasons.extend(
+                f"forbidden_main_character_or_object:{reason}"
+                for reason in _preflight_risk_reasons(object_text)
+            )
+            if scene_type == "nighttime_sadness" and not _visual_has_human(object_text):
+                object_reasons.append(
+                    "forbidden_main_character_or_object:object_only_nighttime"
+                )
+        if was_preflight_repaired:
+            object_reasons.extend(
+                reason
+                for reason in previous_reasons
+                if reason.startswith("forbidden_main_character_or_object:")
+            )
+
+        visual_reasons = _unique_strings(visual_reasons)
+        reasons = _unique_strings([*visual_reasons, *object_reasons])
         if reasons:
-            replacement = _PREFLIGHT_REPAIRS.get(scene_type) or _generic_preflight_repair(scene)
-            scene.symbolic_visual = replacement
+            if visual_reasons:
+                replacement = _PREFLIGHT_REPAIRS.get(
+                    scene_type
+                ) or _generic_preflight_repair(scene)
+                scene.symbolic_visual = replacement
             scene.main_character_or_object = _PREFLIGHT_MAIN_SUBJECTS.get(
                 scene_type,
                 "ordinary adult and one concrete readable emotional symbol",
@@ -256,6 +299,11 @@ def preflight_symbolic_reel_plan(plan: TellaScenePlan) -> None:
         else:
             if scene_type:
                 scene.cast_archetype = "adult_woman_or_man"
+            if _preflight_risk_reasons(scene.main_character_or_object or ""):
+                scene.main_character_or_object = _PREFLIGHT_MAIN_SUBJECTS.get(
+                    scene_type,
+                    "ordinary adult and one concrete readable emotional symbol",
+                )
             scene.symbolic_preflight_status = "passed"
             scene.symbolic_preflight_failure_reasons = []
             scene.symbolic_preflight_repaired = False
@@ -288,6 +336,21 @@ def _reset_symbolic_image_qc(scene) -> None:
 
 
 def _symbolic_scene_type(scene) -> str:
+    combined_key = _ascii_key(
+        " ".join(
+            part
+            for part in (
+                scene.scene_meaning,
+                scene.emotional_metaphor,
+                scene.symbolic_visual,
+                scene.main_character_or_object,
+            )
+            if part
+        )
+    )
+    if _is_nighttime_emotional_key(combined_key):
+        return "nighttime_sadness"
+
     primary_key = _ascii_key(
         " ".join(
             part
@@ -362,6 +425,12 @@ def _classify_symbolic_key(key: str, *, allow_silence: bool) -> str:
         key,
         (
             "sadness feels heavier at night",
+            "nighttime weight",
+            "nocturnal melancholy",
+            "heavy crescent moon",
+            "nocturnal sadness",
+            "nocturnal heaviness",
+            "weight at night",
             "nighttime heaviness",
             "weight of night",
             "nighttime sadness",
@@ -392,6 +461,7 @@ def _classify_symbolic_key(key: str, *, allow_silence: bool) -> str:
             "heavy stone on shoulders",
             "ganh nang",
             "mang theo rat lau",
+            "weight of unspoken emotions",
         ),
     ):
         return "burden"
@@ -409,8 +479,11 @@ def _scene_visual_needs_repair(scene_type: str, visual: str) -> bool:
     if scene_type == "burden":
         return not (
             has_human
-            and any(term in key for term in ("carry", "carrying", "shoulder"))
-            and any(term in key for term in ("stone", "weight", "burden"))
+            and "carrying" in key
+            and "large cracked stone" in key
+            and "shoulders" in key
+            and "visible facial features" in key
+            and "no black silhouette" in key
         )
     if scene_type == "hidden_hurt":
         return not (
@@ -480,12 +553,21 @@ def _visual_has_human(visual: str) -> bool:
     )
 
 
+def _is_nighttime_emotional_key(key: str) -> bool:
+    return _contains_term(key, _NIGHT_SIGNALS) and _contains_term(
+        key,
+        _NIGHT_WEIGHT_SIGNALS,
+    )
+
+
 def _preflight_risk_reasons(visual: str) -> list[str]:
     key = _ascii_key(visual)
     risk_key = key
     for allowed_negative in (
+        "no ocean ship anchor poster ghost creature or object only composition",
         "no medical mask",
         "no mask",
+        "no black silhouette",
         "no black silhouettes",
         "no silhouette",
         "no blob",
