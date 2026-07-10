@@ -6,7 +6,7 @@ from PIL import Image
 
 from tella.media import fetch
 from tella.media.ai_image import CloudflareAIError, classify_cloudflare_error
-from tella.planner.models import Scene, TellaScenePlan
+from tella.planner.models import Scene, SceneQCResult, TellaScenePlan
 
 
 def _clear_fetch_env(monkeypatch):
@@ -99,6 +99,129 @@ def test_content_policy_safe_prompt_removes_risky_words():
     assert "wholesome everyday scene" in prompt
     assert "bakery display counter" in prompt
     assert "cakes and pastries" in prompt
+
+
+def test_symbolic_provider_prompt_is_positive_only_and_keeps_scene_semantics():
+    scene = Scene(
+        scene_index=1,
+        kind="scene",
+        title="Burden",
+        voice_script="A quiet emotional burden.",
+        image_prompt=(
+            "adult age band, no child, no medical mask, no ghost, no monster, "
+            "no blob creature"
+        ),
+        stock_query="symbolic burden",
+        symbolic_visual=(
+            "one clearly drawn adult carrying a large cracked stone on their "
+            "shoulders, visible facial features, no black silhouette"
+        ),
+        main_character_or_object="adult carrying a heavy cracked stone",
+        cast_archetype="adult_woman_or_man",
+    )
+
+    prompt = fetch._cloudflare_safe_symbolic_prompt(scene).lower()
+
+    for risky in (
+        "child",
+        "medical",
+        "mask",
+        "ghost",
+        "monster",
+        "blob",
+        "silhouette",
+        "mouth",
+        "body-part",
+    ):
+        assert re.search(rf"\b{re.escape(risky)}\b", prompt) is None
+    assert "adult carrying a large cracked stone" in prompt
+    assert "adult carrying a heavy cracked stone" in prompt
+    assert "moderately dark warm taupe" in prompt
+    assert "readable symbolic action" in prompt
+
+
+def test_symbolic_fetch_sends_provider_safe_prompt_and_keeps_full_plan_prompt(
+    monkeypatch,
+    tmp_path,
+):
+    _clear_fetch_env(monkeypatch)
+    calls: list[str] = []
+    full_prompt = (
+        "moderately dark symbolic illustration, adult age band, no child, "
+        "no medical mask, no ghost, no monster, no blob creature"
+    )
+    scene = Scene(
+        scene_index=1,
+        kind="scene",
+        title="Burden",
+        voice_script="A quiet emotional burden.",
+        image_prompt=full_prompt,
+        stock_query="symbolic burden",
+        scene_meaning="The weight of unspoken sorrow",
+        symbolic_visual=(
+            "one clearly drawn adult carrying a large cracked stone on their "
+            "shoulders, visible facial features, no black silhouette"
+        ),
+        emotional_metaphor="Emotional baggage",
+        main_character_or_object="adult carrying a heavy cracked stone",
+        cast_archetype="adult_woman_or_man",
+        visual_mode="symbolic_listicle",
+    )
+    plan = TellaScenePlan(
+        title="Symbolic safe provider prompt",
+        language="en",
+        aspect_ratio="9:16",
+        media_source="ai_image",
+        duration_mode="short",
+        theme="minimalist_symbolic_reel",
+        scenes=[
+            scene,
+            scene.model_copy(
+                update={"scene_index": 2, "title": "Burden two"}
+            ),
+            scene.model_copy(
+                update={"scene_index": 3, "title": "Burden three"}
+            ),
+        ],
+    )
+    plan.scenes = plan.scenes[:1]
+
+    async def fake_generate_image(prompt, out_path, *, width, height, seed=None):
+        calls.append(prompt)
+        Image.new("RGB", (width, height), "#504845").save(out_path)
+        return out_path
+
+    def fake_evaluate(scene, image_path, visual_bible, expected):
+        return SceneQCResult(
+            scene_index=scene.scene_index,
+            passed=True,
+            final_passed=True,
+            model_passed=True,
+            model_qc_passed=True,
+            basic_qc_passed=True,
+            symbolic_qc_passed=True,
+            symbolic_qc_final_status="passed",
+            image_path=str(image_path),
+        )
+
+    monkeypatch.setattr(fetch.ai_image, "generate_image", fake_generate_image)
+    monkeypatch.setattr(fetch, "evaluate_scene_image", fake_evaluate)
+    monkeypatch.setattr(fetch, "save_qc_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(fetch, "max_attempts", lambda: 1)
+    monkeypatch.setattr(fetch, "MAX_CONCURRENT", 1)
+
+    asyncio.run(fetch.fetch_assets(plan, tmp_path))
+
+    assert len(calls) == 1
+    provider_prompt = calls[0].lower()
+    assert scene.image_prompt == full_prompt
+    assert scene.prompt_used == calls[0]
+    assert scene.sanitized_prompt_used == calls[0]
+    assert scene.original_prompt_summary
+    assert scene.sanitized_prompt_summary
+    assert "adult carrying a large cracked stone" in provider_prompt
+    for risky in ("child", "medical", "mask", "ghost", "monster", "blob", "silhouette"):
+        assert re.search(rf"\b{risky}\b", provider_prompt) is None
 
 
 def test_bakery_safe_retry_prompts_include_scene_specific_terms():

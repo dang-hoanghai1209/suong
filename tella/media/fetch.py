@@ -397,6 +397,19 @@ _CLOUDFLARE_SAFE_RISKY_PATTERNS = (
     r"\bclose-up body details\b",
 )
 
+_CLOUDFLARE_SAFE_SYMBOLIC_RISKY_PATTERNS = (
+    r"\bchild(?:ren)?\b",
+    r"\bmedical\b",
+    r"\bmask\b",
+    r"\bghost\b",
+    r"\bmonster\b",
+    r"\bblob\b",
+    r"\bsilhouettes?\b",
+    r"\bmouth\b",
+    r"\bbody[- ]part\b",
+    r"\bclose[- ]up\b",
+)
+
 _SETTING_MATCH_TERMS = {
     "street_sidewalk": ("street", "sidewalk", "outdoor"),
     "bakery_exterior": ("bakery", "storefront", "sidewalk"),
@@ -854,6 +867,40 @@ def _cloudflare_safe_minimalist_prompt(scene) -> str:
     prompt = re.sub(r"\s+([,.;])", r"\1", prompt)
     prompt = re.sub(r",\s*,", ",", prompt)
     return _limit_minimalist_prompt(prompt.strip(" ,"), max_len=900)
+
+
+def _cloudflare_safe_symbolic_prompt(scene) -> str:
+    """Build a positive-only symbolic prompt for Cloudflare's safety filter."""
+    visual = re.split(
+        r",\s*(?:no|not|without|avoid)\b",
+        getattr(scene, "symbolic_visual", "") or "",
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    subject = getattr(scene, "main_character_or_object", "") or visual
+    for pattern in _CLOUDFLARE_SAFE_SYMBOLIC_RISKY_PATTERNS:
+        visual = re.sub(pattern, "", visual, flags=re.IGNORECASE)
+        subject = re.sub(pattern, "", subject, flags=re.IGNORECASE)
+    visual = re.sub(r"\s{2,}", " ", visual).strip(" ,.;")
+    subject = re.sub(r"\s{2,}", " ", subject).strip(" ,.;")
+
+    prompt = " ".join(
+        part
+        for part in (
+            "Minimalist hand-drawn emotional symbolic illustration.",
+            "Moderately dark warm taupe and muted brown-gray background, deeper "
+            "and less bright than beige, with soft low-key ambient light and "
+            "readable midtone contrast.",
+            "Soft rough pencil lines, flat muted earthy colors, calm melancholic "
+            "mood, centered composition, generous negative space, low visual clutter.",
+            f"Main scene: {visual}." if visual else "",
+            f"Main subject: {subject}." if subject else "",
+            "Understated editorial illustration with simple modest clothing for "
+            "human figures and clearly readable symbolic action.",
+        )
+        if part
+    )
+    return _limit_minimalist_prompt(prompt, max_len=1200)
 
 
 def _choose_motif(text: str, scene_index: int, used: set[str], previous: str) -> str:
@@ -1915,7 +1962,7 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         if error_type == "content_policy_blocked":
             raise RuntimeError(
                 "Cloudflare AI content policy blocked a harmless scene prompt "
-                "after sanitized retry. No placeholder video was rendered. "
+                "after provider-safe sanitation or retry. No placeholder video was rendered. "
                 "Local fallback is disabled for production-quality "
                 f"{theme_label} renders. Inspect plan.json for "
                 "original_prompt_summary and sanitized_prompt_summary. "
@@ -1975,9 +2022,12 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
             base = f"scene_{scene.scene_index:02d}_{_safe_stem(scene.title)}"
             if plan.media_source == "ai_image":
                 out = assets_dir / f"{base}.jpg"
-                prompt_for_cf = scene.image_prompt
+                original_prompt_for_cf = scene.image_prompt
+                prompt_for_cf = original_prompt_for_cf
                 if plan.theme == "minimalist_emotional":
                     prompt_for_cf = _minimalist_provider_prompt(scene)
+                elif plan.theme == "minimalist_symbolic_reel":
+                    prompt_for_cf = _cloudflare_safe_symbolic_prompt(scene)
                 prompt_hash = _asset_prompt_hash(
                     prompt_for_cf,
                     width=width,
@@ -1985,6 +2035,23 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                     seed=_seed_for_scene(plan, scene) if plan.theme == "minimalist_emotional" else _VIDEO_SEED,
                 )
                 scene.asset_prompt_hash = prompt_hash
+                if plan.theme == "minimalist_symbolic_reel":
+                    scene.original_prompt_hash = scene.original_prompt_hash or _asset_prompt_hash(
+                        original_prompt_for_cf,
+                        width=width,
+                        height=height,
+                        seed=_VIDEO_SEED,
+                    )
+                    scene.original_prompt_summary = scene.original_prompt_summary or _prompt_summary(
+                        original_prompt_for_cf,
+                        max_len=500,
+                    )
+                    scene.sanitized_prompt_hash = prompt_hash
+                    scene.sanitized_prompt_used = prompt_for_cf
+                    scene.sanitized_prompt_summary = _prompt_summary(
+                        prompt_for_cf,
+                        max_len=500,
+                    )
                 if plan.theme == "minimalist_emotional":
                     scene.original_prompt_hash = scene.original_prompt_hash or prompt_hash
                     scene.original_prompt_summary = scene.original_prompt_summary or _prompt_summary(
