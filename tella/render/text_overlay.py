@@ -46,6 +46,13 @@ TITLE_TOP_PADDING = 50
 BRAND_TOP_PADDING = 24
 LINE_SPACING = 8
 
+_REEL_MINIMAL_TEXT_COLOR = (255, 247, 237, 255)
+_REEL_MINIMAL_HIGHLIGHT_COLOR = (226, 160, 111, 255)
+_REEL_MINIMAL_SHADOW_COLOR = (38, 29, 26, 210)
+_REEL_MINIMAL_STROKE_COLOR = (48, 36, 31, 230)
+_REEL_MINIMAL_SHADOW_OFFSET = 3
+_REEL_MINIMAL_STROKE_WIDTH = 1
+
 
 def _measure(font: ImageFont.FreeTypeFont, text: str) -> tuple[int, int]:
     """Return (width, ascent+descent) for ``text`` at ``font``."""
@@ -190,10 +197,6 @@ def _draw_reel_caption(
     bottom_anchor_y = safe_bottom - CAPTION_BOTTOM_PADDING - block_h
     cur_y = max(safe_top, min(lower_middle_y, bottom_anchor_y))
 
-    text_color = (255, 247, 237, 255)
-    highlight_color = (191, 99, 73, 255)
-    shadow_color = (62, 43, 35, 150)
-
     for line, line_h in zip(lines, line_heights, strict=True):
         tokens = re.findall(r"\S+|\s+", line)
         highlight_token_indexes = _highlight_token_indexes(tokens, highlight_words)
@@ -210,9 +213,28 @@ def _draw_reel_caption(
                     or _ascii_key(stripped) in phrase_word_keys
                 )
             )
-            fill = highlight_color if is_highlight else text_color
-            draw.text((cur_x + 2, cur_y + 2), token, font=font, fill=shadow_color)
-            draw.text((cur_x, cur_y), token, font=font, fill=fill)
+            fill = (
+                _REEL_MINIMAL_HIGHLIGHT_COLOR
+                if is_highlight
+                else _REEL_MINIMAL_TEXT_COLOR
+            )
+            draw.text(
+                (
+                    cur_x + _REEL_MINIMAL_SHADOW_OFFSET,
+                    cur_y + _REEL_MINIMAL_SHADOW_OFFSET,
+                ),
+                token,
+                font=font,
+                fill=_REEL_MINIMAL_SHADOW_COLOR,
+            )
+            draw.text(
+                (cur_x, cur_y),
+                token,
+                font=font,
+                fill=fill,
+                stroke_width=_REEL_MINIMAL_STROKE_WIDTH,
+                stroke_fill=_REEL_MINIMAL_STROKE_COLOR,
+            )
             cur_x += token_w
         cur_y += line_h + LINE_SPACING
 

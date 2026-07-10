@@ -20,9 +20,14 @@ from tella.planner.symbolic_reel import (
     enforce_symbolic_reel_plan,
 )
 from tella.render.text_overlay import (
+    _REEL_MINIMAL_HIGHLIGHT_COLOR,
+    _REEL_MINIMAL_SHADOW_COLOR,
+    _REEL_MINIMAL_STROKE_WIDTH,
+    _REEL_MINIMAL_TEXT_COLOR,
     _highlight_token_indexes,
     _phrase_word_highlight_keys,
 )
+from tella.themes.loader import load_theme
 from tella.tts import synth_all
 from tella.tts.providers import TTSResult
 
@@ -177,7 +182,11 @@ def test_symbolic_reel_enforces_scene_fields_and_prompt_style():
         assert scene.subtitle_highlight_words
         prompt = scene.image_prompt.lower()
         assert "minimalist hand-drawn emotional doodle illustration" in prompt
-        assert "warm muted taupe background" in prompt
+        assert "dark warm taupe background" in prompt
+        assert "warm dusk-like muted brown-gray backdrop" in prompt
+        assert "low visual clutter" in prompt
+        assert "consistent earthy palette" in prompt
+        assert "stronger emotional depth" in prompt
         assert "soft rough pencil lines" in prompt
         assert "flat muted earthy colors" in prompt
         assert "centered composition" in prompt
@@ -192,6 +201,22 @@ def test_symbolic_reel_enforces_scene_fields_and_prompt_style():
         assert scene.symbolic_visual.lower() in prompt
         assert scene.emotional_metaphor.lower() in prompt
         assert scene.main_character_or_object.lower() in prompt
+
+
+def test_symbolic_theme_uses_dark_warm_palette_with_readable_subtitles():
+    theme = load_theme("minimalist_symbolic_reel")
+
+    assert theme.color_palette.bg == "#5b514d"
+    assert theme.color_palette.text == "#fff7ed"
+    assert theme.color_palette.accent == "#e2a06f"
+    assert "dark warm taupe background" in theme.image_style_suffix
+    assert "warm dusk-like muted brown-gray backdrop" in theme.image_style_suffix
+    assert "not black, not cold gray" in theme.image_style_suffix
+
+    assert _REEL_MINIMAL_TEXT_COLOR == (255, 247, 237, 255)
+    assert _REEL_MINIMAL_HIGHLIGHT_COLOR == (226, 160, 111, 255)
+    assert _REEL_MINIMAL_SHADOW_COLOR[3] >= 200
+    assert _REEL_MINIMAL_STROKE_WIDTH == 1
 
 
 def test_symbolic_prompts_do_not_keep_room_defaults_without_explicit_setting():

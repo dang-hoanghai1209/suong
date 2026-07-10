@@ -7,11 +7,14 @@ import unicodedata
 from tella.planner.models import TellaScenePlan
 
 _SYMBOLIC_STYLE = (
-    "minimalist hand-drawn emotional doodle illustration, warm muted taupe "
-    "background, simple expressive character or symbolic object, soft rough "
-    "pencil lines, flat muted earthy colors, centered composition, lots of "
-    "negative space, gentle melancholic mood, no text, no watermark, no "
-    "realistic rendering, no 3D, no anime, no complex background"
+    "minimalist hand-drawn emotional doodle illustration, dark warm taupe "
+    "background, warm dusk-like muted brown-gray backdrop, soft low-key ambient "
+    "light, simple expressive character or symbolic object, soft rough pencil "
+    "lines, flat muted earthy colors, consistent earthy palette, centered "
+    "composition, lots of negative space, low visual clutter, stronger emotional "
+    "depth, clear tonal contrast, gentle melancholic mood, not black, not cold "
+    "gray, no text, no watermark, no realistic rendering, no 3D, no anime, no "
+    "complex background"
 )
 
 _SYMBOLIC_VISUALS = (
