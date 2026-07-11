@@ -25,6 +25,10 @@ _SYMBOLIC_SOFT_FAILURES = (
     "palette_drift",
     "line_style_drift",
     "composition_scale_drift",
+    "minor_object_ambiguity",
+    "interaction_plausibility_drift",
+    "composition_clarity_drift",
+    "style_consistency_drift",
 )
 _SYMBOLIC_REQUIRED_QC_FIELDS = (
     "symbolic_meaning_matches",
@@ -39,6 +43,12 @@ _SYMBOLIC_REQUIRED_QC_FIELDS = (
     "line_style_matches",
     "forbidden_drift_detected",
     "forbidden_drift_types",
+    "requested_action_visible",
+    "character_object_interaction_plausible",
+    "emotional_meaning_readable",
+    "composition_clear",
+    "style_consistent",
+    "object_ambiguity_severity",
 )
 _HARD_FAILURE_RE = re.compile(
     r"(extra\s+(?:limb|arm|leg|hand|foot)|duplicate\s+(?:face|head|body)|"
@@ -476,6 +486,29 @@ def apply_qc_result_to_scene(
     scene.symbolic_qc_hard_fail_reasons = list(result.symbolic_qc_hard_fail_reasons)
     scene.symbolic_qc_soft_fail_reasons = list(result.symbolic_qc_soft_fail_reasons)
     scene.symbolic_soft_fail_streaks = dict(result.symbolic_soft_fail_streaks)
+    scene.required_subjects_present = (
+        bool(result.required_subjects_present) if symbolic_image_evaluated else None
+    )
+    scene.requested_action_visible = (
+        bool(result.requested_action_visible) if symbolic_image_evaluated else None
+    )
+    scene.character_object_interaction_plausible = (
+        bool(result.character_object_interaction_plausible)
+        if symbolic_image_evaluated
+        else None
+    )
+    scene.emotional_meaning_readable = (
+        bool(result.emotional_meaning_readable) if symbolic_image_evaluated else None
+    )
+    scene.composition_clear = (
+        bool(result.composition_clear) if symbolic_image_evaluated else None
+    )
+    scene.style_consistent = (
+        bool(result.style_consistent) if symbolic_image_evaluated else None
+    )
+    scene.object_ambiguity_severity = (
+        result.object_ambiguity_severity if symbolic_image_evaluated else None
+    )
 
 
 def _basic_qc(image_path: Path, expected: dict[str, Any]) -> dict[str, Any]:
@@ -933,6 +966,14 @@ def _result_from_vision(
             "style_matches_symbolic_reel": symbolic["style_matches_symbolic_reel"],
             "subject_scale_matches": symbolic["subject_scale_matches"],
             "no_forbidden_symbolic_drift": not symbolic["forbidden_drift_detected"],
+            "required_subjects_present": symbolic["required_subjects_present"],
+            "requested_action_visible": symbolic["requested_action_visible"],
+            "character_object_interaction_plausible": symbolic[
+                "character_object_interaction_plausible"
+            ],
+            "emotional_meaning_readable": symbolic["emotional_meaning_readable"],
+            "composition_clear": symbolic["composition_clear"],
+            "style_consistent": symbolic["style_consistent"],
         }
     )
 
@@ -1035,6 +1076,15 @@ def _result_from_vision(
         symbolic_qc_hard_fail_reasons=symbolic["hard_reasons"],
         symbolic_qc_soft_fail_reasons=symbolic["soft_reasons"],
         symbolic_soft_fail_streaks=symbolic["soft_fail_streaks"],
+        required_subjects_present=symbolic["required_subjects_present"],
+        requested_action_visible=symbolic["requested_action_visible"],
+        character_object_interaction_plausible=symbolic[
+            "character_object_interaction_plausible"
+        ],
+        emotional_meaning_readable=symbolic["emotional_meaning_readable"],
+        composition_clear=symbolic["composition_clear"],
+        style_consistent=symbolic["style_consistent"],
+        object_ambiguity_severity=symbolic["object_ambiguity_severity"],
     )
 
 
@@ -1065,6 +1115,13 @@ def _symbolic_qc_analysis(
             "subject_scale_matches": True,
             "forbidden_drift_detected": False,
             "forbidden_drift_types": [],
+            "required_subjects_present": True,
+            "requested_action_visible": True,
+            "character_object_interaction_plausible": True,
+            "emotional_meaning_readable": True,
+            "composition_clear": True,
+            "style_consistent": True,
+            "object_ambiguity_severity": "none",
         }
 
     def value(name: str) -> Any:
@@ -1080,6 +1137,20 @@ def _symbolic_qc_analysis(
     scale_matches = _as_bool(value("subject_scale_matches"), True)
     palette_matches = _as_bool(value("palette_matches"), True)
     line_style_matches = _as_bool(value("line_style_matches"), True)
+    requested_action_visible = _as_bool(value("requested_action_visible"), visual_matches)
+    interaction_plausible = _as_bool(
+        value("character_object_interaction_plausible"),
+        True,
+    )
+    emotional_meaning_readable = _as_bool(
+        value("emotional_meaning_readable"),
+        meaning_matches,
+    )
+    composition_clear = _as_bool(value("composition_clear"), True)
+    style_consistent = _as_bool(value("style_consistent"), style_matches)
+    object_ambiguity = str(value("object_ambiguity_severity") or "none").strip().lower()
+    if object_ambiguity not in {"none", "minor", "major"}:
+        object_ambiguity = "minor"
 
     drift_types = [_normalize_symbolic_drift_type(item) for item in _string_list(value("forbidden_drift_types"))]
     drift_flags = {
@@ -1106,7 +1177,7 @@ def _symbolic_qc_analysis(
         value("effort_or_carrying_symbol_visible"),
         visual_matches,
     )
-    if "crowd" in expected_subject_text and not crowd_visible:
+    if any(term in expected_subject_text for term in ("crowd", "group")) and not crowd_visible:
         required_subjects_present = False
     if "comparison symbol" in expected_subject_text and character_count < 2 and not comparison_symbol_visible:
         required_subjects_present = False
@@ -1117,8 +1188,12 @@ def _symbolic_qc_analysis(
     soft_reasons: list[str] = []
     if not meaning_matches:
         hard_reasons.append("semantic_symbol_mismatch")
+    if not emotional_meaning_readable:
+        hard_reasons.append("semantic_symbol_mismatch")
     if not visual_matches or not required_subjects_present:
         hard_reasons.append("required_subject_missing")
+    if not requested_action_visible:
+        hard_reasons.append("requested_action_missing")
     if not identity_matches:
         hard_reasons.append("visual_identity_drift")
     if not age_matches:
@@ -1131,6 +1206,16 @@ def _symbolic_qc_analysis(
         soft_reasons.append("line_style_drift")
     if not scale_matches:
         soft_reasons.append("composition_scale_drift")
+    if not interaction_plausible:
+        soft_reasons.append("interaction_plausibility_drift")
+    if not composition_clear:
+        soft_reasons.append("composition_clarity_drift")
+    if not style_consistent:
+        soft_reasons.append("style_consistency_drift")
+    if object_ambiguity == "minor":
+        soft_reasons.append("minor_object_ambiguity")
+    elif object_ambiguity == "major":
+        hard_reasons.append("symbolic_object_unreadable")
 
     for drift_type in drift_types:
         if drift_type == "child":
@@ -1210,6 +1295,13 @@ def _symbolic_qc_analysis(
         "subject_scale_matches": scale_matches,
         "forbidden_drift_detected": forbidden_drift,
         "forbidden_drift_types": drift_types,
+        "required_subjects_present": required_subjects_present,
+        "requested_action_visible": requested_action_visible,
+        "character_object_interaction_plausible": interaction_plausible,
+        "emotional_meaning_readable": emotional_meaning_readable,
+        "composition_clear": composition_clear,
+        "style_consistent": style_consistent,
+        "object_ambiguity_severity": object_ambiguity,
     }
 
 
@@ -1404,6 +1496,12 @@ def _vision_prompt(
                 "symbolic_meaning_matches": True,
                 "symbolic_visual_matches": True,
                 "required_subjects_present": True,
+                "requested_action_visible": True,
+                "character_object_interaction_plausible": True,
+                "emotional_meaning_readable": True,
+                "composition_clear": True,
+                "style_consistent": True,
+                "object_ambiguity_severity": "none",
                 "metaphor_is_readable": True,
                 "visual_identity_matches": True,
                 "adult_age_policy_matches": True,
@@ -1443,11 +1541,21 @@ def _vision_prompt(
             f"Palette id: {scene.palette_id}\n"
             f"Line style id: {scene.line_style_id}\n"
             f"Subject scale profile: {scene.subject_scale_profile}\n"
+            f"Selected semantic intent: {scene.semantic_intent}\n"
+            f"Selected character setup: {scene.character_archetype}; expected count: {scene.character_count}\n"
+            f"Selected action: {scene.primary_action}\n"
+            f"Selected primary object: {scene.primary_object}; secondary object: {scene.secondary_object}\n"
+            f"Selected environment: {scene.environment}\n"
+            f"Selected composition: {scene.composition_pattern}; framing: {scene.framing}\n"
             "Hard symbolic failures: missing required subject, child under the "
             "adult policy, medical mask, ghost, monster, blob creature, horror "
             "imagery, photorealistic/cinematic figure, unreadable scene meaning, "
-            "or global visual identity drift. Soft-only failures: unreadable "
-            "metaphor, palette drift, line-style drift, or subject-scale drift. "
+            "or global visual identity drift. A requested action that is absent "
+            "or opposite is hard. Soft-only failures include minor object "
+            "ambiguity, imperfect but plausible interaction, slight composition "
+            "drift, unreadable metaphor, palette drift, line-style drift, or "
+            "subject-scale drift. Judge whether the symbolic relationship reads; "
+            "do not demand photorealistic object accuracy. "
             "For soft-only failures keep passed=true; use passed=false for hard "
             "failures. Record forbidden drift types with structured labels.\n"
             "Concrete rules: lonely-in-a-crowd requires one isolated adult plus "
@@ -1541,6 +1649,26 @@ def _symbolic_repair_prompt(
     if any("metaphor_unreadable" in reason for reason in reasons):
         corrections.append(
             f"use one concrete readable symbol for the metaphor: {scene.symbolic_visual}; remove unrelated abstractions"
+        )
+    if any("requested_action_missing" in reason for reason in reasons):
+        corrections.append(
+            f"make the selected action clearly visible: {scene.primary_action}"
+        )
+    if any("interaction_plausibility_drift" in reason for reason in reasons):
+        corrections.append(
+            "show a clear physical relationship between the person, action, and symbolic object"
+        )
+    if any("minor_object_ambiguity" in reason for reason in reasons):
+        corrections.append(
+            f"clarify the simplified symbolic object while keeping it stylized: {scene.primary_object}"
+        )
+    if any("composition_clarity_drift" in reason for reason in reasons):
+        corrections.append(
+            f"simplify the layout and preserve this composition: {scene.composition_pattern}"
+        )
+    if any("style_consistency_drift" in reason for reason in reasons):
+        corrections.append(
+            "restore the same soft brown pencil lines and muted taupe illustration style"
         )
     if any("palette_drift" in reason for reason in reasons):
         corrections.append(

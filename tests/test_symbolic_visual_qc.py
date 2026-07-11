@@ -85,6 +85,12 @@ def _base_data(**overrides):
         "symbolic_meaning_matches": True,
         "symbolic_visual_matches": True,
         "required_subjects_present": True,
+        "requested_action_visible": True,
+        "character_object_interaction_plausible": True,
+        "emotional_meaning_readable": True,
+        "composition_clear": True,
+        "style_consistent": True,
+        "object_ambiguity_severity": "none",
         "metaphor_is_readable": True,
         "visual_identity_matches": True,
         "adult_age_policy_matches": True,
@@ -264,6 +270,28 @@ def test_unreadable_metaphor_soft_fails_then_escalates():
     assert "metaphor_unreadable" in second.symbolic_qc_hard_fail_reasons
     assert second.repeated_soft_fail_escalation_applied is True
     assert second.stopped_retry_loop_early_due_to_repeated_soft_fail is True
+
+
+def test_minor_object_ambiguity_is_soft_not_hard():
+    result = _qc(
+        _scene(),
+        _base_data(object_ambiguity_severity="minor"),
+    )
+
+    assert result.passed is False
+    assert result.symbolic_qc_hard_fail_reasons == []
+    assert result.symbolic_qc_soft_fail_reasons == ["minor_object_ambiguity"]
+    assert result.requested_action_visible is True
+
+
+def test_slight_style_consistency_drift_is_soft_not_hard():
+    result = _qc(
+        _scene(),
+        _base_data(style_consistent=False),
+    )
+
+    assert result.symbolic_qc_hard_fail_reasons == []
+    assert result.symbolic_qc_soft_fail_reasons == ["style_consistency_drift"]
 
 
 def test_repaired_prompt_names_missing_crowd_requirement():

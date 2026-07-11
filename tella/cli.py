@@ -284,12 +284,24 @@ def _log_symbolic_plan_metadata(plan) -> None:
         return
     logger.info(
         "symbolic_reel plan metadata: subtitle_style=%s tts_continuous=%s "
-        "tts_text_source=%s max_pause_ms=%s scenes=%d",
+        "tts_text_source=%s max_pause_ms=%s scenes=%d diversity_seed=%s "
+        "distinct_actions=%s distinct_objects=%s distinct_environments=%s "
+        "distinct_compositions=%s preferred_actions=%s preferred_objects=%s "
+        "preferred_environments=%s preferred_compositions=%s",
         plan.subtitle_style,
         plan.tts_continuous,
         plan.tts_text_source,
         plan.tts_max_pause_ms,
         len([s for s in plan.scenes if s.kind == "scene"]),
+        plan.visual_diversity_seed,
+        plan.distinct_action_count,
+        plan.distinct_object_count,
+        plan.distinct_environment_count,
+        plan.distinct_composition_count,
+        plan.preferred_action_range,
+        plan.preferred_object_range,
+        plan.preferred_environment_range,
+        plan.preferred_composition_range,
     )
     for scene in (s for s in plan.scenes if s.kind == "scene"):
         logger.info(
@@ -302,6 +314,36 @@ def _log_symbolic_plan_metadata(plan) -> None:
             scene.main_character_or_object,
             scene.subtitle_highlight_words,
             _prompt_summary(scene.image_prompt),
+        )
+        logger.info(
+            "symbolic_reel diversity scene=%02d intent=%s character=%s count=%s "
+            "action=%s object=%s secondary=%s environment=%s composition=%s "
+            "framing=%s variant=%s seed=%s semantic_strength=%s "
+            "semantic_score=%.1f diversity_score=%.1f cohesion_family=%s "
+            "cohesion_score=%.1f final_score=%.1f semantic_priority_override=%s "
+            "diversity_target_relaxed=%s diversity_repair=%s avoided=%s",
+            scene.scene_index,
+            scene.semantic_intent,
+            scene.character_archetype,
+            scene.character_count,
+            scene.primary_action,
+            scene.primary_object,
+            scene.secondary_object,
+            scene.environment,
+            scene.composition_pattern,
+            scene.framing,
+            scene.visual_variant_id,
+            scene.visual_seed,
+            scene.semantic_strength,
+            scene.semantic_strength_score,
+            scene.diversity_score,
+            scene.cohesion_family,
+            scene.cohesion_score,
+            scene.final_variant_score,
+            scene.semantic_priority_override,
+            scene.diversity_target_relaxed,
+            scene.diversity_repair_applied,
+            scene.repeated_attribute_avoided,
         )
 
 
@@ -400,7 +442,10 @@ async def run_pipeline(
         "TELLA_TTS_CONTINUOUS": os.environ.get("TELLA_TTS_CONTINUOUS"),
         "TELLA_TTS_MAX_PAUSE_MS": os.environ.get("TELLA_TTS_MAX_PAUSE_MS"),
         "TELLA_TTS_STYLE": os.environ.get("TELLA_TTS_STYLE"),
+        "TELLA_SYMBOLIC_JOB_ID": os.environ.get("TELLA_SYMBOLIC_JOB_ID"),
     }
+    if theme == "minimalist_symbolic_reel":
+        os.environ["TELLA_SYMBOLIC_JOB_ID"] = job_id
     if allow_local_image_fallback:
         os.environ["TELLA_ALLOW_LOCAL_IMAGE_FALLBACK"] = "1"
     if reuse_assets:

@@ -5,6 +5,7 @@ import re
 import unicodedata
 
 from tella.planner.models import TellaScenePlan
+from tella.planner.symbolic_diversity import apply_symbolic_visual_diversity
 
 _VISUAL_IDENTITY_ID = "symbolic_dusk_taupe_v1"
 _PALETTE_ID = "dusk_taupe_earth_limited_v1"
@@ -217,6 +218,7 @@ def enforce_symbolic_reel_plan(plan: TellaScenePlan) -> None:
         _reset_symbolic_image_qc(scene)
 
     preflight_symbolic_reel_plan(plan)
+    apply_symbolic_visual_diversity(plan, _symbolic_scene_type)
 
     for scene in body_scenes:
         (
@@ -657,6 +659,20 @@ def _symbolic_prompt(scene) -> str:
         f"emotional metaphor: {scene.emotional_metaphor}",
         f"main character or object: {scene.main_character_or_object}",
     ]
+    if scene.visual_variant_id:
+        parts.extend(
+            [
+                f"semantic intent: {scene.semantic_intent}",
+                f"selected character setup: {scene.character_archetype}",
+                f"selected action: {scene.primary_action}",
+                f"selected primary object: {scene.primary_object}",
+                f"selected secondary object: {scene.secondary_object}",
+                f"selected environment: {scene.environment}",
+                f"selected composition: {scene.composition_pattern}",
+                f"selected framing: {scene.framing}",
+                f"provider-safe visual realization: {scene.provider_prompt_variant}",
+            ]
+        )
     if explicit_setting:
         parts.append(explicit_setting)
     parts.append(
@@ -726,6 +742,39 @@ def _contains_term(key: str, terms: tuple[str, ...]) -> bool:
 
 
 def _symbolic_qc_expectations(scene) -> tuple[list[str], list[str]]:
+    if scene.visual_variant_id:
+        if scene.semantic_intent == "crowded_loneliness":
+            subjects = [
+                "one clearly isolated adult figure",
+                "one clearly visible small group or crowd of at least three adults",
+            ]
+        elif scene.semantic_intent == "comparison":
+            subjects = [
+                "at least two visible people",
+                "one unmistakable comparison symbol",
+            ]
+        else:
+            subjects = [
+                f"character setup: {scene.character_archetype}",
+                f"primary object: {scene.primary_object}",
+            ]
+        subjects.append(f"requested action: {scene.primary_action}")
+        if scene.secondary_object:
+            subjects.append(f"secondary object: {scene.secondary_object}")
+        expectations = [
+            "all required subjects are visible",
+            "the requested action is understandable",
+            "character-object interaction is plausible",
+            "emotional meaning is readable",
+            "composition is clear and uncluttered",
+            "style remains consistent with the symbolic reel identity",
+            f"visual identity matches {scene.visual_identity_id}",
+            f"human age follows {scene.age_policy}",
+            f"palette matches {scene.palette_id}",
+            f"line style matches {scene.line_style_id}",
+        ]
+        return subjects, expectations
+
     key = _ascii_key(
         " ".join(
             part

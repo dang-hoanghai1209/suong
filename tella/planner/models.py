@@ -220,6 +220,13 @@ class SceneQCResult(BaseModel):
     symbolic_qc_hard_fail_reasons: list[str] = Field(default_factory=list)
     symbolic_qc_soft_fail_reasons: list[str] = Field(default_factory=list)
     symbolic_soft_fail_streaks: dict[str, int] = Field(default_factory=dict)
+    required_subjects_present: bool = True
+    requested_action_visible: bool = True
+    character_object_interaction_plausible: bool = True
+    emotional_meaning_readable: bool = True
+    composition_clear: bool = True
+    style_consistent: bool = True
+    object_ambiguity_severity: Literal["none", "minor", "major"] = "none"
 
     shot_type: str = Field("", max_length=60)
     body_visibility: str = Field("", max_length=80)
@@ -325,6 +332,29 @@ class Scene(BaseModel):
     symbolic_preflight_failure_reasons: list[str] = Field(default_factory=list)
     symbolic_preflight_repaired: bool = False
     symbolic_preflight_original_visual: str = Field("", max_length=300)
+    semantic_intent: str = Field("", max_length=80)
+    visual_variant_id: str = Field("", max_length=120)
+    visual_seed: int = 0
+    character_archetype: str = Field("", max_length=80)
+    character_count: int = Field(0, ge=0, le=20)
+    primary_action: str = Field("", max_length=80)
+    primary_object: str = Field("", max_length=80)
+    secondary_object: str = Field("", max_length=80)
+    environment: str = Field("", max_length=80)
+    composition_pattern: str = Field("", max_length=80)
+    framing: str = Field("", max_length=80)
+    diversity_repair_applied: bool = False
+    repeated_attribute_avoided: list[str] = Field(default_factory=list)
+    provider_prompt_variant: str = Field("", max_length=900)
+    semantic_strength: Literal["strong", "acceptable", "weak"] = "acceptable"
+    semantic_strength_score: float = 0.0
+    semantic_anchor_fields: list[str] = Field(default_factory=list)
+    cohesion_family: str = Field("", max_length=80)
+    diversity_score: float = 0.0
+    cohesion_score: float = 0.0
+    final_variant_score: float = 0.0
+    diversity_target_relaxed: bool = False
+    semantic_priority_override: bool = False
     symbolic_qc_expected_subjects: list[str] = Field(default_factory=list)
     symbolic_qc_expectations: list[str] = Field(default_factory=list)
     symbolic_qc_passed: bool = False
@@ -345,6 +375,13 @@ class Scene(BaseModel):
     symbolic_qc_hard_fail_reasons: list[str] = Field(default_factory=list)
     symbolic_qc_soft_fail_reasons: list[str] = Field(default_factory=list)
     symbolic_soft_fail_streaks: dict[str, int] = Field(default_factory=dict)
+    required_subjects_present: bool | None = None
+    requested_action_visible: bool | None = None
+    character_object_interaction_plausible: bool | None = None
+    emotional_meaning_readable: bool | None = None
+    composition_clear: bool | None = None
+    style_consistent: bool | None = None
+    object_ambiguity_severity: Literal["none", "minor", "major"] | None = None
 
     # 1-3 assets per scene. 1 = static Ken Burns; 2-3 = mini-montage with
     # crossfades inside the scene window.
@@ -558,6 +595,15 @@ class TellaScenePlan(BaseModel):
     symbolic_preflight_failure_reasons: list[str] = Field(default_factory=list)
     symbolic_preflight_repaired: bool = False
     symbolic_preflight_original_visual: dict[str, str] = Field(default_factory=dict)
+    visual_diversity_seed: int = 0
+    distinct_action_count: int = 0
+    distinct_object_count: int = 0
+    distinct_environment_count: int = 0
+    distinct_composition_count: int = 0
+    preferred_action_range: list[int] = Field(default_factory=lambda: [5, 7])
+    preferred_object_range: list[int] = Field(default_factory=lambda: [5, 7])
+    preferred_environment_range: list[int] = Field(default_factory=lambda: [3, 5])
+    preferred_composition_range: list[int] = Field(default_factory=lambda: [4, 6])
 
     scenes: list[Scene] = Field(..., min_length=3, max_length=40)
 

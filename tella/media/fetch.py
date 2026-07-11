@@ -1052,6 +1052,16 @@ def _cloudflare_safe_minimalist_prompt(scene) -> str:
 
 
 def _symbolic_provider_subject(scene) -> str:
+    if getattr(scene, "visual_variant_id", ""):
+        character = str(getattr(scene, "character_archetype", "") or "one quiet person").replace("_", " ")
+        action = str(getattr(scene, "primary_action", "") or "holding").replace("_", " ")
+        primary = str(getattr(scene, "primary_object", "") or "symbolic object").replace("_", " ")
+        secondary = str(getattr(scene, "secondary_object", "") or "").replace("_", " ")
+        subject = f"{character}, {action} with {primary}"
+        if secondary:
+            subject += f", {secondary} also visible"
+        return subject
+
     key = _ascii_key(
         " ".join(
             str(part or "")
@@ -1088,6 +1098,14 @@ def _symbolic_provider_subject(scene) -> str:
 
 def _cloudflare_safe_symbolic_prompt(scene) -> str:
     """Build the positive-only initial symbolic provider prompt."""
+    selected_prompt = str(getattr(scene, "provider_prompt_variant", "") or "").strip()
+    if selected_prompt:
+        for pattern in _CLOUDFLARE_SAFE_SYMBOLIC_RISKY_PATTERNS:
+            selected_prompt = re.sub(pattern, "", selected_prompt, flags=re.IGNORECASE)
+        selected_prompt = re.sub(r"\s{2,}", " ", selected_prompt)
+        selected_prompt = re.sub(r"\s+([,.;])", r"\1", selected_prompt)
+        selected_prompt = re.sub(r",\s*,", ",", selected_prompt)
+        return _limit_minimalist_prompt(selected_prompt.strip(" ,"), max_len=900)
     subject = _symbolic_provider_subject(scene)
     return (
         "minimalist hand-drawn emotional symbolic illustration, "
@@ -1507,6 +1525,9 @@ def _seed_for_scene(plan: TellaScenePlan, scene) -> int:
 
 
 def _symbolic_expected_character_count(scene) -> int:
+    selected_count = int(getattr(scene, "character_count", 0) or 0)
+    if getattr(scene, "visual_variant_id", "") and selected_count > 0:
+        return selected_count
     required = " ".join(scene.symbolic_qc_expected_subjects).lower()
     if "crowd" in required or "at least two adult human figures" in required:
         return 2
