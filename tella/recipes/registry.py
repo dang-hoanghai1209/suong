@@ -203,6 +203,7 @@ def recipe_manifest(
     validation_status: str,
     validation_errors: list[str] | None = None,
     estimated_duration_seconds: float | None = None,
+    voice_resolution: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         **recipe.model_dump(),
@@ -212,6 +213,7 @@ def recipe_manifest(
         "recipe_validation_status": validation_status,
         "recipe_validation_errors": list(validation_errors or []),
         "estimated_duration_seconds": estimated_duration_seconds,
+        **(voice_resolution or {}),
     }
 
 

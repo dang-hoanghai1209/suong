@@ -61,6 +61,14 @@ from tella.recipes import (
 )
 from tella.render.pipeline import render
 from tella.tts.synth_all import synthesize_all
+from tella.voice_profiles import (
+    VoiceProfileNotFoundError,
+    VoiceResolution,
+    apply_voice_resolution_metadata,
+    format_voice_profile_list,
+    resolve_voice,
+    validate_voice_profiles,
+)
 
 logger = logging.getLogger("tella.cli")
 
@@ -72,6 +80,7 @@ def _write_recipe_manifest(
     validation_status: str,
     validation_errors: list[str] | None = None,
     estimated_duration_seconds: float | None = None,
+    voice_resolution: VoiceResolution | None = None,
 ) -> Path:
     out = job_dir / "recipe.json"
     out.write_text(
@@ -81,6 +90,9 @@ def _write_recipe_manifest(
                 validation_status=validation_status,
                 validation_errors=validation_errors,
                 estimated_duration_seconds=estimated_duration_seconds,
+                voice_resolution=(
+                    voice_resolution.model_dump() if voice_resolution else None
+                ),
             ),
             ensure_ascii=False,
             indent=2,
@@ -90,7 +102,12 @@ def _write_recipe_manifest(
     return out
 
 
-def _validate_recipe_plan(plan, recipe: RecipeDefinition, job_dir: Path) -> list[str]:
+def _validate_recipe_plan(
+    plan,
+    recipe: RecipeDefinition,
+    job_dir: Path,
+    voice_resolution: VoiceResolution | None = None,
+) -> list[str]:
     body_scenes = [scene for scene in plan.scenes if scene.kind == "scene"]
     estimated_duration = estimate_plan_duration(plan)
     narration_mode = "continuous" if plan.tts_continuous else "per_scene"
@@ -114,6 +131,7 @@ def _validate_recipe_plan(plan, recipe: RecipeDefinition, job_dir: Path) -> list
         validation_status=status,
         validation_errors=errors,
         estimated_duration_seconds=estimated_duration,
+        voice_resolution=voice_resolution,
     )
     return errors
 
@@ -472,6 +490,7 @@ async def run_pipeline(
     tts_max_pause_ms: int | None = None,
     tts_style: str | None = None,
     recipe: RecipeDefinition | None = None,
+    voice_resolution: VoiceResolution | None = None,
 ) -> Path:
     """Execute the full Tella pipeline. Returns the path to the final MP4.
 
@@ -498,6 +517,7 @@ async def run_pipeline(
             job_dir,
             recipe,
             validation_status="pending_plan_validation",
+            voice_resolution=voice_resolution,
         )
     logger.info("job: %s (mode=%s)", job_dir, "script" if use_script else "topic")
     previous_env = {
@@ -615,10 +635,17 @@ async def run_pipeline(
         shutil.copyfile(plan_json, reuse_plan)
         os.environ["TELLA_REUSE_PLAN_PATH"] = str(reuse_plan)
     plan.local_fallback_allowed = bool(allow_local_image_fallback)
+    if voice_resolution is not None:
+        apply_voice_resolution_metadata(plan, voice_resolution)
     _ensure_symbolic_runtime_defaults(plan)
     recipe_errors: list[str] = []
     if recipe is not None:
-        recipe_errors = _validate_recipe_plan(plan, recipe, job_dir)
+        recipe_errors = _validate_recipe_plan(
+            plan,
+            recipe,
+            job_dir,
+            voice_resolution,
+        )
     plan_json.write_text(
         json.dumps(plan.model_dump(), ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -697,6 +724,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="List registered recipes without making network calls.",
     )
     p.add_argument(
+        "--list-voice-profiles",
+        action="store_true",
+        help="List configured voice profiles without making network calls.",
+    )
+    p.add_argument(
+        "--validate-voice-profiles",
+        action="store_true",
+        help="Validate local voice profile and recipe mappings without synthesis.",
+    )
+    p.add_argument(
         "--dry-run-recipe",
         action="store_true",
         help="Resolve and validate --recipe locally, then write recipe.json only.",
@@ -761,6 +798,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         dest="tts_voice",
         help="TTS voice override, e.g. vi-VN-HoaiMyNeural (also TELLA_TTS_VOICE)",
+    )
+    p.add_argument(
+        "--voice-profile",
+        default=None,
+        dest="voice_profile_id",
+        help="Select a configured voice profile.",
     )
     p.add_argument(
         "--tts-continuous",
@@ -920,6 +963,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_recipes:
         print(format_recipe_list())
         return 0
+    if args.list_voice_profiles:
+        print(format_voice_profile_list())
+        return 0
+    if args.validate_voice_profiles:
+        profile_errors = validate_voice_profiles()
+        if profile_errors:
+            print(
+                "ERROR: voice profile validation failed: "
+                + "; ".join(profile_errors),
+                file=sys.stderr,
+            )
+            return 2
+        print("Voice profiles valid: " + ", ".join(
+            item.split(" |", 1)[0]
+            for item in format_voice_profile_list().splitlines()
+        ))
+        return 0
 
     selected_recipe: RecipeDefinition | None = None
     if args.recipe_id:
@@ -928,6 +988,27 @@ def main(argv: list[str] | None = None) -> int:
         except RecipeNotFoundError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
+
+    try:
+        voice_resolution = resolve_voice(
+            explicit_provider=args.tts_provider,
+            explicit_voice=args.tts_voice,
+            explicit_voice_rate=args.voice_rate_custom,
+            explicit_profile_id=args.voice_profile_id,
+            recipe_profile_id=(
+                selected_recipe.voice_profile_id if selected_recipe else None
+            ),
+            narrative_mode=(
+                selected_recipe.narrative_mode if selected_recipe else None
+            ),
+            legacy_provider=(
+                os.environ.get("TELLA_TTS_PROVIDER") or "edge"
+            ),
+            legacy_voice=os.environ.get("TELLA_TTS_VOICE") or "",
+        )
+    except VoiceProfileNotFoundError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
     if args.dry_run_recipe:
         if selected_recipe is None:
@@ -940,6 +1021,7 @@ def main(argv: list[str] | None = None) -> int:
             job_dir,
             selected_recipe,
             validation_status="definition_validated",
+            voice_resolution=voice_resolution,
         )
         logger.info(
             "recipe resolved id=%s version=%s status=%s theme=%s planner=%s",
@@ -948,6 +1030,18 @@ def main(argv: list[str] | None = None) -> int:
             selected_recipe.status,
             selected_recipe.visual_theme_id,
             selected_recipe.planner_id,
+        )
+        logger.info(
+            "voice resolved profile=%s source=%s provider=%s voice=%s rate=%s "
+            "overrides=%s compatibility=%s recipe_override=%s",
+            voice_resolution.resolved_voice_profile_id or "(direct/legacy)",
+            voice_resolution.voice_resolution_source,
+            voice_resolution.resolved_tts_provider,
+            voice_resolution.resolved_voice or "(planner/default)",
+            voice_resolution.resolved_voice_rate or "(theme/default)",
+            ",".join(voice_resolution.direct_override_fields) or "none",
+            voice_resolution.voice_profile_compatibility_status,
+            voice_resolution.recipe_voice_override_applied,
         )
         print(f"\n[OK] Recipe: {recipe_path}")
         return 0
@@ -980,14 +1074,20 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         args.tts_continuous = selected_recipe.narration_mode == "continuous"
 
-    if args.tts_provider:
-        os.environ["TELLA_TTS_PROVIDER"] = args.tts_provider
-    if args.tts_voice:
-        os.environ["TELLA_TTS_VOICE"] = args.tts_voice
+    os.environ["TELLA_TTS_PROVIDER"] = voice_resolution.resolved_tts_provider
+    if voice_resolution.resolved_voice:
+        os.environ["TELLA_TTS_VOICE"] = voice_resolution.resolved_voice
     logger.info(
-        "TTS selection requested provider=%s voice=%s",
-        (os.environ.get("TELLA_TTS_PROVIDER") or "edge").strip().lower() or "edge",
-        (os.environ.get("TELLA_TTS_VOICE") or "").strip() or "(planner/default)",
+        "voice resolved profile=%s source=%s provider=%s voice=%s rate=%s "
+        "overrides=%s compatibility=%s recipe_override=%s",
+        voice_resolution.resolved_voice_profile_id or "(none)",
+        voice_resolution.voice_resolution_source,
+        voice_resolution.resolved_tts_provider,
+        voice_resolution.resolved_voice or "(planner/default)",
+        voice_resolution.resolved_voice_rate or "(theme/default)",
+        ",".join(voice_resolution.direct_override_fields) or "none",
+        voice_resolution.voice_profile_compatibility_status,
+        voice_resolution.recipe_voice_override_applied,
     )
 
     if not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GEMINI_API_KEYS"):
@@ -1020,7 +1120,14 @@ def main(argv: list[str] | None = None) -> int:
                 duration_mode=args.duration_mode,
                 aspect_ratio=args.aspect,
                 voice_pace_name=args.voice_pace_name,
-                voice_rate_custom=args.voice_rate_custom,
+                voice_rate_custom=(
+                    args.voice_rate_custom
+                    or (
+                        voice_resolution.resolved_voice_rate
+                        if voice_resolution.resolved_voice_profile_id
+                        else None
+                    )
+                ),
                 voice_gender=args.voice_gender,
                 out_root=out_root,
                 job_id=args.job_id,
@@ -1038,6 +1145,7 @@ def main(argv: list[str] | None = None) -> int:
                 tts_max_pause_ms=args.tts_max_pause_ms,
                 tts_style=args.tts_style,
                 recipe=selected_recipe,
+                voice_resolution=voice_resolution,
             )
         )
     except KeyboardInterrupt:

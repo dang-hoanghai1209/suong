@@ -583,6 +583,14 @@ class TellaScenePlan(BaseModel):
     voice_google_rate: float = Field(1.00, ge=0.25, le=4.0)
     voice_gender: VoiceGender = "male"
     voice_name: str = ""
+    requested_voice_profile_id: str = Field("", max_length=80)
+    resolved_voice_profile_id: str = Field("", max_length=80)
+    voice_resolution_source: str = Field("legacy_defaults", max_length=40)
+    resolved_tts_provider: str = Field("", max_length=40)
+    resolved_voice: str = Field("", max_length=120)
+    resolved_voice_rate: str = Field("", max_length=20)
+    recipe_voice_override_applied: bool = False
+    voice_profile_compatibility_status: str = Field("not_checked", max_length=40)
 
     # Character + setting locking — populated by planner for ai_image mode,
     # emptied for stock modes.
