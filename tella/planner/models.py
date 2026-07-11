@@ -560,6 +560,20 @@ class TellaScenePlan(BaseModel):
     media_source: MediaSource = "ai_image"
     duration_mode: DurationMode = "short"
     theme: Theme = "cinematic"
+    recipe_id: str = Field("", max_length=80)
+    recipe_version: int = 0
+    recipe_status: str = Field("", max_length=40)
+    narrative_mode: str = Field("", max_length=80)
+    planner_id: str = Field("", max_length=80)
+    visual_theme_id: str = Field("", max_length=80)
+    voice_profile_id: str = Field("", max_length=80)
+    subtitle_style_id: str = Field("", max_length=80)
+    transition_profile_id: str = Field("", max_length=80)
+    motion_profile_id: str = Field("", max_length=80)
+    recipe_scene_range: list[int] = Field(default_factory=list)
+    recipe_duration_range: list[float] = Field(default_factory=list)
+    recipe_validation_status: str = Field("not_selected", max_length=40)
+    recipe_validation_errors: list[str] = Field(default_factory=list)
 
     # Voice settings (resolved by CLI from theme + user overrides before
     # the planner runs — planner just receives these as inputs and echoes

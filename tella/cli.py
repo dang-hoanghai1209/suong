@@ -49,10 +49,73 @@ from tella.composer.compose import compose_timing
 from tella.ingest.topic_translator import SUPPORTED_LANGS, translate_topic
 from tella.media.fetch import fetch_assets
 from tella.planner.story_planner import plan_story, plan_story_from_script
+from tella.recipes import (
+    RecipeDefinition,
+    RecipeNotFoundError,
+    apply_recipe_metadata,
+    estimate_plan_duration,
+    format_recipe_list,
+    get_recipe,
+    recipe_manifest,
+    validate_recipe_run,
+)
 from tella.render.pipeline import render
 from tella.tts.synth_all import synthesize_all
 
 logger = logging.getLogger("tella.cli")
+
+
+def _write_recipe_manifest(
+    job_dir: Path,
+    recipe: RecipeDefinition,
+    *,
+    validation_status: str,
+    validation_errors: list[str] | None = None,
+    estimated_duration_seconds: float | None = None,
+) -> Path:
+    out = job_dir / "recipe.json"
+    out.write_text(
+        json.dumps(
+            recipe_manifest(
+                recipe,
+                validation_status=validation_status,
+                validation_errors=validation_errors,
+                estimated_duration_seconds=estimated_duration_seconds,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return out
+
+
+def _validate_recipe_plan(plan, recipe: RecipeDefinition, job_dir: Path) -> list[str]:
+    body_scenes = [scene for scene in plan.scenes if scene.kind == "scene"]
+    estimated_duration = estimate_plan_duration(plan)
+    narration_mode = "continuous" if plan.tts_continuous else "per_scene"
+    errors = validate_recipe_run(
+        recipe,
+        scene_count=len(body_scenes),
+        estimated_duration_seconds=estimated_duration,
+        aspect_ratio=plan.aspect_ratio,
+        narration_mode=narration_mode,
+    )
+    status = "passed" if not errors else "failed"
+    apply_recipe_metadata(
+        plan,
+        recipe,
+        validation_status=status,
+        validation_errors=errors,
+    )
+    _write_recipe_manifest(
+        job_dir,
+        recipe,
+        validation_status=status,
+        validation_errors=errors,
+        estimated_duration_seconds=estimated_duration,
+    )
+    return errors
 
 
 def _env_float(name: str, default: float) -> float:
@@ -408,6 +471,7 @@ async def run_pipeline(
     tts_continuous: bool | None = None,
     tts_max_pause_ms: int | None = None,
     tts_style: str | None = None,
+    recipe: RecipeDefinition | None = None,
 ) -> Path:
     """Execute the full Tella pipeline. Returns the path to the final MP4.
 
@@ -429,6 +493,12 @@ async def run_pipeline(
         job_id = f"{ts}_{_slugify(slug_seed)}"
     job_dir = out_root / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
+    if recipe is not None:
+        _write_recipe_manifest(
+            job_dir,
+            recipe,
+            validation_status="pending_plan_validation",
+        )
     logger.info("job: %s (mode=%s)", job_dir, "script" if use_script else "topic")
     previous_env = {
         "TELLA_ALLOW_LOCAL_IMAGE_FALLBACK": os.environ.get("TELLA_ALLOW_LOCAL_IMAGE_FALLBACK"),
@@ -546,11 +616,17 @@ async def run_pipeline(
         os.environ["TELLA_REUSE_PLAN_PATH"] = str(reuse_plan)
     plan.local_fallback_allowed = bool(allow_local_image_fallback)
     _ensure_symbolic_runtime_defaults(plan)
+    recipe_errors: list[str] = []
+    if recipe is not None:
+        recipe_errors = _validate_recipe_plan(plan, recipe, job_dir)
     plan_json.write_text(
         json.dumps(plan.model_dump(), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     logger.info("  %d scenes, voice=%s @ %s", len(plan.scenes), plan.voice_name, plan.voice_edge_rate)
+    if recipe_errors:
+        _restore_fetch_env()
+        raise RuntimeError("recipe validation failed: " + "; ".join(recipe_errors))
     if dry_run_plan:
         _log_symbolic_plan_metadata(plan)
         logger.info("dry-run-plan active; wrote %s and skipped media/TTS/render", plan_json)
@@ -609,6 +685,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
         prog="tella",
         description="Tella - creative storytelling video tool",
     )
+    p.add_argument(
+        "--recipe",
+        default=None,
+        dest="recipe_id",
+        help="Select a registered versioned video recipe.",
+    )
+    p.add_argument(
+        "--list-recipes",
+        action="store_true",
+        help="List registered recipes without making network calls.",
+    )
+    p.add_argument(
+        "--dry-run-recipe",
+        action="store_true",
+        help="Resolve and validate --recipe locally, then write recipe.json only.",
+    )
     p.add_argument("--topic", default="", help="Story topic (any language)")
     p.add_argument(
         "--script-file",
@@ -621,7 +713,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Inline narration script. The wording is preserved in voice_script.",
     )
     p.add_argument(
-        "--lang", required=True, choices=list(SUPPORTED_LANGS),
+        "--lang", required=False, default=None, choices=list(SUPPORTED_LANGS),
         help="Target language (ISO-639-1)",
     )
     p.add_argument(
@@ -824,6 +916,70 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(raw_argv)
     _setup_logging(args.verbose)
+
+    if args.list_recipes:
+        print(format_recipe_list())
+        return 0
+
+    selected_recipe: RecipeDefinition | None = None
+    if args.recipe_id:
+        try:
+            selected_recipe = get_recipe(args.recipe_id)
+        except RecipeNotFoundError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+
+    if args.dry_run_recipe:
+        if selected_recipe is None:
+            parser.error("--dry-run-recipe requires --recipe RECIPE_ID")
+        out_root = Path(args.out_root or os.environ.get("TELLA_OUTPUT_DIR") or "./out")
+        job_id = args.job_id or f"recipe_dry_{selected_recipe.recipe_id}"
+        job_dir = out_root / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+        recipe_path = _write_recipe_manifest(
+            job_dir,
+            selected_recipe,
+            validation_status="definition_validated",
+        )
+        logger.info(
+            "recipe resolved id=%s version=%s status=%s theme=%s planner=%s",
+            selected_recipe.recipe_id,
+            selected_recipe.recipe_version,
+            selected_recipe.status,
+            selected_recipe.visual_theme_id,
+            selected_recipe.planner_id,
+        )
+        print(f"\n[OK] Recipe: {recipe_path}")
+        return 0
+
+    if args.lang is None:
+        parser.error("--lang is required unless --list-recipes or --dry-run-recipe is used")
+
+    if selected_recipe is not None:
+        theme_was_explicit = any(
+            item == "--theme" or item.startswith("--theme=") for item in raw_argv
+        )
+        if theme_was_explicit and args.theme != selected_recipe.visual_theme_id:
+            logger.warning(
+                "recipe %s overrides requested theme %s with %s",
+                selected_recipe.recipe_id,
+                args.theme,
+                selected_recipe.visual_theme_id,
+            )
+        args.theme = selected_recipe.visual_theme_id
+        setting_errors = validate_recipe_run(
+            selected_recipe,
+            aspect_ratio=args.aspect,
+            narration_mode=selected_recipe.narration_mode,
+        )
+        if setting_errors:
+            print(
+                "ERROR: recipe validation failed: " + "; ".join(setting_errors),
+                file=sys.stderr,
+            )
+            return 2
+        args.tts_continuous = selected_recipe.narration_mode == "continuous"
+
     if args.tts_provider:
         os.environ["TELLA_TTS_PROVIDER"] = args.tts_provider
     if args.tts_voice:
@@ -881,6 +1037,7 @@ def main(argv: list[str] | None = None) -> int:
                 tts_continuous=args.tts_continuous,
                 tts_max_pause_ms=args.tts_max_pause_ms,
                 tts_style=args.tts_style,
+                recipe=selected_recipe,
             )
         )
     except KeyboardInterrupt:
