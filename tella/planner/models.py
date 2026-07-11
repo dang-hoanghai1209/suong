@@ -408,6 +408,8 @@ class Scene(BaseModel):
     reuse_mismatch_allowed: bool = False
     skip_image_generation: bool = False
     provider_request_count_for_scene: int = 0
+    image_grade_applied: bool = False
+    image_grade_source_asset_hash: str = Field("", max_length=80)
     asset_prompt_hash: str = Field("", max_length=80)
     nsfw_retry_attempted: bool = False
     nsfw_retry_succeeded: bool = False
@@ -612,6 +614,12 @@ class TellaScenePlan(BaseModel):
     content_policy_blocked_count: int = 0
     image_request_budget_max: int = 0
     image_request_budget_used_at_finish: int = 0
+    image_grade_enabled: bool = False
+    image_grade_brightness: float = 1.0
+    image_grade_contrast: float = 1.0
+    image_grade_saturation: float = 1.0
+    image_grade_overlay_color: str = Field("", max_length=20)
+    image_grade_overlay_opacity: float = 0.0
     ai_images_requested: int = 0
     ai_images_generated: int = 0
     ai_images_reused: int = 0

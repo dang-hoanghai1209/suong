@@ -31,6 +31,7 @@ Font: Windows-friendly default (Arial). Override via env
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -39,12 +40,15 @@ import shutil
 import sys
 from pathlib import Path
 
+from PIL import Image, ImageEnhance, ImageOps
+
 from tella.composer.compose import compose_timing
 from tella.composer.safe_zone import render_dims_for, safe_zone_for
 from tella.composer.text_wrap import chars_per_line, wrap
 from tella.planner.models import TellaScenePlan
 from tella.render.text_overlay import render_overlay_png
 from tella.subtitles import sanitize_highlight_words, subtitle_text_for_style
+from tella.themes.loader import ImageGrade
 
 logger = logging.getLogger("tella.render.pipeline")
 
@@ -182,6 +186,58 @@ def _build_bg_filter(
     else:
         chains.append(f"fps={OUTPUT_FPS}")
     return ",".join(chains)
+
+
+def _apply_image_grade(
+    source_path: Path,
+    out_path: Path,
+    *,
+    canvas_w: int,
+    canvas_h: int,
+    grade: ImageGrade,
+) -> str:
+    """Grade a fitted working copy and return the original asset SHA-256."""
+    source_bytes = source_path.read_bytes()
+    source_hash = hashlib.sha256(source_bytes).hexdigest()
+    with Image.open(source_path) as source:
+        image = ImageOps.fit(
+            source.convert("RGB"),
+            (canvas_w, canvas_h),
+            method=Image.Resampling.LANCZOS,
+        )
+    image = ImageEnhance.Brightness(image).enhance(grade.brightness)
+    image = ImageEnhance.Contrast(image).enhance(grade.contrast)
+    image = ImageEnhance.Color(image).enhance(grade.saturation)
+    if grade.overlay_opacity > 0:
+        overlay = Image.new("RGB", image.size, grade.overlay_color)
+        image = Image.blend(
+            image,
+            overlay,
+            max(0.0, min(1.0, grade.overlay_opacity)),
+        )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(out_path, "PNG", compress_level=6)
+    return source_hash
+
+
+def _prepare_image_asset_for_render(
+    source_path: Path,
+    out_path: Path,
+    *,
+    canvas_w: int,
+    canvas_h: int,
+    grade: ImageGrade,
+) -> tuple[Path, str, bool]:
+    if not grade.enabled or _is_video_asset(source_path):
+        return source_path, "", False
+    source_hash = _apply_image_grade(
+        source_path,
+        out_path,
+        canvas_w=canvas_w,
+        canvas_h=canvas_h,
+        grade=grade,
+    )
+    return out_path, source_hash, True
 
 
 async def _render_scene(
@@ -459,6 +515,12 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
     from tella.themes.loader import load_theme
 
     theme_spec = load_theme(plan.theme)
+    plan.image_grade_enabled = theme_spec.image_grade.enabled
+    plan.image_grade_brightness = theme_spec.image_grade.brightness
+    plan.image_grade_contrast = theme_spec.image_grade.contrast
+    plan.image_grade_saturation = theme_spec.image_grade.saturation
+    plan.image_grade_overlay_color = theme_spec.image_grade.overlay_color
+    plan.image_grade_overlay_opacity = theme_spec.image_grade.overlay_opacity
     ken_burns_max_scale = max(1.01, float(theme_spec.ken_burns.end_scale))
     xfade_duration = 0.4
     if plan.theme == "minimalist_emotional":
@@ -516,7 +578,27 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
                 "(did fetch_assets run?)"
             )
 
-        asset_path = job_dir / scene.image_filenames[0]
+        source_asset_path = job_dir / scene.image_filenames[0]
+        asset_path, source_hash, grade_applied = _prepare_image_asset_for_render(
+            source_asset_path,
+            work_dir / f"scene_{scene.scene_index:02d}_graded.png",
+            canvas_w=canvas_w,
+            canvas_h=canvas_h,
+            grade=theme_spec.image_grade,
+        )
+        scene.image_grade_applied = grade_applied
+        scene.image_grade_source_asset_hash = source_hash
+        if grade_applied:
+            logger.info(
+                "symbolic image grade scene=%02d brightness=%.2f contrast=%.2f "
+                "saturation=%.2f overlay=%s opacity=%.2f",
+                scene.scene_index,
+                theme_spec.image_grade.brightness,
+                theme_spec.image_grade.contrast,
+                theme_spec.image_grade.saturation,
+                theme_spec.image_grade.overlay_color,
+                theme_spec.image_grade.overlay_opacity,
+            )
         out_mp4 = work_dir / f"scene_{scene.scene_index:02d}.mp4"
 
         title_lines = [] if plan.theme in {"minimalist_emotional", "minimalist_symbolic_reel"} else wrap(

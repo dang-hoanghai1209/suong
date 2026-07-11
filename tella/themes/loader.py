@@ -31,6 +31,16 @@ class ColorPalette:
 
 
 @dataclass(frozen=True)
+class ImageGrade:
+    enabled: bool = False
+    brightness: float = 1.0
+    contrast: float = 1.0
+    saturation: float = 1.0
+    overlay_color: str = "#000000"
+    overlay_opacity: float = 0.0
+
+
+@dataclass(frozen=True)
 class ThemeSpec:
     """A loaded theme JSON. Immutable so the renderer can pass it around safely."""
 
@@ -44,6 +54,7 @@ class ThemeSpec:
     voice_gender_default: str     # male | female
     transition: str               # fade | crossfade | cut
     ken_burns: KenBurns = field(default_factory=KenBurns)
+    image_grade: ImageGrade = field(default_factory=ImageGrade)
 
 
 _REQUIRED_KEYS = (
@@ -90,6 +101,7 @@ def load_theme(name: str) -> ThemeSpec:
             )
 
     kb_data = data["ken_burns"]
+    grade_data = data.get("image_grade") or {}
     return ThemeSpec(
         name=data["name"],
         display_name=data["display_name"],
@@ -110,11 +122,20 @@ def load_theme(name: str) -> ThemeSpec:
             end_scale=float(kb_data.get("end_scale", 1.08)),
             easing=str(kb_data.get("easing", "linear")),
         ),
+        image_grade=ImageGrade(
+            enabled=bool(grade_data.get("enabled", False)),
+            brightness=float(grade_data.get("brightness", 1.0)),
+            contrast=float(grade_data.get("contrast", 1.0)),
+            saturation=float(grade_data.get("saturation", 1.0)),
+            overlay_color=str(grade_data.get("overlay_color", "#000000")),
+            overlay_opacity=float(grade_data.get("overlay_opacity", 0.0)),
+        ),
     )
 
 
 __all__ = [
     "ColorPalette",
+    "ImageGrade",
     "KenBurns",
     "ThemeSpec",
     "list_themes",

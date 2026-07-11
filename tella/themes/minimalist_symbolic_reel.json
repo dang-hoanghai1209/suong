@@ -13,6 +13,14 @@
   "voice_pace_default": "slow",
   "voice_gender_default": "female",
   "transition": "crossfade",
+  "image_grade": {
+    "enabled": true,
+    "brightness": 0.90,
+    "contrast": 1.03,
+    "saturation": 0.88,
+    "overlay_color": "#504845",
+    "overlay_opacity": 0.18
+  },
   "ken_burns": {
     "start_scale": 1.0,
     "end_scale": 1.04,
