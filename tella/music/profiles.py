@@ -60,7 +60,10 @@ def profile_for_recipe(recipe_id: str, override: str = "") -> MusicProfile | Non
     if not profile_id:
         return None
     profile = get_music_profile(profile_id)
-    if profile.recipe_id != recipe_id:
+    compatible_recipe_ids = {profile.recipe_id}
+    if profile.profile_id == "practical_calm_rhythm":
+        compatible_recipe_ids.add("practical_life_steps_callirrhoe_v1")
+    if recipe_id not in compatible_recipe_ids:
         raise ValueError(
             f"music profile {profile_id} is for {profile.recipe_id}, not {recipe_id}"
         )

@@ -35,6 +35,7 @@ def compose_timing(plan: TellaScenePlan) -> TellaScenePlan:
         plan.total_duration = 0.0
         return plan
 
+    precision = 6 if plan.recipe_id == "practical_life_steps_callirrhoe_v1" else 2
     cursor = 0.0
     for scene in body_scenes:
         if scene.audio_duration <= 0:
@@ -46,11 +47,11 @@ def compose_timing(plan: TellaScenePlan) -> TellaScenePlan:
         # Visual duration == audio slice for this scene. No tail buffer —
         # the continuous narration must not be interrupted by silent visual
         # padding between scenes.
-        scene.duration = round(scene.audio_duration, 2)
-        scene.start = round(cursor, 2)
-        cursor = round(cursor + scene.duration, 2)
+        scene.duration = round(scene.audio_duration, precision)
+        scene.start = round(cursor, precision)
+        cursor = round(cursor + scene.duration, precision)
 
-    plan.total_duration = round(cursor, 2)
+    plan.total_duration = round(cursor, precision)
     plan.scene_timing_map = [
         {
             "scene_index": scene.scene_index,
@@ -63,7 +64,7 @@ def compose_timing(plan: TellaScenePlan) -> TellaScenePlan:
         {
             "scene_index": scene.scene_index,
             "start": scene.start,
-            "end": round(scene.start + scene.duration, 2),
+            "end": round(scene.start + scene.duration, precision),
             "text": subtitle_text_for_style(
                 scene.voice_script,
                 plan.subtitle_style,

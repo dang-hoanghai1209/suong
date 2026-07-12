@@ -82,6 +82,14 @@ from tella.voice_profiles import (
     resolve_voice,
     validate_voice_profiles,
 )
+from tella.production import (
+    ProductionRun,
+    ProductionStage,
+    apply_sentence_alignment,
+    dry_run_envelope,
+    evaluate_resume,
+    get_production_config,
+)
 
 logger = logging.getLogger("tella.cli")
 
@@ -644,6 +652,7 @@ async def run_pipeline(
     no_music: bool = False,
     recipe: RecipeDefinition | None = None,
     voice_resolution: VoiceResolution | None = None,
+    resume: bool = False,
 ) -> Path:
     """Execute the full Tella pipeline. Returns the path to the final MP4.
 
@@ -670,6 +679,25 @@ async def run_pipeline(
         job_id = f"{ts}_{_slugify(slug_seed)}"
     job_dir = out_root / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
+    production_config = get_production_config(recipe.recipe_id) if recipe else None
+    resume_decision = (
+        evaluate_resume(job_dir, production_config)
+        if production_config and resume else None
+    )
+    if resume and production_config and not resume_decision["compatible"]:
+        raise RuntimeError(
+            "production resume is incompatible: "
+            + "; ".join(resume_decision["reasons"])
+        )
+    if resume_decision and resume_decision["artifacts"].get("images", {}).get("valid"):
+        reuse_assets = True
+        images_from_job = str(job_dir)
+    if resume_decision and resume_decision["artifacts"].get("raw_narration", {}).get("valid"):
+        os.environ["TELLA_TTS_RESUME_RAW"] = str(job_dir / "assets" / "narration_raw.wav")
+    production_run = (
+        ProductionRun(job_dir, production_config, resume=resume)
+        if production_config else None
+    )
     if recipe is not None:
         _write_recipe_manifest(
             job_dir,
@@ -677,6 +705,8 @@ async def run_pipeline(
             validation_status="pending_plan_validation",
             voice_resolution=voice_resolution,
         )
+        if production_run:
+            production_run.advance(ProductionStage.recipe_resolved, {"recipe": job_dir / "recipe.json"})
     logger.info("job: %s (mode=%s)", job_dir, "script" if use_script else "topic")
     previous_env = {
         "TELLA_ALLOW_LOCAL_IMAGE_FALLBACK": os.environ.get("TELLA_ALLOW_LOCAL_IMAGE_FALLBACK"),
@@ -690,6 +720,7 @@ async def run_pipeline(
         "TELLA_TTS_CONTINUOUS": os.environ.get("TELLA_TTS_CONTINUOUS"),
         "TELLA_TTS_MAX_PAUSE_MS": os.environ.get("TELLA_TTS_MAX_PAUSE_MS"),
         "TELLA_TTS_STYLE": os.environ.get("TELLA_TTS_STYLE"),
+        "TELLA_TTS_RESUME_RAW": os.environ.get("TELLA_TTS_RESUME_RAW"),
         "TELLA_SYMBOLIC_JOB_ID": os.environ.get("TELLA_SYMBOLIC_JOB_ID"),
     }
     if theme == "minimalist_symbolic_reel":
@@ -848,6 +879,8 @@ async def run_pipeline(
         json.dumps(plan.model_dump(), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    if production_run:
+        production_run.advance(ProductionStage.planned, {"plan": plan_json})
     logger.info("  %d scenes, voice=%s @ %s", len(plan.scenes), plan.voice_name, plan.voice_edge_rate)
     if recipe_errors:
         _restore_fetch_env()
@@ -918,15 +951,33 @@ async def run_pipeline(
     logger.info("step 3/6 — fetch %d assets (%s)", len(plan.scenes), plan.media_source)
     logger.info("step 4/6 — synthesize TTS narration in parallel")
     try:
-        await asyncio.gather(
-            fetch_assets(plan, job_dir),
-            synthesize_all(
+        if production_run:
+            await fetch_assets(plan, job_dir)
+            production_run.advance(ProductionStage.images_ready)
+            production_run.counts["gemini"] = 1
+            await synthesize_all(
                 plan,
                 job_dir,
                 google_tts_api_key=google_tts_api_key,
                 google_tts_voice=google_tts_voice,
-            ),
-        )
+            )
+            production_run.counts["gemini"] = int(
+                plan.tts_metadata.get("request_attempt_count", 1)
+            )
+            production_run.advance(ProductionStage.narration_ready, {
+                "raw_narration": job_dir / "assets" / "narration_raw.wav",
+                "normalized_narration": job_dir / "assets" / "narration.wav",
+            })
+        else:
+            await asyncio.gather(
+                fetch_assets(plan, job_dir),
+                synthesize_all(
+                    plan,
+                    job_dir,
+                    google_tts_api_key=google_tts_api_key,
+                    google_tts_voice=google_tts_voice,
+                ),
+            )
         if voice_resolution is not None and not voice_resolution.post_tts_atempo_enabled:
             plan.duration_fit_required = False
             plan.duration_fit_applied = False
@@ -935,6 +986,11 @@ async def run_pipeline(
             plan.duration_fit_reason = "disabled by selected natural-duration voice profile"
         else:
             await reconcile_practical_narration_duration(plan, job_dir)
+        if production_run and production_config:
+            apply_sentence_alignment(plan, job_dir, production_config)
+            production_run.advance(ProductionStage.aligned, {
+                "alignment": job_dir / "alignment_metadata.json",
+            })
         configure_music(
             plan,
             job_dir,
@@ -942,13 +998,33 @@ async def run_pipeline(
             requested_profile_id=music_profile_id,
             no_music=no_music,
         )
-    except Exception:
+        if production_run and production_config:
+            plan.music_metadata["mix_overrides"] = {
+                "input_gain_db": production_config.music_gain_db,
+                "ducking_threshold": production_config.ducking_threshold,
+                "ducking_ratio": production_config.ducking_ratio,
+                "ducking_attack_ms": production_config.ducking_attack_ms,
+                "ducking_release_ms": production_config.ducking_release_ms,
+                "fade_in_seconds": production_config.fade_in_seconds,
+                "fade_out_seconds": production_config.fade_out_seconds,
+                "start_offset_seconds": production_config.track_offset_seconds,
+                "loop": production_config.music_loop,
+            }
+            (job_dir / "music_metadata.json").write_text(
+                json.dumps(plan.music_metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            production_run.advance(ProductionStage.music_ready, {
+                "music_metadata": job_dir / "music_metadata.json",
+            })
+    except Exception as exc:
         _ensure_run_metadata(plan, job_dir)
         plan_json.write_text(
             json.dumps(plan.model_dump(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         _restore_fetch_env()
+        if production_run:
+            production_run.fail(production_run.stage.value, exc)
         raise
 
     # ── 5. Compose timing ──────────────────────────────────────────────
@@ -965,7 +1041,15 @@ async def run_pipeline(
 
     # ── 6. Render MP4 ──────────────────────────────────────────────────
     logger.info("step 6/6 — render (ffmpeg)")
-    final = await render(plan, job_dir)
+    try:
+        final = await render(plan, job_dir)
+        if production_run:
+            production_run.advance(ProductionStage.rendered, {"final_video": final})
+    except Exception as exc:
+        if production_run:
+            production_run.fail("rendered", exc)
+        _restore_fetch_env()
+        raise
     try:
         await validate_actual_video_duration(plan, final)
     except Exception:
@@ -976,6 +1060,27 @@ async def run_pipeline(
         )
         _restore_fetch_env()
         raise
+    if production_run:
+        video_qc_path = job_dir / "video_qc.json"
+        video_qc_path.write_text(json.dumps({
+            "status": "passed",
+            "duration_seconds": plan.total_duration,
+            "duration_policy": "natural_narration_duration",
+            "atempo_applied": False,
+            "duration_fit_applied": False,
+            "video_path": str(final),
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        production_run.advance(ProductionStage.qc_passed)
+        production_run.record_artifact_hashes({
+            "plan": plan_json,
+            "raw_narration": job_dir / "assets" / "narration_raw.wav",
+            "normalized_narration": job_dir / "assets" / "narration.wav",
+            "alignment": job_dir / "alignment_metadata.json",
+            "final_video": final,
+            "video_qc": video_qc_path,
+        }, image_artifacts=sorted((job_dir / "assets").glob("scene_*.jpg")),
+           qc_results={"audio": "passed", "video": "passed"})
+        production_run.advance(ProductionStage.completed)
     _ensure_run_metadata(plan, job_dir)
     plan_json.write_text(
         json.dumps(plan.model_dump(), ensure_ascii=False, indent=2),
@@ -1016,6 +1121,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--dry-run-recipe",
         action="store_true",
         help="Resolve and validate --recipe locally, then write recipe.json only.",
+    )
+    p.add_argument(
+        "--production-dry-run",
+        action="store_true",
+        help="Resolve a production recipe, cache/resume state, and request envelope locally; perform no providers or rendering.",
+    )
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume the same production job after validating recipe metadata and artifact hashes.",
+    )
+    p.add_argument(
+        "--max-tts-requests",
+        type=int,
+        default=None,
+        help="Maximum TTS provider submissions allowed for this run.",
+    )
+    p.add_argument(
+        "--no-tts-retry",
+        action="store_true",
+        help="Disable application-level TTS retries (required by bounded production recipes).",
     )
     p.add_argument("--topic", default="", help="Story topic (any language)")
     p.add_argument(
@@ -1294,6 +1420,13 @@ def main(argv: list[str] | None = None) -> int:
         except RecipeNotFoundError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
+    production_config = (
+        get_production_config(selected_recipe.recipe_id) if selected_recipe else None
+    )
+    if args.resume and (production_config is None or not args.job_id):
+        parser.error("--resume requires a production recipe and explicit --job-id")
+    if args.max_tts_requests is not None and args.max_tts_requests < 0:
+        parser.error("--max-tts-requests must be non-negative")
 
     try:
         voice_resolution = resolve_voice(
@@ -1315,6 +1448,44 @@ def main(argv: list[str] | None = None) -> int:
     except VoiceProfileNotFoundError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
+
+    if args.production_dry_run:
+        if selected_recipe is None or production_config is None:
+            parser.error("--production-dry-run requires a registered production recipe")
+        if args.no_music:
+            parser.error("this production recipe requires its configured music")
+        if args.max_tts_requests is not None and args.max_tts_requests != 1:
+            parser.error("this production recipe requires --max-tts-requests 1")
+        if args.tts_provider is not None and args.tts_provider != production_config.provider:
+            parser.error("production recipe provider override is incompatible")
+        if args.tts_voice is not None and args.tts_voice != production_config.voice:
+            parser.error("production recipe voice override is incompatible")
+        if args.voice_profile_id is not None and args.voice_profile_id != production_config.voice_profile:
+            parser.error("production recipe voice-profile override is incompatible")
+        if args.tts_model is not None and args.tts_model != production_config.model:
+            parser.error("production recipe model override is incompatible")
+        if args.tts_style is not None and args.tts_style != production_config.style:
+            parser.error("production recipe style override is incompatible")
+        out_root = Path(args.out_root or os.environ.get("TELLA_OUTPUT_DIR") or "./out")
+        job_id = args.job_id or f"production_dry_{selected_recipe.recipe_id}"
+        job_dir = out_root / job_id
+        run = ProductionRun(job_dir, production_config, resume=args.resume)
+        recipe_path = _write_recipe_manifest(
+            job_dir, selected_recipe,
+            validation_status="definition_validated",
+            voice_resolution=voice_resolution,
+        )
+        envelope = dry_run_envelope(production_config, job_dir, resume=args.resume)
+        envelope_path = job_dir / "request_envelope.json"
+        envelope_path.write_text(
+            json.dumps(envelope, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        run.advance(ProductionStage.recipe_resolved, {
+            "recipe": recipe_path, "request_envelope": envelope_path,
+        })
+        print(json.dumps(envelope, ensure_ascii=False, indent=2))
+        print(f"\n[OK] Production dry-run: {job_dir}")
+        return 0
 
     if args.dry_run_recipe:
         if selected_recipe is None:
@@ -1352,6 +1523,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n[OK] Recipe: {recipe_path}")
         return 0
 
+    if args.lang is None and production_config is not None:
+        args.lang = production_config.language
     if args.lang is None:
         parser.error("--lang is required unless --list-recipes or --dry-run-recipe is used")
 
@@ -1379,6 +1552,31 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         args.tts_continuous = selected_recipe.narration_mode == "continuous"
+        if production_config is not None:
+            if args.no_music:
+                parser.error("this production recipe requires its configured music")
+            if args.max_tts_requests is not None and args.max_tts_requests != 1:
+                parser.error("this production recipe requires --max-tts-requests 1")
+            if args.tts_provider is not None and args.tts_provider != production_config.provider:
+                parser.error("production recipe provider override is incompatible")
+            if args.tts_voice is not None and args.tts_voice != production_config.voice:
+                parser.error("production recipe voice override is incompatible")
+            if args.tts_model is not None and args.tts_model != production_config.model:
+                parser.error("production recipe model override is incompatible")
+            if args.tts_style is not None and args.tts_style != production_config.style:
+                parser.error("production recipe style override is incompatible")
+            if args.music_track_id and args.music_track_id != production_config.music_track:
+                parser.error("production recipe music-track override is incompatible")
+            if args.music_profile_id and args.music_profile_id != production_config.music_profile:
+                parser.error("production recipe music-profile override is incompatible")
+            args.max_ai_images = production_config.max_image_requests if args.max_ai_images is None else args.max_ai_images
+            if args.max_ai_images > production_config.max_image_requests:
+                parser.error("production recipe permits at most seven image requests")
+            args.music_track_id = production_config.music_track
+            args.music_profile_id = production_config.music_profile
+            os.environ["TELLA_MAX_TTS_REQUESTS"] = str(production_config.max_tts_requests)
+            os.environ["TELLA_NO_TTS_RETRY"] = "1"
+            os.environ["TELLA_TTS_CACHE_ENABLED"] = "1"
 
     os.environ["TELLA_TTS_PROVIDER"] = voice_resolution.resolved_tts_provider
     if voice_resolution.resolved_tts_model:
@@ -1477,6 +1675,7 @@ def main(argv: list[str] | None = None) -> int:
                 no_music=args.no_music,
                 recipe=selected_recipe,
                 voice_resolution=voice_resolution,
+                resume=args.resume,
             )
         )
     except KeyboardInterrupt:

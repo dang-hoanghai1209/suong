@@ -28,7 +28,7 @@ import shutil
 from pathlib import Path
 
 from tella.planner.models import TellaScenePlan
-from tella.tts import edge, google
+from tella.tts import edge, gemini, google
 from tella.tts.providers import EdgeTTSProvider, TTSResult, get_tts_provider
 from tella.tts.text import normalize_narration_for_tts
 
@@ -110,6 +110,39 @@ async def _postprocess_narration_audio(raw_path: Path, out_path: Path, *, max_pa
         "processed_duration": round(processed_duration, 2),
         "longest_silence_before": longest_before,
         "longest_silence_after": longest_after,
+    }
+
+
+async def _normalize_gemini_narration(raw_path: Path, out_path: Path) -> dict:
+    """Normalize loudness without tempo, silence, or pitch processing."""
+    original_duration = await _ffprobe_duration(raw_path)
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-y", "-loglevel", "error", "-i", str(raw_path),
+        "-af", "loudnorm=I=-16:TP=-1:LRA=7,alimiter=limit=0.891251:level=false",
+        "-ar", "24000", "-ac", "1", str(out_path),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode or not out_path.is_file():
+        raise RuntimeError(
+            "Gemini loudness normalization failed: "
+            + stderr.decode(errors="replace")[-300:]
+        )
+    processed_duration = await _ffprobe_duration(out_path)
+    if abs(processed_duration - original_duration) > 0.01:
+        out_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            "Gemini normalization changed narration duration beyond 0.01 seconds"
+        )
+    return {
+        "silence_postprocess_applied": False,
+        "max_pause_ms": 0,
+        "original_duration": original_duration,
+        "processed_duration": processed_duration,
+        "longest_silence_before": 0.0,
+        "longest_silence_after": 0.0,
+        "atempo_applied": False,
+        "duration_fit_applied": False,
     }
 
 
@@ -379,11 +412,63 @@ async def synthesize_all(
     raw_out = assets_dir / f"narration_raw.{extension}"
     out = assets_dir / f"narration.{extension}"
     result: TTSResult | None = None
+    cache_hit = False
+    cache_key = ""
     fallback_used = False
     fallback_reason = ""
     google_tts_api_key = google_tts_api_key or (os.environ.get("GOOGLE_TTS_API_KEY") or "").strip()
     google_tts_voice = google_tts_voice or (os.environ.get("GOOGLE_TTS_VOICE") or "").strip()
     google_enabled = bool(google_tts_api_key) and bool(google_tts_voice)
+
+    if settings["provider"] == "gemini":
+        max_requests = _env_int("TELLA_MAX_TTS_REQUESTS", 1)
+        instruction = settings["style_instruction"]
+        provider_input = gemini.serialize_provider_input(full_text, instruction)
+        from tella.production import LocalTTSCache, tts_cache_key
+        from tella.tts.gemini_registry import REGISTRY_VERSION
+        cache_key = tts_cache_key(
+            provider="gemini", model=settings["model"], voice=settings["voice"],
+            style=plan.tts_style, language=settings["language"],
+            canonical_narration_sha256=gemini.sha256_text(full_text),
+            serialized_provider_input_sha256=gemini.sha256_text(provider_input),
+            request_format_version=gemini.REQUEST_FORMAT_VERSION,
+            voice_registry_version=REGISTRY_VERSION,
+        )
+        cache = LocalTTSCache(job_dir.parent / ".tts_cache")
+        resume_raw = Path(os.environ.get("TELLA_TTS_RESUME_RAW") or "")
+        if resume_raw.is_file():
+            if resume_raw.resolve() != raw_out.resolve():
+                shutil.copyfile(resume_raw, raw_out)
+            cache_hit = True
+            result = TTSResult(
+                audio_path=raw_out, provider="gemini", voice=settings["voice"],
+                language=settings["language"], metadata={
+                    "model": settings["model"], "requested_style": plan.tts_style,
+                    "resolved_style_instruction": instruction,
+                    "source_narration_text_hash": gemini.sha256_text(full_text),
+                    "serialized_provider_input_hash": gemini.sha256_text(provider_input),
+                    "request_format_version": gemini.REQUEST_FORMAT_VERSION,
+                    "voice_registry_version": REGISTRY_VERSION,
+                    "request_attempt_count": 0, "fallback_used": False,
+                    "resume_reuse": True,
+                },
+            )
+        elif _env_bool("TELLA_TTS_CACHE_ENABLED") and cache.lookup(cache_key, raw_out):
+            cache_hit = True
+            result = TTSResult(
+                audio_path=raw_out, provider="gemini", voice=settings["voice"],
+                language=settings["language"], metadata={
+                    "model": settings["model"], "requested_style": plan.tts_style,
+                    "resolved_style_instruction": instruction,
+                    "source_narration_text_hash": gemini.sha256_text(full_text),
+                    "serialized_provider_input_hash": gemini.sha256_text(provider_input),
+                    "request_format_version": gemini.REQUEST_FORMAT_VERSION,
+                    "voice_registry_version": REGISTRY_VERSION,
+                    "request_attempt_count": 0, "fallback_used": False,
+                },
+            )
+        elif max_requests < 1:
+            raise RuntimeError("TTS cache miss with zero permitted TTS requests")
 
     if requested_provider == "google":
         ok = await google.synth_google(
@@ -503,6 +588,11 @@ async def synthesize_all(
         )
 
     original_duration = await _ffprobe_duration(raw_out)
+    if result.provider == "gemini" and not cache_hit and _env_bool("TELLA_TTS_CACHE_ENABLED"):
+        LocalTTSCache(job_dir.parent / ".tts_cache").store(
+            cache_key, raw_out, {"provider": "gemini", "model": settings["model"],
+                                 "voice": settings["voice"], "style": plan.tts_style},
+        )
     postprocess = {
         "silence_postprocess_applied": False,
         "max_pause_ms": int(plan.tts_max_pause_ms),
@@ -512,7 +602,7 @@ async def synthesize_all(
         "longest_silence_after": 0.0,
     }
     if result.provider == "gemini":
-        shutil.copyfile(raw_out, out)
+        postprocess = await _normalize_gemini_narration(raw_out, out)
     else:
         try:
             postprocess = await _postprocess_narration_audio(
@@ -589,7 +679,9 @@ async def synthesize_all(
         "normalized_output_path": str(out),
         "raw_duration": float(postprocess["original_duration"]),
         "normalized_duration": float(postprocess["processed_duration"]),
-        "request_attempt_count": int(result.metadata.get("request_attempt_count") or 1),
+        "request_attempt_count": int(result.metadata.get("request_attempt_count", 1)),
+        "cache_hit": cache_hit,
+        "tts_cache_key": cache_key,
         "post_tts_duration_fit_status": "pending_production_duration_fit",
     }
     plan.tts_metadata = tts_metadata

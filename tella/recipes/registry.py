@@ -35,6 +35,7 @@ class RecipeDefinition(BaseModel):
     supports_voice_override: bool = True
     supports_scene_qc: bool = True
     supports_asset_reuse: bool = True
+    natural_duration: bool = False
 
     @model_validator(mode="after")
     def _validate_contract(self) -> "RecipeDefinition":
@@ -52,7 +53,7 @@ class RecipeDefinition(BaseModel):
             errors = []
             if self.minimum_scene_count < 7 or self.maximum_scene_count > 8:
                 errors.append("production scene range must stay within 7-8")
-            if (
+            if not self.natural_duration and (
                 self.minimum_duration_seconds < 32
                 or self.maximum_duration_seconds > 38
             ):
@@ -146,6 +147,31 @@ _PRACTICAL_LIFE_STEPS_V1 = RecipeDefinition(
     supports_asset_reuse=True,
 )
 
+_PRACTICAL_LIFE_STEPS_CALLIRRHOE_V1 = RecipeDefinition(
+    recipe_id="practical_life_steps_callirrhoe_v1",
+    recipe_version=1,
+    display_name="Practical Life Steps — Callirrhoe Production",
+    status="production",
+    narrative_mode="practical_steps",
+    planner_id="practical_life_steps",
+    visual_theme_id="practical_life_steps",
+    voice_profile_id="gemini_callirrhoe_vi_natural_smile",
+    subtitle_style_id="practical_steps_reel",
+    transition_profile_id="clean_progressive_cut",
+    motion_profile_id="gentle_progressive_motion",
+    minimum_scene_count=7,
+    maximum_scene_count=7,
+    minimum_duration_seconds=14,
+    target_duration_seconds=30,
+    maximum_duration_seconds=120,
+    narration_mode="continuous",
+    aspect_ratio="9:16",
+    supports_voice_override=False,
+    supports_scene_qc=True,
+    supports_asset_reuse=True,
+    natural_duration=True,
+)
+
 _REGISTRY: dict[str, dict[int, RecipeDefinition]] = {
     _EMOTIONAL_SYMBOLIC_V1.recipe_id: {
         _EMOTIONAL_SYMBOLIC_V1.recipe_version: _EMOTIONAL_SYMBOLIC_V1,
@@ -155,6 +181,10 @@ _REGISTRY: dict[str, dict[int, RecipeDefinition]] = {
     },
     _PRACTICAL_LIFE_STEPS_V1.recipe_id: {
         _PRACTICAL_LIFE_STEPS_V1.recipe_version: _PRACTICAL_LIFE_STEPS_V1,
+    },
+    _PRACTICAL_LIFE_STEPS_CALLIRRHOE_V1.recipe_id: {
+        _PRACTICAL_LIFE_STEPS_CALLIRRHOE_V1.recipe_version:
+            _PRACTICAL_LIFE_STEPS_CALLIRRHOE_V1,
     },
 }
 

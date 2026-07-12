@@ -43,7 +43,12 @@ def credential_environment_name() -> str:
 
 def _official_client() -> Any:
     from google import genai
-    return genai.Client()
+    from google.genai import types
+    return genai.Client(
+        http_options=types.HttpOptions(
+            retry_options=types.HttpRetryOptions(attempts=1),
+        )
+    )
 
 
 def _request(client: Any, *, model: str, voice: str, text: str, instruction: str) -> Any:

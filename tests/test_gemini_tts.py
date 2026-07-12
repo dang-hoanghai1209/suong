@@ -20,6 +20,7 @@ from tella.tts.gemini_registry import (
 from tella.tts.providers import EdgeTTSProvider, GeminiTTSProvider, get_tts_provider
 from tella.voice_profiles import list_voice_profiles
 from tella.voice_profiles import get_voice_profile, resolve_voice as resolve_project_voice
+from tella.production import CALLIRRHOE_PRODUCTION_CONFIG, ProductionRun, classify_error
 
 MODEL = "gemini-3.1-flash-tts-preview"
 EXPECTED_NATURAL_VOCAL_SMILE = (
@@ -87,7 +88,15 @@ def test_edge_and_recipe_defaults_are_unchanged():
     assert isinstance(get_tts_provider("gemini"), GeminiTTSProvider)
     recipe_profile_ids = {recipe.voice_profile_id for recipe in list_recipes()}
     assert recipe_profile_ids
-    assert all(profile.provider == "edge" for profile in list_voice_profiles() if profile.profile_id in recipe_profile_ids)
+    legacy_profile_ids = {
+        recipe.voice_profile_id for recipe in list_recipes()
+        if recipe.recipe_id != "practical_life_steps_callirrhoe_v1"
+    }
+    assert all(
+        profile.provider == "edge"
+        for profile in list_voice_profiles()
+        if profile.profile_id in legacy_profile_ids
+    )
 
 
 def test_dry_run_has_zero_calls_and_distinct_paths(tmp_path, monkeypatch):
@@ -290,7 +299,11 @@ def test_callirrhoe_project_profile_is_explicit_and_opt_in_only():
     assert resolution.resolved_tts_model == MODEL
     assert resolution.resolved_tts_style == "natural_vocal_smile"
     assert get_voice_profile("clear_female_vi").provider == "edge"
-    assert all(recipe.voice_profile_id != production.PROFILE_ID for recipe in list_recipes())
+    assert all(
+        recipe.voice_profile_id != production.PROFILE_ID
+        for recipe in list_recipes()
+        if recipe.recipe_id != "practical_life_steps_callirrhoe_v1"
+    )
 
 
 def test_callirrhoe_plan_reuses_all_images_and_adapts_visual_timeline(tmp_path):
@@ -349,3 +362,46 @@ def test_callirrhoe_controlled_render_one_request_metadata_and_failure_stop(monk
             synthesize_fn=fail_synth, render_fn=fake_render,
         ))
     assert len(renders) == 1
+
+
+def test_official_gemini_client_disables_sdk_transport_retry(monkeypatch):
+    from google import genai
+
+    captured = {}
+    sentinel = object()
+
+    def fake_client(**kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(genai, "Client", fake_client)
+    assert gemini._official_client() is sentinel
+    retry = captured["http_options"].retry_options
+    assert retry.attempts == 1
+
+
+def test_fake_gemini_429_is_one_submission_no_retry_or_fallback(tmp_path):
+    calls = []
+
+    class Models:
+        def generate_content(self, **kwargs):
+            calls.append(kwargs)
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
+    fake_client = SimpleNamespace(models=Models())
+    with pytest.raises(RuntimeError, match="429"):
+        asyncio.run(gemini.synthesize(
+            "Bản kể không đổi.", tmp_path / "raw.wav", model=MODEL,
+            voice="Callirrhoe", style="natural_vocal_smile",
+            client_factory=lambda: fake_client,
+        ))
+    run = ProductionRun(tmp_path / "job", CALLIRRHOE_PRODUCTION_CONFIG)
+    run.counts["gemini"] = len(calls)
+    run.fail("TTS", RuntimeError("429 RESOURCE_EXHAUSTED"))
+    summary = json.loads(run.summary_path.read_text())
+    assert len(calls) == 1
+    assert classify_error(RuntimeError("429 RESOURCE_EXHAUSTED"))[0] == "quota_failure"
+    assert summary["external_submission_counts"] == {
+        "gemini": 1, "edge": 0, "image_provider": 0,
+        "retries": 0, "fallbacks": 0,
+    }
