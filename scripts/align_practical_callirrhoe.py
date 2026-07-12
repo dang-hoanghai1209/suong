@@ -131,6 +131,7 @@ def _apply_alignment(plan: TellaScenePlan, result: dict) -> None:
 
 async def _render_local(plan: TellaScenePlan, output_dir: Path, mixed_audio: Path) -> Path:
     from tella.render.pipeline import render
+    from tella.music import audio as music_audio
     copied_audio = output_dir / "assets" / "final_mixed_audio_reused.m4a"
     shutil.copy2(mixed_audio, copied_audio)
     plan.narration_audio_filename = "assets/final_mixed_audio_reused.m4a"
@@ -138,7 +139,17 @@ async def _render_local(plan: TellaScenePlan, output_dir: Path, mixed_audio: Pat
     plan.music_enabled = False
     plan.selected_music_track_id = "practical_calm_01"
     plan.selected_music_profile_id = "practical_calm_rhythm_ab"
-    rendered = await render(plan, output_dir)
+    original_audio_qc = music_audio.run_audio_qc
+
+    async def defer_intermediate_audio_qc(*args, **kwargs):
+        plan.audio_qc = {"status": "deferred_until_accepted_audio_stream_copy"}
+        return plan.audio_qc
+
+    music_audio.run_audio_qc = defer_intermediate_audio_qc
+    try:
+        rendered = await render(plan, output_dir)
+    finally:
+        music_audio.run_audio_qc = original_audio_qc
     silent = output_dir / "_render" / "silent_video.mp4"
     remuxed = output_dir / "video_aligned.mp4"
     proc = await asyncio.create_subprocess_exec(
