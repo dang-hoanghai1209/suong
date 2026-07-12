@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.benchmark_gemini_tts import BENCHMARK_TEXT, parse_voices, run_benchmark
+from scripts import render_practical_callirrhoe as production
+from tella.planner.models import Scene, TellaScenePlan
 from tella.recipes import list_recipes
 from tella.tts import gemini
 from tella.tts.gemini_registry import (
@@ -17,6 +19,7 @@ from tella.tts.gemini_registry import (
 )
 from tella.tts.providers import EdgeTTSProvider, GeminiTTSProvider, get_tts_provider
 from tella.voice_profiles import list_voice_profiles
+from tella.voice_profiles import get_voice_profile, resolve_voice as resolve_project_voice
 
 MODEL = "gemini-3.1-flash-tts-preview"
 EXPECTED_NATURAL_VOCAL_SMILE = (
@@ -82,7 +85,6 @@ def test_combined_input_is_deterministic_and_preserves_canonical_transcript():
 def test_edge_and_recipe_defaults_are_unchanged():
     assert isinstance(get_tts_provider("edge"), EdgeTTSProvider)
     assert isinstance(get_tts_provider("gemini"), GeminiTTSProvider)
-    assert all(profile.provider == "edge" for profile in list_voice_profiles())
     recipe_profile_ids = {recipe.voice_profile_id for recipe in list_recipes()}
     assert recipe_profile_ids
     assert all(profile.provider == "edge" for profile in list_voice_profiles() if profile.profile_id in recipe_profile_ids)
@@ -244,3 +246,106 @@ def test_gemini_provider_failure_propagates_without_fallback(monkeypatch, tmp_pa
             speed=1.0, codec="wav", sample_rate=24000,
             metadata={"model": MODEL, "style": "natural"},
         ))
+
+
+def _production_source(tmp_path: Path) -> Path:
+    source = tmp_path / "source"
+    assets = source / "assets"
+    assets.mkdir(parents=True)
+    scenes = []
+    for index in range(1, 8):
+        relative = f"assets/scene_{index:02d}.jpg"
+        (source / relative).write_bytes(b"reused-image")
+        scenes.append(Scene(
+            scene_index=index, kind="scene", title=str(index),
+            voice_script=f"Câu thử nghiệm số {index}.", image_filenames=[relative],
+            audio_duration=2.0,
+        ))
+    plan = TellaScenePlan(
+        title="Callirrhoe A/B", language="vi", aspect_ratio="9:16",
+        media_source="ai_image", duration_mode="short", theme="practical_life_steps",
+        recipe_id="practical_life_steps_v1", recipe_version=1,
+        voice_profile_id="clear_female_vi", narrative_mode="practical_steps",
+        global_narration_text=BENCHMARK_TEXT, scenes=scenes,
+    )
+    (source / "plan.json").write_text(plan.model_dump_json(), encoding="utf-8")
+    (source / "recipe.json").write_text("{}", encoding="utf-8")
+    return source
+
+
+def test_callirrhoe_project_profile_is_explicit_and_opt_in_only():
+    profile = get_voice_profile(production.PROFILE_ID)
+    assert (profile.provider, profile.model, profile.voice) == (
+        "gemini", MODEL, "Callirrhoe"
+    )
+    assert (profile.style, profile.language) == ("natural_vocal_smile", "vi-VN")
+    assert profile.post_tts_atempo_enabled is False
+    assert profile.automatic_edge_fallback_enabled is False
+    assert profile.automatic_model_fallback_enabled is False
+    resolution = resolve_project_voice(
+        explicit_profile_id=production.PROFILE_ID,
+        recipe_profile_id="clear_female_vi", narrative_mode="practical_steps",
+    )
+    assert resolution.resolved_tts_provider == "gemini"
+    assert resolution.resolved_tts_model == MODEL
+    assert resolution.resolved_tts_style == "natural_vocal_smile"
+    assert get_voice_profile("clear_female_vi").provider == "edge"
+    assert all(recipe.voice_profile_id != production.PROFILE_ID for recipe in list_recipes())
+
+
+def test_callirrhoe_plan_reuses_all_images_and_adapts_visual_timeline(tmp_path):
+    plan, metadata = production.build_production_plan(_production_source(tmp_path))
+    assert metadata["reused_image_indices"] == [1, 2, 3, 4, 5, 6, 7]
+    assert metadata["image_provider_request_count"] == 0
+    assert metadata["gemini_request_limit"] == 1
+    production.adapt_visual_timeline(plan, 15.48)
+    assert plan.duration_fit_applied is False
+    assert plan.duration_fit_tempo == 1.0
+    assert plan.duration_fit_scale == 1.0
+    assert plan.total_duration == pytest.approx(15.48, abs=0.05)
+    assert len(plan.scene_timing_map) == 7
+    assert len(plan.subtitle_segments) == 7
+
+
+def test_callirrhoe_controlled_render_one_request_metadata_and_failure_stop(monkeypatch, tmp_path):
+    source = _production_source(tmp_path)
+    calls = []
+    renders = []
+    async def fake_synth(text, path, *, model, voice, style):
+        calls.append((model, voice, style, text))
+        _write_wav(path)
+        return {"provider": "gemini", "model": model, "voice": voice,
+                "requested_style": style, "voice_registry_version": 1,
+                "canonical_narration_text_hash": gemini.sha256_text(text),
+                "serialized_provider_input_hash": "input-hash", "fallback_used": False}
+    async def fake_normalize(raw, normalized): shutil.copyfile(raw, normalized)
+    async def fake_duration(path): return 15.48
+    async def fake_render(plan, output_dir):
+        renders.append(plan)
+        output = output_dir / "video.mp4"; output.write_bytes(b"video"); return output
+    monkeypatch.setattr(production, "configure_music", lambda plan, job, **kwargs: (
+        setattr(plan, "music_enabled", True),
+        setattr(plan, "selected_music_track_id", "practical_calm_01"),
+        setattr(plan, "selected_music_profile_id", "practical_calm_rhythm"),
+    ))
+    output = asyncio.run(production.run_production_ab(
+        source, tmp_path / "success", max_gemini_requests=1, no_retry=True,
+        synthesize_fn=fake_synth, normalize_fn=fake_normalize,
+        duration_fn=fake_duration, render_fn=fake_render,
+    ))
+    assert output.is_file() and len(calls) == 1 and len(renders) == 1
+    metadata = json.loads((tmp_path / "success" / "production_metadata.json").read_text(encoding="utf-8"))
+    assert metadata["selected_voice_profile"] == production.PROFILE_ID
+    assert metadata["voice"] == "Callirrhoe"
+    assert metadata["atempo_status"] == "disabled"
+    assert metadata["gemini_request_count"] == 1
+    assert metadata["fallback_used"] is False
+
+    async def fail_synth(*args, **kwargs):
+        raise RuntimeError("fake provider failure")
+    with pytest.raises(RuntimeError, match="fake provider failure"):
+        asyncio.run(production.run_production_ab(
+            source, tmp_path / "failure", max_gemini_requests=1, no_retry=True,
+            synthesize_fn=fail_synth, render_fn=fake_render,
+        ))
+    assert len(renders) == 1

@@ -927,7 +927,14 @@ async def run_pipeline(
                 google_tts_voice=google_tts_voice,
             ),
         )
-        await reconcile_practical_narration_duration(plan, job_dir)
+        if voice_resolution is not None and not voice_resolution.post_tts_atempo_enabled:
+            plan.duration_fit_required = False
+            plan.duration_fit_applied = False
+            plan.duration_fit_tempo = 1.0
+            plan.duration_fit_scale = 1.0
+            plan.duration_fit_reason = "disabled by selected natural-duration voice profile"
+        else:
+            await reconcile_practical_narration_duration(plan, job_dir)
         configure_music(
             plan,
             job_dir,
@@ -1374,6 +1381,12 @@ def main(argv: list[str] | None = None) -> int:
         args.tts_continuous = selected_recipe.narration_mode == "continuous"
 
     os.environ["TELLA_TTS_PROVIDER"] = voice_resolution.resolved_tts_provider
+    if voice_resolution.resolved_tts_model:
+        os.environ["TELLA_TTS_MODEL"] = voice_resolution.resolved_tts_model
+    if voice_resolution.resolved_tts_style:
+        os.environ["TELLA_TTS_STYLE"] = voice_resolution.resolved_tts_style
+    if voice_resolution.resolved_tts_language:
+        os.environ["TELLA_TTS_LANGUAGE"] = voice_resolution.resolved_tts_language
     if args.tts_model:
         os.environ["TELLA_TTS_MODEL"] = args.tts_model
     if voice_resolution.resolved_voice:
