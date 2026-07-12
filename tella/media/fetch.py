@@ -49,6 +49,7 @@ from tella.media.visual_qc import (
 )
 from tella.planner.models import SceneQCResult, StyleBible, TellaScenePlan, VisualBible
 from tella.planner.life_insight_visuals import build_life_insight_provider_prompt
+from tella.planner.practical_life_steps_visuals import build_practical_provider_prompt
 from tella.planner.visual_bible import build_visual_bible, save_visual_bible
 from tella.planner.visual_prompts import build_scene_visual_plan, repair_prompt
 
@@ -2318,6 +2319,11 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                         scene.provider_prompt_variant
                         or build_life_insight_provider_prompt(scene)
                     )
+                elif plan.theme == "practical_life_steps":
+                    prompt_for_cf = (
+                        scene.provider_prompt_variant
+                        or build_practical_provider_prompt(scene)
+                    )
                 prompt_hash = _asset_prompt_hash(
                     prompt_for_cf,
                     width=width,
@@ -2325,7 +2331,11 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                     seed=_seed_for_scene(plan, scene) if plan.theme == "minimalist_emotional" else _VIDEO_SEED,
                 )
                 scene.asset_prompt_hash = prompt_hash
-                if plan.theme in {"minimalist_symbolic_reel", "life_insight_symbolic"}:
+                if plan.theme in {
+                    "minimalist_symbolic_reel",
+                    "life_insight_symbolic",
+                    "practical_life_steps",
+                }:
                     scene.provider_prompt_initial = prompt_for_cf
                     scene.provider_prompt_initial_hash = _provider_prompt_hash(
                         prompt_for_cf
@@ -2357,6 +2367,16 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                         logger.info(
                             "life insight provider prompt scene=%02d summary=%s",
                             scene.scene_index,
+                            json.dumps(scene.sanitized_prompt_summary, ensure_ascii=False),
+                        )
+                    elif plan.theme == "practical_life_steps":
+                        logger.info(
+                            "practical steps provider prompt scene=%02d role=%s "
+                            "variant=%s composition=%s summary=%s",
+                            scene.scene_index,
+                            scene.scene_role,
+                            scene.visual_variant_id,
+                            scene.composition_pattern,
                             json.dumps(scene.sanitized_prompt_summary, ensure_ascii=False),
                         )
                 if plan.theme == "minimalist_emotional":
@@ -2454,6 +2474,21 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                         _finalize_minimalist_scene_metadata(
                             scene,
                             visual_mode="life_insight_symbolic",
+                            provider="cloudflare",
+                        )
+                        _set_image_source_metadata(
+                            scene,
+                            image_source="ai_image_provider",
+                            image_provider="cloudflare",
+                            asset_path=out,
+                            job_dir=job_dir,
+                            used_local_fallback=False,
+                        )
+                        scene.prompt_used = prompt_for_cf
+                    elif plan.theme == "practical_life_steps":
+                        _finalize_minimalist_scene_metadata(
+                            scene,
+                            visual_mode="practical_life_steps",
                             provider="cloudflare",
                         )
                         _set_image_source_metadata(

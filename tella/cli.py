@@ -166,6 +166,27 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _parse_preview_scene_indices(raw: str) -> list[int]:
+    values: list[int] = []
+    for item in (raw or "").split(","):
+        value = item.strip()
+        if not value:
+            continue
+        try:
+            index = int(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                "preview scene indices must be comma-separated integers"
+            ) from exc
+        if index <= 0:
+            raise argparse.ArgumentTypeError("preview scene indices must be positive")
+        if index not in values:
+            values.append(index)
+    if not values:
+        raise argparse.ArgumentTypeError("at least one preview scene index is required")
+    return values
+
+
 def _edge_rate_to_speed(edge_rate: str) -> float:
     raw = (edge_rate or "0%").strip().rstrip("%")
     try:
@@ -607,6 +628,7 @@ async def run_pipeline(
     reuse_assets_mode: str | None = None,
     allow_mismatched_reused_assets: bool = False,
     preview_scenes: int | None = None,
+    preview_scene_indices: list[int] | None = None,
     max_ai_images: int | None = None,
     dry_run_plan: bool = False,
     tts_continuous: bool | None = None,
@@ -633,11 +655,6 @@ async def run_pipeline(
     practical_steps_planner = bool(
         recipe is not None and recipe.planner_id == "practical_life_steps"
     )
-    if practical_steps_planner and not dry_run_plan:
-        raise RuntimeError(
-            "practical_life_steps_v1 is planner-only until its visual theme "
-            "is implemented; use --dry-run-plan"
-        )
     # ── 0. Setup output folder ─────────────────────────────────────────
     if not job_id:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -835,7 +852,40 @@ async def run_pipeline(
         _restore_fetch_env()
         return plan_json
 
-    if preview_scenes is not None and preview_scenes > 0:
+    if preview_scene_indices:
+        requested = list(preview_scene_indices)
+        scenes_by_index = {
+            scene.scene_index: scene
+            for scene in plan.scenes
+            if scene.kind == "scene"
+        }
+        missing = [index for index in requested if index not in scenes_by_index]
+        if missing:
+            _restore_fetch_env()
+            raise RuntimeError(
+                "preview scene indices are not present in the validated plan: "
+                + ",".join(str(index) for index in missing)
+            )
+        original_count = len(plan.scenes)
+        plan.scenes = [scenes_by_index[index] for index in requested]
+        plan.global_narration_text = " ".join(
+            scene.voice_script.strip()
+            for scene in plan.scenes
+            if scene.voice_script.strip()
+        )
+        plan_json.write_text(
+            json.dumps(plan.model_dump(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info(
+            "preview-scene-indices active after full plan validation: %d -> %d "
+            "indices=%s roles=%s",
+            original_count,
+            len(plan.scenes),
+            ",".join(str(index) for index in requested),
+            ",".join(scene.scene_role for scene in plan.scenes),
+        )
+    elif preview_scenes is not None and preview_scenes > 0:
         original_count = len(plan.scenes)
         plan.scenes = plan.scenes[: max(1, int(preview_scenes))]
         for idx, scene in enumerate(plan.scenes, start=1):
@@ -1057,6 +1107,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Render only the first N planned scenes for quota-safe previews.",
     )
     p.add_argument(
+        "--preview-scene-indices",
+        type=_parse_preview_scene_indices,
+        default=None,
+        help="Render selected validated scene indices, e.g. 3,4,5.",
+    )
+    p.add_argument(
         "--max-ai-images",
         type=int,
         default=None,
@@ -1271,16 +1327,6 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         args.tts_continuous = selected_recipe.narration_mode == "continuous"
-        if (
-            selected_recipe.planner_id == "practical_life_steps"
-            and not args.dry_run_plan
-        ):
-            print(
-                "ERROR: practical_life_steps_v1 is planner-only until its "
-                "visual theme is implemented; use --dry-run-plan",
-                file=sys.stderr,
-            )
-            return 2
 
     os.environ["TELLA_TTS_PROVIDER"] = voice_resolution.resolved_tts_provider
     if voice_resolution.resolved_voice:
@@ -1326,6 +1372,8 @@ def main(argv: list[str] | None = None) -> int:
         user_script = args.exact_script.strip()
     if not args.topic.strip() and not user_script:
         parser.error("--topic is required unless --script-file or --exact-script is provided")
+    if args.preview_scenes and args.preview_scene_indices:
+        parser.error("use either --preview-scenes or --preview-scene-indices, not both")
 
     try:
         final = asyncio.run(
@@ -1356,6 +1404,7 @@ def main(argv: list[str] | None = None) -> int:
                 reuse_assets_mode=args.reuse_assets_mode,
                 allow_mismatched_reused_assets=args.allow_mismatched_reused_assets,
                 preview_scenes=args.preview_scenes,
+                preview_scene_indices=args.preview_scene_indices,
                 max_ai_images=args.max_ai_images,
                 dry_run_plan=args.dry_run_plan,
                 tts_continuous=args.tts_continuous,

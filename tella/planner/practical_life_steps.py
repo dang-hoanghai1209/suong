@@ -9,6 +9,7 @@ from typing import Any
 
 from tella._voice_pace import VoicePace
 from tella.planner.models import Scene, TellaScenePlan
+from tella.planner.practical_life_steps_visuals import apply_practical_life_steps_visuals
 from tella.planner.voices import edge_voice_for
 
 
@@ -258,7 +259,7 @@ def plan_practical_life_steps_from_script(
         scenes=scenes,
     )
     enforce_practical_life_steps_plan(plan, roles=roles)
-    return plan
+    return apply_practical_life_steps_visuals(plan)
 
 
 def plan_practical_life_steps_from_topic(*, topic: str, target_lang: str, **kwargs: Any):

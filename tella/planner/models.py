@@ -462,6 +462,13 @@ class Scene(BaseModel):
     visual_action_provider_safe: bool = False
     visual_metadata_status: str = Field("not_evaluated", max_length=40)
     visual_metadata_failure_reasons: list[str] = Field(default_factory=list)
+    step_badge_rendered: bool = False
+    step_badge_text: str = Field("", max_length=20)
+    step_badge_x: int = 0
+    step_badge_y: int = 0
+    step_badge_width: int = 0
+    step_badge_height: int = 0
+    render_motion_profile: str = Field("", max_length=80)
 
     # 1-3 assets per scene. 1 = static Ken Burns; 2-3 = mini-montage with
     # crossfades inside the scene window.

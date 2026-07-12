@@ -46,7 +46,7 @@ from tella.composer.compose import compose_timing
 from tella.composer.safe_zone import render_dims_for, safe_zone_for
 from tella.composer.text_wrap import chars_per_line, wrap
 from tella.planner.models import TellaScenePlan
-from tella.render.text_overlay import render_overlay_png
+from tella.render.text_overlay import practical_step_badge_layout, render_overlay_png
 from tella.subtitles import sanitize_highlight_words, subtitle_text_for_style
 from tella.themes.loader import ImageGrade
 
@@ -180,18 +180,36 @@ def _build_bg_filter(
     if not is_video:
         total_frames = max(2, int(duration * OUTPUT_FPS))
         zoom_step = (ken_burns_max_scale - 1.0) / max(1, total_frames - 1)
-        if motion_profile == "controlled_slow_pan":
+        if motion_profile in {
+            "controlled_slow_pan",
+            "practical_pan_left_to_right",
+            "practical_pan_right_to_left",
+        }:
             last_frame = max(1, total_frames - 1)
-            if scene_index % 2:
+            move_left_to_right = (
+                motion_profile == "practical_pan_left_to_right"
+                or motion_profile == "controlled_slow_pan" and scene_index % 2
+            )
+            if move_left_to_right:
                 x_expr = f"(iw-iw/zoom)*(0.35+0.30*on/{last_frame})"
             else:
                 x_expr = f"(iw-iw/zoom)*(0.65-0.30*on/{last_frame})"
             y_expr = "ih/2-(ih/zoom/2)"
+            zoom_expr = f"min(zoom+{zoom_step:.6f},{ken_burns_max_scale})"
+        elif motion_profile == "practical_pull_back":
+            x_expr = "iw/2-(iw/zoom/2)"
+            y_expr = "ih/2-(ih/zoom/2)"
+            zoom_expr = f"max({ken_burns_max_scale}-{zoom_step:.6f}*on,1.0)"
+        elif motion_profile == "practical_stable_hold":
+            x_expr = "iw/2-(iw/zoom/2)"
+            y_expr = "ih/2-(ih/zoom/2)"
+            zoom_expr = "1.005"
         else:
             x_expr = "iw/2-(iw/zoom/2)"
             y_expr = "ih/2-(ih/zoom/2)"
+            zoom_expr = f"min(zoom+{zoom_step:.6f},{ken_burns_max_scale})"
         chains.append(
-            f"zoompan=z='min(zoom+{zoom_step:.6f},{ken_burns_max_scale})':"
+            f"zoompan=z='{zoom_expr}':"
             f"x='{x_expr}':y='{y_expr}':"
             f"d={total_frames}:s={canvas_w}x{canvas_h}:fps={OUTPUT_FPS}"
         )
@@ -252,6 +270,24 @@ def _prepare_image_asset_for_render(
     return out_path, source_hash, True
 
 
+def _practical_motion_profile(scene) -> str:
+    if scene.scene_role == "hook":
+        return "practical_zoom_in"
+    if scene.scene_role in {"context", "context_part_one", "context_part_two"}:
+        return "practical_pan_left_to_right"
+    if scene.scene_role == "practical_step":
+        return {
+            1: "practical_pan_left_to_right",
+            2: "practical_pan_right_to_left",
+            3: "practical_zoom_in",
+        }.get(scene.step_number, "practical_zoom_in")
+    if scene.scene_role == "common_mistake":
+        return "practical_pull_back"
+    if scene.scene_role in {"today_action", "closing"}:
+        return "practical_stable_hold"
+    return "practical_zoom_in"
+
+
 async def _render_scene(
     *,
     asset_path: Path,
@@ -274,6 +310,7 @@ async def _render_scene(
     highlight_words: list[str] | None = None,
     channel_name: str | None = None,
     channel_avatar: str | None = None,
+    step_number: int = 0,
 ) -> Path:
     """Render one VIDEO-ONLY scene MP4. Audio is mixed in once at final-mux."""
     is_video = _is_video_asset(asset_path)
@@ -282,7 +319,7 @@ async def _render_scene(
     # sidesteps ffmpeg's drawtext filter which isn't compiled into
     # ffmpeg-static on production VPS.
     overlay_png: Path | None = None
-    if title_text or caption_text or channel_name:
+    if title_text or caption_text or channel_name or step_number:
         overlay_png = render_overlay_png(
             title=title_text,
             caption=caption_text,
@@ -298,6 +335,7 @@ async def _render_scene(
             highlight_words=highlight_words or [],
             channel_name=channel_name,
             channel_avatar=channel_avatar,
+            step_number=step_number,
         )
 
     bg_filter = _build_bg_filter(
@@ -615,22 +653,35 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
         scene.image_grade_applied = grade_applied
         scene.image_grade_source_asset_hash = source_hash
         if grade_applied:
-            logger.info(
-                "symbolic image grade scene=%02d brightness=%.2f contrast=%.2f "
-                "saturation=%.2f overlay=%s opacity=%.2f",
-                scene.scene_index,
-                theme_spec.image_grade.brightness,
-                theme_spec.image_grade.contrast,
-                theme_spec.image_grade.saturation,
-                theme_spec.image_grade.overlay_color,
-                theme_spec.image_grade.overlay_opacity,
-            )
+            if plan.theme == "practical_life_steps":
+                logger.info(
+                    "practical image grade scene=%02d brightness=%.2f contrast=%.2f "
+                    "saturation=%.2f overlay=%s opacity=%.2f",
+                    scene.scene_index,
+                    theme_spec.image_grade.brightness,
+                    theme_spec.image_grade.contrast,
+                    theme_spec.image_grade.saturation,
+                    theme_spec.image_grade.overlay_color,
+                    theme_spec.image_grade.overlay_opacity,
+                )
+            else:
+                logger.info(
+                    "symbolic image grade scene=%02d brightness=%.2f contrast=%.2f "
+                    "saturation=%.2f overlay=%s opacity=%.2f",
+                    scene.scene_index,
+                    theme_spec.image_grade.brightness,
+                    theme_spec.image_grade.contrast,
+                    theme_spec.image_grade.saturation,
+                    theme_spec.image_grade.overlay_color,
+                    theme_spec.image_grade.overlay_opacity,
+                )
         out_mp4 = work_dir / f"scene_{scene.scene_index:02d}.mp4"
 
         title_lines = [] if plan.theme in {
             "minimalist_emotional",
             "minimalist_symbolic_reel",
             "life_insight_symbolic",
+            "practical_life_steps",
         } else wrap(
             scene.title, title_cpl, max_lines=TITLE_MAX_LINES
         )
@@ -647,7 +698,11 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
         caption_lines = wrap(
             caption_result.text,
             caption_cpl,
-            max_lines=2 if plan.subtitle_style == "insight_reel" else CAPTION_MAX_LINES,
+            max_lines=(
+                2
+                if plan.subtitle_style in {"insight_reel", "practical_steps_reel"}
+                else CAPTION_MAX_LINES
+            ),
         )
         title_text = "\n".join(title_lines) if title_lines else None
         caption_text = "\n".join(caption_lines) if caption_lines else None
@@ -660,6 +715,49 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
         ):
             scene_motion_profile = "controlled_slow_hold"
             scene_zoom_scale = min(1.012, ken_burns_max_scale)
+        elif plan.theme == "practical_life_steps":
+            scene_motion_profile = _practical_motion_profile(scene)
+            scene_zoom_scale = (
+                min(1.012, ken_burns_max_scale)
+                if scene_motion_profile == "practical_stable_hold"
+                else ken_burns_max_scale
+            )
+        scene.render_motion_profile = scene_motion_profile
+        badge_layout = practical_step_badge_layout(
+            subtitle_style=plan.subtitle_style,
+            step_number=(
+                scene.step_number if scene.scene_role == "practical_step" else 0
+            ),
+            canvas_w=canvas_w,
+            safe_top=sz.top,
+            safe_left=sz.left,
+            font_file=font_file,
+        )
+        if badge_layout is not None:
+            scene.step_badge_rendered = True
+            scene.step_badge_text = str(badge_layout["text"])
+            scene.step_badge_x = int(badge_layout["x"])
+            scene.step_badge_y = int(badge_layout["y"])
+            scene.step_badge_width = int(badge_layout["width"])
+            scene.step_badge_height = int(badge_layout["height"])
+            logger.info(
+                "practical step badge scene=%02d text=%s x=%d y=%d width=%d height=%d",
+                scene.scene_index,
+                scene.step_badge_text,
+                scene.step_badge_x,
+                scene.step_badge_y,
+                scene.step_badge_width,
+                scene.step_badge_height,
+            )
+        else:
+            scene.step_badge_rendered = False
+            scene.step_badge_text = ""
+        logger.info(
+            "scene motion scene=%02d role=%s profile=%s",
+            scene.scene_index,
+            scene.scene_role,
+            scene_motion_profile,
+        )
         await _render_scene(
             asset_path=asset_path,
             out_path=out_mp4,
@@ -684,6 +782,9 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
             ),
             channel_name=brand_name or None,
             channel_avatar=brand_avatar or None,
+            step_number=(
+                scene.step_number if scene.scene_role == "practical_step" else 0
+            ),
         )
         scene_mp4s.append(out_mp4)
         logger.info(
