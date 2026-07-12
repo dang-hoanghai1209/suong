@@ -53,6 +53,10 @@ from tella.planner.life_insight import (
     plan_life_insight_from_script,
     plan_life_insight_from_topic,
 )
+from tella.planner.practical_life_steps import (
+    plan_practical_life_steps_from_script,
+    plan_practical_life_steps_from_topic,
+)
 from tella.recipes import (
     RecipeDefinition,
     RecipeNotFoundError,
@@ -496,6 +500,57 @@ def _log_life_insight_plan_metadata(plan) -> None:
         )
 
 
+def _log_practical_life_steps_metadata(plan) -> None:
+    if plan.planner_id != "practical_life_steps":
+        return
+    logger.info(
+        "practical_steps summary scenes=%d original_words=%d fitted_words=%d "
+        "original_seconds=%.2f fitted_seconds=%.2f fit=%s duration=%s "
+        "safety=%s overlap=%s",
+        len([scene for scene in plan.scenes if scene.kind == "scene"]),
+        plan.original_total_word_count,
+        plan.fitted_total_word_count,
+        plan.original_estimated_duration_seconds,
+        plan.fitted_estimated_duration_seconds,
+        plan.narration_fit_status,
+        plan.duration_validation_status,
+        plan.safety_status,
+        plan.overlap_validation_status,
+    )
+    logger.info(
+        "practical_steps diagnostics pairwise=%s max_duplicate=%.3f distinct=%d "
+        "action_density=%.3f emotional_overlap=%.3f insight_overlap=%.3f "
+        "reflection=%.3f harsh_truth=%.3f abstract=%.3f",
+        json.dumps(plan.pairwise_step_similarity, sort_keys=True),
+        plan.maximum_duplicate_step_score,
+        plan.distinct_step_count,
+        plan.practical_action_density,
+        plan.emotional_symbolic_overlap_score,
+        plan.life_insight_symbolic_overlap_score,
+        plan.reflective_statement_ratio,
+        plan.harsh_truth_statement_ratio,
+        plan.abstract_motivation_ratio,
+    )
+    for scene in (item for item in plan.scenes if item.kind == "scene"):
+        logger.info(
+            "practical_steps scene=%02d role=%s step=%d verb=%s subject=%s "
+            "object=%s condition=%s specificity=%.2f duplicate=%.3f "
+            "visual_action=%s rewritten=%s operations=%s",
+            scene.scene_index,
+            scene.scene_role,
+            scene.step_number,
+            scene.action_verb,
+            scene.required_subject,
+            scene.required_object,
+            scene.action_condition,
+            scene.practical_specificity_score,
+            scene.duplicate_step_score,
+            scene.visual_action,
+            scene.narration_rewritten,
+            ",".join(scene.rewrite_operations) or "none",
+        )
+
+
 def _slugify(text: str, max_len: int = 40) -> str:
     """Folder-safe slug, diacritic-stripped for readability.
 
@@ -575,6 +630,14 @@ async def run_pipeline(
     life_insight_planner = bool(
         recipe is not None and recipe.planner_id == "life_insight_symbolic"
     )
+    practical_steps_planner = bool(
+        recipe is not None and recipe.planner_id == "practical_life_steps"
+    )
+    if practical_steps_planner and not dry_run_plan:
+        raise RuntimeError(
+            "practical_life_steps_v1 is planner-only until its visual theme "
+            "is implemented; use --dry-run-plan"
+        )
     # ── 0. Setup output folder ─────────────────────────────────────────
     if not job_id:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -639,8 +702,8 @@ async def run_pipeline(
     if use_script:
         logger.info("step 1/6 — skip topic translation (paste-script mode)")
         topic_in_target = (topic or "").strip()
-    elif life_insight_planner:
-        logger.info("step 1/6 - skip topic translation (local life-insight planner)")
+    elif life_insight_planner or practical_steps_planner:
+        logger.info("step 1/6 - skip topic translation (local recipe planner)")
         topic_in_target = (topic or "").strip()
     else:
         logger.info("step 1/6 — translate topic")
@@ -656,7 +719,11 @@ async def run_pipeline(
     logger.info(
         "step 2/6 - %s (%s)",
         "parse user script" if use_script else "plan story",
-        "local life-insight planner" if life_insight_planner else "gemini",
+        (
+            "local recipe planner"
+            if life_insight_planner or practical_steps_planner
+            else "gemini"
+        ),
     )
     pace = resolve_pace(
         theme=theme,
@@ -675,6 +742,26 @@ async def run_pipeline(
         )
     elif life_insight_planner:
         plan = plan_life_insight_from_topic(
+            topic=topic_in_target,
+            target_lang=target_lang,
+            aspect_ratio=aspect_ratio,
+            media_source=media_source,
+            duration_mode=duration_mode,
+            voice_pace=pace,
+            voice_gender=voice_gender,
+        )
+    elif practical_steps_planner and use_script:
+        plan = plan_practical_life_steps_from_script(
+            user_script=user_script.strip(),
+            target_lang=target_lang,
+            aspect_ratio=aspect_ratio,
+            media_source=media_source,
+            duration_mode=duration_mode,
+            voice_pace=pace,
+            voice_gender=voice_gender,
+        )
+    elif practical_steps_planner:
+        plan = plan_practical_life_steps_from_topic(
             topic=topic_in_target,
             target_lang=target_lang,
             aspect_ratio=aspect_ratio,
@@ -743,6 +830,7 @@ async def run_pipeline(
     if dry_run_plan:
         _log_symbolic_plan_metadata(plan)
         _log_life_insight_plan_metadata(plan)
+        _log_practical_life_steps_metadata(plan)
         logger.info("dry-run-plan active; wrote %s and skipped media/TTS/render", plan_json)
         _restore_fetch_env()
         return plan_json
@@ -871,6 +959,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "minimalist_emotional",
             "minimalist_symbolic_reel",
             "life_insight_symbolic",
+            "practical_life_steps",
         ],
     )
     p.add_argument(
@@ -1182,6 +1271,16 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         args.tts_continuous = selected_recipe.narration_mode == "continuous"
+        if (
+            selected_recipe.planner_id == "practical_life_steps"
+            and not args.dry_run_plan
+        ):
+            print(
+                "ERROR: practical_life_steps_v1 is planner-only until its "
+                "visual theme is implemented; use --dry-run-plan",
+                file=sys.stderr,
+            )
+            return 2
 
     os.environ["TELLA_TTS_PROVIDER"] = voice_resolution.resolved_tts_provider
     if voice_resolution.resolved_voice:
@@ -1201,7 +1300,8 @@ def main(argv: list[str] | None = None) -> int:
 
     requires_gemini = not (
         selected_recipe is not None
-        and selected_recipe.planner_id == "life_insight_symbolic"
+        and selected_recipe.planner_id
+        in {"life_insight_symbolic", "practical_life_steps"}
     )
     if (
         requires_gemini

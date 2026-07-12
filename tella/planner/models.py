@@ -36,6 +36,7 @@ Theme = Literal[
     "minimalist_emotional",
     "minimalist_symbolic_reel",
     "life_insight_symbolic",
+    "practical_life_steps",
 ]
 VoicePaceName = Literal["slow", "medium", "fast", "custom"]
 VoiceGender = Literal["male", "female"]
@@ -427,6 +428,40 @@ class Scene(BaseModel):
     unsupported_inference_detected: bool = False
     unsupported_inference_reasons: list[str] = Field(default_factory=list)
     evidence_condition_complete: bool = True
+    step_number: int = 0
+    action_verb: str = Field("", max_length=80)
+    required_subject: str = Field("", max_length=120)
+    required_object: str = Field("", max_length=300)
+    action_condition: str = Field("", max_length=300)
+    action_scope: str = Field("", max_length=120)
+    estimated_effort: str = Field("", max_length=80)
+    immediate_action_possible: bool = False
+    requires_purchase: bool = False
+    requires_paid_service: bool = False
+    practical_specificity_score: float = 0.0
+    actionability_status: str = Field("not_evaluated", max_length=40)
+    actionability_failure_reasons: list[str] = Field(default_factory=list)
+    duplicate_step_score: float = 0.0
+    safety_status: str = Field("not_evaluated", max_length=40)
+    safety_failure_reasons: list[str] = Field(default_factory=list)
+    unsupported_claims: list[str] = Field(default_factory=list)
+    high_stakes_advice_detected: bool = False
+    fitted_voice_script: str = Field("", max_length=600)
+    narration_rewritten: bool = False
+    rewrite_operations: list[str] = Field(default_factory=list)
+    naturalness_failure_reasons: list[str] = Field(default_factory=list)
+    visual_action: str = Field("", max_length=300)
+    visual_object: str = Field("", max_length=300)
+    visual_environment: str = Field("", max_length=200)
+    visual_text_required: bool = False
+    visual_action_subject_present: bool = False
+    visual_action_verb_present: bool = False
+    visual_action_object_present: bool = False
+    visual_action_condition_preserved: bool = False
+    visual_action_language_consistent: bool = False
+    visual_action_provider_safe: bool = False
+    visual_metadata_status: str = Field("not_evaluated", max_length=40)
+    visual_metadata_failure_reasons: list[str] = Field(default_factory=list)
 
     # 1-3 assets per scene. 1 = static Ken Burns; 2-3 = mini-montage with
     # crossfades inside the scene window.
@@ -645,6 +680,27 @@ class TellaScenePlan(BaseModel):
     final_surface_validation_status: str = Field("not_evaluated", max_length=40)
     final_surface_repairs_applied: int = 0
     final_surface_failure_count: int = 0
+    pairwise_step_similarity: dict[str, float] = Field(default_factory=dict)
+    maximum_duplicate_step_score: float = 0.0
+    duplicate_step_pairs: list[str] = Field(default_factory=list)
+    distinct_step_count: int = 0
+    duplicate_step_validation_status: str = Field("not_evaluated", max_length=40)
+    safety_status: str = Field("not_evaluated", max_length=40)
+    safety_failure_reasons: list[str] = Field(default_factory=list)
+    unsupported_claims: list[str] = Field(default_factory=list)
+    high_stakes_advice_detected: bool = False
+    duration_validation_status: str = Field("not_evaluated", max_length=40)
+    duration_failure_reason: str = Field("", max_length=300)
+    emotional_symbolic_overlap_score: float = 0.0
+    life_insight_symbolic_overlap_score: float = 0.0
+    practical_action_density: float = 0.0
+    reflective_statement_ratio: float = 0.0
+    harsh_truth_statement_ratio: float = 0.0
+    abstract_motivation_ratio: float = 0.0
+    overlap_validation_status: str = Field("not_evaluated", max_length=40)
+    overlap_failure_reasons: list[str] = Field(default_factory=list)
+    practical_validation_status: str = Field("not_evaluated", max_length=40)
+    practical_validation_errors: list[str] = Field(default_factory=list)
 
     # Voice settings (resolved by CLI from theme + user overrides before
     # the planner runs — planner just receives these as inputs and echoes

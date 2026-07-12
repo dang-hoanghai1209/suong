@@ -122,12 +122,39 @@ _LIFE_INSIGHT_SYMBOLIC_V1 = RecipeDefinition(
     supports_asset_reuse=True,
 )
 
+_PRACTICAL_LIFE_STEPS_V1 = RecipeDefinition(
+    recipe_id="practical_life_steps_v1",
+    recipe_version=1,
+    display_name="Practical Life Steps",
+    status="production",
+    narrative_mode="practical_steps",
+    planner_id="practical_life_steps",
+    visual_theme_id="practical_life_steps",
+    voice_profile_id="clear_female_vi",
+    subtitle_style_id="practical_steps_reel",
+    transition_profile_id="clean_progressive_cut",
+    motion_profile_id="gentle_progressive_motion",
+    minimum_scene_count=7,
+    maximum_scene_count=8,
+    minimum_duration_seconds=32,
+    target_duration_seconds=35,
+    maximum_duration_seconds=38,
+    narration_mode="continuous",
+    aspect_ratio="9:16",
+    supports_voice_override=True,
+    supports_scene_qc=True,
+    supports_asset_reuse=True,
+)
+
 _REGISTRY: dict[str, dict[int, RecipeDefinition]] = {
     _EMOTIONAL_SYMBOLIC_V1.recipe_id: {
         _EMOTIONAL_SYMBOLIC_V1.recipe_version: _EMOTIONAL_SYMBOLIC_V1,
     },
     _LIFE_INSIGHT_SYMBOLIC_V1.recipe_id: {
         _LIFE_INSIGHT_SYMBOLIC_V1.recipe_version: _LIFE_INSIGHT_SYMBOLIC_V1,
+    },
+    _PRACTICAL_LIFE_STEPS_V1.recipe_id: {
+        _PRACTICAL_LIFE_STEPS_V1.recipe_version: _PRACTICAL_LIFE_STEPS_V1,
     },
 }
 

@@ -54,3 +54,5 @@ SESSIONS/
 script_*.txt
 !script_life_insight_test.txt
 !script_life_insight_generalization_test.txt
+!script_practical_life_steps_test.txt
+!script_practical_life_steps_generalization_test.txt
