@@ -98,10 +98,37 @@ _EMOTIONAL_SYMBOLIC_V1 = RecipeDefinition(
     supports_asset_reuse=True,
 )
 
+_LIFE_INSIGHT_SYMBOLIC_V1 = RecipeDefinition(
+    recipe_id="life_insight_symbolic_v1",
+    recipe_version=1,
+    display_name="Life Insight Symbolic",
+    status="production",
+    narrative_mode="life_insight",
+    planner_id="life_insight_symbolic",
+    visual_theme_id="life_insight_symbolic",
+    voice_profile_id="firm_male_vi",
+    subtitle_style_id="insight_reel",
+    transition_profile_id="clean_soft_cut",
+    motion_profile_id="controlled_slow_pan",
+    minimum_scene_count=7,
+    maximum_scene_count=8,
+    minimum_duration_seconds=32,
+    target_duration_seconds=35,
+    maximum_duration_seconds=38,
+    narration_mode="continuous",
+    aspect_ratio="9:16",
+    supports_voice_override=True,
+    supports_scene_qc=True,
+    supports_asset_reuse=True,
+)
+
 _REGISTRY: dict[str, dict[int, RecipeDefinition]] = {
     _EMOTIONAL_SYMBOLIC_V1.recipe_id: {
         _EMOTIONAL_SYMBOLIC_V1.recipe_version: _EMOTIONAL_SYMBOLIC_V1,
-    }
+    },
+    _LIFE_INSIGHT_SYMBOLIC_V1.recipe_id: {
+        _LIFE_INSIGHT_SYMBOLIC_V1.recipe_version: _LIFE_INSIGHT_SYMBOLIC_V1,
+    },
 }
 
 

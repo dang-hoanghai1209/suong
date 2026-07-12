@@ -52,3 +52,5 @@ BRIEF.md
 SESSIONS/
 
 script_*.txt
+!script_life_insight_test.txt
+!script_life_insight_generalization_test.txt

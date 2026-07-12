@@ -35,6 +35,7 @@ Theme = Literal[
     "mindfulness",
     "minimalist_emotional",
     "minimalist_symbolic_reel",
+    "life_insight_symbolic",
 ]
 VoicePaceName = Literal["slow", "medium", "fast", "custom"]
 VoiceGender = Literal["male", "female"]
@@ -382,6 +383,50 @@ class Scene(BaseModel):
     composition_clear: bool | None = None
     style_consistent: bool | None = None
     object_ambiguity_severity: Literal["none", "minor", "major"] | None = None
+    scene_role: str = Field("", max_length=80)
+    claim_type: str = Field("", max_length=80)
+    emotional_function: str = Field("", max_length=160)
+    observable_evidence: str = Field("", max_length=300)
+    insight_strength: str = Field("", max_length=40)
+    narration_word_count: int = 0
+    estimated_duration_seconds: float = 0.0
+    transition_purpose: str = Field("", max_length=200)
+    conclusion_dependency: str = Field("", max_length=120)
+    original_voice_script: str = Field("", max_length=4000)
+    original_narration_word_count: int = 0
+    original_estimated_duration_seconds: float = 0.0
+    narration_fit_applied: bool = False
+    narration_fit_operations: list[str] = Field(default_factory=list)
+    fitted_narration_word_count: int = 0
+    fitted_estimated_duration_seconds: float = 0.0
+    semantic_anchors_preserved: list[str] = Field(default_factory=list)
+    semantic_anchor_loss_detected: bool = False
+    required_semantic_anchors: list[str] = Field(default_factory=list)
+    preserved_semantic_anchors: list[str] = Field(default_factory=list)
+    missing_semantic_anchors: list[str] = Field(default_factory=list)
+    required_semantic_relations: list[str] = Field(default_factory=list)
+    preserved_semantic_relations: list[str] = Field(default_factory=list)
+    missing_semantic_relations: list[str] = Field(default_factory=list)
+    semantic_relation_loss_detected: bool = False
+    vietnamese_naturalness_status: str = Field("not_evaluated", max_length=40)
+    vietnamese_naturalness_failure_reasons: list[str] = Field(default_factory=list)
+    scene_compression_ratio: float = 0.0
+    compression_limit_exceeded: bool = False
+    fitting_candidate_count: int = 0
+    selected_fitting_candidate_id: str = Field("", max_length=120)
+    surface_quality_status: str = Field("not_evaluated", max_length=40)
+    surface_quality_failure_reasons: list[str] = Field(default_factory=list)
+    predicate_complete: bool = False
+    complement_complete: bool = False
+    clause_connection_natural: bool = False
+    pronoun_reference_clear: bool = False
+    final_surface_repair_applied: bool = False
+    final_surface_candidate_id: str = Field("", max_length=120)
+    observable_claims: list[str] = Field(default_factory=list)
+    inferred_private_motives: list[str] = Field(default_factory=list)
+    unsupported_inference_detected: bool = False
+    unsupported_inference_reasons: list[str] = Field(default_factory=list)
+    evidence_condition_complete: bool = True
 
     # 1-3 assets per scene. 1 = static Ken Burns; 2-3 = mini-montage with
     # crossfades inside the scene window.
@@ -574,6 +619,32 @@ class TellaScenePlan(BaseModel):
     recipe_duration_range: list[float] = Field(default_factory=list)
     recipe_validation_status: str = Field("not_selected", max_length=40)
     recipe_validation_errors: list[str] = Field(default_factory=list)
+    recipe_overlap_score: float = 0.0
+    recipe_overlap_detected: bool = False
+    overlap_repair_applied: bool = False
+    life_insight_validation_status: str = Field("", max_length=40)
+    life_insight_validation_errors: list[str] = Field(default_factory=list)
+    life_insight_estimated_duration_seconds: float = 0.0
+    narration_fit_required: bool = False
+    narration_fit_applied: bool = False
+    narration_fit_pass_count: int = 0
+    original_total_word_count: int = 0
+    fitted_total_word_count: int = 0
+    original_estimated_duration_seconds: float = 0.0
+    fitted_estimated_duration_seconds: float = 0.0
+    duration_reduction_seconds: float = 0.0
+    duration_reduction_ratio: float = 0.0
+    duration_target_seconds: float = 35.0
+    narration_fit_status: str = Field("not_evaluated", max_length=40)
+    narration_fit_failure_reason: str = Field("", max_length=300)
+    seven_scene_fallback_considered: bool = False
+    seven_scene_fallback_applied: bool = False
+    semantic_fidelity_status: str = Field("not_evaluated", max_length=40)
+    vietnamese_naturalness_status: str = Field("not_evaluated", max_length=40)
+    maximum_scene_compression_ratio: float = 0.0
+    final_surface_validation_status: str = Field("not_evaluated", max_length=40)
+    final_surface_repairs_applied: int = 0
+    final_surface_failure_count: int = 0
 
     # Voice settings (resolved by CLI from theme + user overrides before
     # the planner runs — planner just receives these as inputs and echoes

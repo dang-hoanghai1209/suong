@@ -49,6 +49,10 @@ from tella.composer.compose import compose_timing
 from tella.ingest.topic_translator import SUPPORTED_LANGS, translate_topic
 from tella.media.fetch import fetch_assets
 from tella.planner.story_planner import plan_story, plan_story_from_script
+from tella.planner.life_insight import (
+    plan_life_insight_from_script,
+    plan_life_insight_from_topic,
+)
 from tella.recipes import (
     RecipeDefinition,
     RecipeNotFoundError,
@@ -428,6 +432,58 @@ def _log_symbolic_plan_metadata(plan) -> None:
         )
 
 
+def _log_life_insight_plan_metadata(plan) -> None:
+    if plan.planner_id != "life_insight_symbolic":
+        return
+    logger.info(
+        "life_insight duration fit: original=%.2fs target=%.2fs fitted=%.2fs "
+        "passes=%d status=%s",
+        plan.original_estimated_duration_seconds,
+        plan.duration_target_seconds,
+        plan.fitted_estimated_duration_seconds,
+        plan.narration_fit_pass_count,
+        plan.narration_fit_status,
+    )
+    logger.info(
+        "life_insight table: scene | role | original_words | fitted_words | "
+        "original_seconds | fitted_seconds | anchors_preserved"
+    )
+    for scene in (item for item in plan.scenes if item.kind == "scene"):
+        logger.info(
+            "life_insight row: %02d | %s | %d | %d | %.2f | %.2f | %s",
+            scene.scene_index,
+            scene.scene_role,
+            scene.original_narration_word_count,
+            scene.fitted_narration_word_count,
+            scene.original_estimated_duration_seconds,
+            scene.fitted_estimated_duration_seconds,
+            bool(scene.semantic_anchors_preserved),
+        )
+    logger.info(
+        "life_insight overlap: score=%.3f detected=%s repair=%s validation=%s",
+        plan.recipe_overlap_score,
+        plan.recipe_overlap_detected,
+        plan.overlap_repair_applied,
+        plan.life_insight_validation_status,
+    )
+    logger.info(
+        "life_insight language: fallback_considered=%s fallback_applied=%s "
+        "semantic_fidelity=%s naturalness=%s max_compression=%.3f "
+        "surface=%s surface_repairs=%d surface_failures=%d "
+        "incomplete_evidence=%d unsupported_inferences=%d",
+        plan.seven_scene_fallback_considered,
+        plan.seven_scene_fallback_applied,
+        plan.semantic_fidelity_status,
+        plan.vietnamese_naturalness_status,
+        plan.maximum_scene_compression_ratio,
+        plan.final_surface_validation_status,
+        plan.final_surface_repairs_applied,
+        plan.final_surface_failure_count,
+        sum(not scene.evidence_condition_complete for scene in plan.scenes),
+        sum(scene.unsupported_inference_detected for scene in plan.scenes),
+    )
+
+
 def _slugify(text: str, max_len: int = 40) -> str:
     """Folder-safe slug, diacritic-stripped for readability.
 
@@ -504,6 +560,14 @@ async def run_pipeline(
     """
 
     use_script = bool((user_script or "").strip())
+    life_insight_planner = bool(
+        recipe is not None and recipe.planner_id == "life_insight_symbolic"
+    )
+    if life_insight_planner and not dry_run_plan:
+        raise RuntimeError(
+            "life_insight_symbolic_v1 is planner-only until its visual theme "
+            "is implemented; use --dry-run-plan"
+        )
 
     # ── 0. Setup output folder ─────────────────────────────────────────
     if not job_id:
@@ -569,6 +633,9 @@ async def run_pipeline(
     if use_script:
         logger.info("step 1/6 — skip topic translation (paste-script mode)")
         topic_in_target = (topic or "").strip()
+    elif life_insight_planner:
+        logger.info("step 1/6 - skip topic translation (local life-insight planner)")
+        topic_in_target = (topic or "").strip()
     else:
         logger.info("step 1/6 — translate topic")
         tr = await translate_topic(topic, target_lang)
@@ -580,14 +647,37 @@ async def run_pipeline(
         logger.info("  → %r", topic_in_target)
 
     # ── 2. Plan story (topic mode) OR parse script ────────────────────
-    logger.info("step 2/6 — %s (gemini)",
-                "parse user script" if use_script else "plan story")
+    logger.info(
+        "step 2/6 - %s (%s)",
+        "parse user script" if use_script else "plan story",
+        "local life-insight planner" if life_insight_planner else "gemini",
+    )
     pace = resolve_pace(
         theme=theme,
         override=voice_pace_name,
         custom_edge_rate=voice_rate_custom,
     )
-    if use_script:
+    if life_insight_planner and use_script:
+        plan = plan_life_insight_from_script(
+            user_script=user_script.strip(),
+            target_lang=target_lang,
+            aspect_ratio=aspect_ratio,
+            media_source=media_source,
+            duration_mode=duration_mode,
+            voice_pace=pace,
+            voice_gender=voice_gender,
+        )
+    elif life_insight_planner:
+        plan = plan_life_insight_from_topic(
+            topic=topic_in_target,
+            target_lang=target_lang,
+            aspect_ratio=aspect_ratio,
+            media_source=media_source,
+            duration_mode=duration_mode,
+            voice_pace=pace,
+            voice_gender=voice_gender,
+        )
+    elif use_script:
         plan = await plan_story_from_script(
             user_script=user_script.strip(),
             target_lang=target_lang,
@@ -656,6 +746,7 @@ async def run_pipeline(
         raise RuntimeError("recipe validation failed: " + "; ".join(recipe_errors))
     if dry_run_plan:
         _log_symbolic_plan_metadata(plan)
+        _log_life_insight_plan_metadata(plan)
         logger.info("dry-run-plan active; wrote %s and skipped media/TTS/render", plan_json)
         _restore_fetch_env()
         return plan_json
@@ -1073,6 +1164,16 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         args.tts_continuous = selected_recipe.narration_mode == "continuous"
+        if (
+            selected_recipe.planner_id == "life_insight_symbolic"
+            and not args.dry_run_plan
+        ):
+            print(
+                "ERROR: life_insight_symbolic_v1 is planner-only until its "
+                "visual theme is implemented; use --dry-run-plan",
+                file=sys.stderr,
+            )
+            return 2
 
     os.environ["TELLA_TTS_PROVIDER"] = voice_resolution.resolved_tts_provider
     if voice_resolution.resolved_voice:
@@ -1090,7 +1191,16 @@ def main(argv: list[str] | None = None) -> int:
         voice_resolution.recipe_voice_override_applied,
     )
 
-    if not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GEMINI_API_KEYS"):
+    requires_gemini = not (
+        selected_recipe is not None
+        and selected_recipe.planner_id == "life_insight_symbolic"
+        and args.dry_run_plan
+    )
+    if (
+        requires_gemini
+        and not os.environ.get("GEMINI_API_KEY")
+        and not os.environ.get("GEMINI_API_KEYS")
+    ):
         print(
             "ERROR: GEMINI_API_KEY missing. Set it in .env (see .env.example).",
             file=sys.stderr,
