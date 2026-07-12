@@ -76,6 +76,9 @@ async def run_benchmark(
     if not dry_run and not no_retry:
         raise ValueError("live Gemini benchmark requires --no-retry")
     instruction = resolve_style(style)
+    provider_input = gemini.serialize_provider_input(BENCHMARK_TEXT, instruction)
+    canonical_hash = gemini.sha256_text(BENCHMARK_TEXT)
+    provider_input_hash = gemini.sha256_text(provider_input)
     for voice in voices:
         resolve_voice(voice, model)
     output_dir = Path(output_dir)
@@ -85,6 +88,10 @@ async def run_benchmark(
         stem = voice.lower()
         entries.append({
             "voice": voice,
+            "canonical_narration_text": BENCHMARK_TEXT,
+            "canonical_narration_text_hash": canonical_hash,
+            "serialized_provider_input_hash": provider_input_hash,
+            "request_format_version": gemini.REQUEST_FORMAT_VERSION,
             "raw_output_path": str(output_dir / f"{stem}_raw.wav"),
             "normalized_output_path": str(output_dir / f"{stem}_normalized.wav"),
             "status": "planned" if dry_run else "pending",
@@ -93,7 +100,12 @@ async def run_benchmark(
         "provider": "gemini", "model": model, "language": "vi-VN",
         "voices": list(voices), "requested_style": style,
         "resolved_style_instruction": instruction,
-        "narration_text": BENCHMARK_TEXT, "output_format": "WAV, mono, 24000 Hz",
+        "narration_text": BENCHMARK_TEXT,
+        "canonical_narration_text_hash": canonical_hash,
+        "serialized_provider_input": provider_input,
+        "serialized_provider_input_hash": provider_input_hash,
+        "request_format_version": gemini.REQUEST_FORMAT_VERSION,
+        "output_format": "WAV, mono, 24000 Hz",
         "maximum_requests": max_requests, "retry_policy": "no retries",
         "fallback_policy": "no fallback", "sequential": True,
         "post_tts_atempo_applied": False, "music_processing": False,
@@ -111,11 +123,12 @@ async def run_benchmark(
 
     try:
         for entry in entries:  # Deliberately sequential: never gather these calls.
+            manifest["request_count"] += 1
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
             metadata = await synthesize_fn(
                 BENCHMARK_TEXT, Path(entry["raw_output_path"]), model=model,
                 voice=entry["voice"], style=style,
             )
-            manifest["request_count"] += 1
             await normalize_fn(Path(entry["raw_output_path"]), Path(entry["normalized_output_path"]))
             raw_duration = await duration_fn(Path(entry["raw_output_path"]))
             normalized_duration = await duration_fn(Path(entry["normalized_output_path"]))
@@ -131,6 +144,9 @@ async def run_benchmark(
     except Exception as exc:
         entry["status"] = "failed"
         entry["failure_reason"] = str(exc)[:500]
+        for remaining in entries:
+            if remaining["status"] == "pending":
+                remaining["status"] = "not_submitted_stopped_after_failure"
         manifest["status"] = "failed_stopped_on_first_provider_failure"
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         raise
@@ -142,6 +158,8 @@ async def run_benchmark(
 
 
 def main() -> int:
+    from dotenv import load_dotenv
+    load_dotenv()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--voices", required=True, help="One voice, comma-separated voices, or all")
     parser.add_argument("--model", required=True)

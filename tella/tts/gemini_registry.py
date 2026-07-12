@@ -47,10 +47,12 @@ STYLE_PRESETS = {
     ),
     "natural_vocal_smile": (
         "Use natural conversational Vietnamese with a subtle vocal smile. Keep the "
-        "delivery calm, clear, warm, and direct, with stable volume, medium natural "
-        "speaking speed, clear pronunciation, and short natural pauses. Narration must "
-        "remain intelligible and grounded. Do not whisper, use breathy or dramatic "
-        "delivery, prolong final syllables, exaggerate pitch changes, giggle, add "
+        "delivery calm, clear, warm, and direct, with normal conversational loudness, "
+        "a natural medium speaking pace, clear pronunciation, and short natural pauses. "
+        "Narration must remain intelligible and grounded.\n\n"
+        "Do not whisper or use a breathy or dramatic delivery.\n"
+        "Do not lower the volume or slow the speaking pace to create intimacy.\n"
+        "Do not prolong final syllables, exaggerate pitch changes, giggle, add "
         "non-verbal sounds, or use a radio, advertisement, or virtual-assistant tone."
     ),
 }

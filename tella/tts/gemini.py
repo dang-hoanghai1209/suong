@@ -9,6 +9,28 @@ from typing import Any, Callable
 
 from tella.tts.gemini_registry import REGISTRY_VERSION, resolve_style, resolve_voice
 
+REQUEST_FORMAT_VERSION = "gemini_tts_user_prompt_v1"
+
+
+def sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def serialize_provider_input(text: str, instruction: str) -> str:
+    """Wrap an unchanged canonical transcript in one deterministic user prompt."""
+    return (
+        "Generate Vietnamese speech audio using the configured voice.\n\n"
+        "Delivery style:\n"
+        f"{instruction}\n\n"
+        "Speaking requirements:\n"
+        "- Speak only the transcript between the transcript delimiters.\n"
+        "- Do not speak headings, delivery instructions, or transcript delimiters.\n"
+        "- Do not translate, paraphrase, add, or omit any words.\n\n"
+        "--- BEGIN NARRATION TRANSCRIPT ---\n"
+        f"{text}\n"
+        "--- END NARRATION TRANSCRIPT ---"
+    )
+
 
 def credential_environment_name() -> str:
     import os
@@ -26,11 +48,11 @@ def _official_client() -> Any:
 
 def _request(client: Any, *, model: str, voice: str, text: str, instruction: str) -> Any:
     from google.genai import types
+    provider_input = serialize_provider_input(text, instruction)
     return client.models.generate_content(
         model=model,
-        contents=text,
+        contents=provider_input,
         config=types.GenerateContentConfig(
-            system_instruction=instruction,
             response_modalities=["AUDIO"],
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
@@ -82,6 +104,7 @@ async def synthesize(
 ) -> dict[str, Any]:
     registered = resolve_voice(voice, model)
     instruction = resolve_style(style)
+    provider_input = serialize_provider_input(text, instruction)
     client = client_factory()
     response = await asyncio.to_thread(
         _request, client, model=model, voice=registered.canonical_name,
@@ -97,7 +120,11 @@ async def synthesize(
         "language": registered.benchmark_language,
         "requested_style": style,
         "resolved_style_instruction": instruction,
-        "source_narration_text_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "canonical_narration_text": text,
+        "canonical_narration_text_hash": sha256_text(text),
+        "source_narration_text_hash": sha256_text(text),
+        "serialized_provider_input_hash": sha256_text(provider_input),
+        "request_format_version": REQUEST_FORMAT_VERSION,
         "raw_output_path": str(out_path),
         "request_attempt_count": 1,
         "fallback_used": False,
@@ -105,4 +132,7 @@ async def synthesize(
     }
 
 
-__all__ = ["credential_environment_name", "synthesize"]
+__all__ = [
+    "REQUEST_FORMAT_VERSION", "credential_environment_name", "serialize_provider_input",
+    "sha256_text", "synthesize",
+]

@@ -19,6 +19,16 @@ from tella.tts.providers import EdgeTTSProvider, GeminiTTSProvider, get_tts_prov
 from tella.voice_profiles import list_voice_profiles
 
 MODEL = "gemini-3.1-flash-tts-preview"
+EXPECTED_NATURAL_VOCAL_SMILE = (
+    "Use natural conversational Vietnamese with a subtle vocal smile. Keep the "
+    "delivery calm, clear, warm, and direct, with normal conversational loudness, "
+    "a natural medium speaking pace, clear pronunciation, and short natural pauses. "
+    "Narration must remain intelligible and grounded.\n\n"
+    "Do not whisper or use a breathy or dramatic delivery.\n"
+    "Do not lower the volume or slow the speaking pace to create intimacy.\n"
+    "Do not prolong final syllables, exaggerate pitch changes, giggle, add "
+    "non-verbal sounds, or use a radio, advertisement, or virtual-assistant tone."
+)
 
 
 def test_registry_accepts_exactly_six_canonical_voices():
@@ -53,6 +63,20 @@ def test_three_styles_resolve_deterministically():
     assert tuple(STYLE_PRESETS) == ("natural", "vocal_smile", "natural_vocal_smile")
     for name, instruction in STYLE_PRESETS.items():
         assert resolve_style(name) == instruction == resolve_style(name)
+    assert resolve_style("natural_vocal_smile") == EXPECTED_NATURAL_VOCAL_SMILE
+
+
+def test_combined_input_is_deterministic_and_preserves_canonical_transcript():
+    instruction = resolve_style("natural_vocal_smile")
+    first = gemini.serialize_provider_input(BENCHMARK_TEXT, instruction)
+    second = gemini.serialize_provider_input(BENCHMARK_TEXT, instruction)
+    assert first == second
+    assert first.count(instruction) == 1
+    assert first.count(BENCHMARK_TEXT) == 1
+    assert "Speak only the transcript" in first
+    assert "Do not translate, paraphrase, add, or omit any words" in first
+    assert "BEGIN NARRATION TRANSCRIPT" not in BENCHMARK_TEXT
+    assert gemini.sha256_text(BENCHMARK_TEXT) == gemini.sha256_text(BENCHMARK_TEXT)
 
 
 def test_edge_and_recipe_defaults_are_unchanged():
@@ -150,6 +174,8 @@ def test_partial_failure_stops_without_fallback(tmp_path):
     assert calls == ["Achernar", "Autonoe"]
     manifest = json.loads((tmp_path / "benchmark_manifest.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "failed_stopped_on_first_provider_failure"
+    assert manifest["request_count"] == 2
+    assert manifest["entries"][2]["status"] == "not_submitted_stopped_after_failure"
 
 
 def test_credentials_are_identified_but_never_serialized(tmp_path, monkeypatch):
@@ -183,11 +209,21 @@ def test_official_sdk_shape_is_extracted_with_fake_client(tmp_path):
         style="natural_vocal_smile", client_factory=lambda: client,
     ))
     assert calls[0]["model"] == MODEL
-    assert calls[0]["contents"] == BENCHMARK_TEXT
+    combined = gemini.serialize_provider_input(
+        BENCHMARK_TEXT, resolve_style("natural_vocal_smile")
+    )
+    assert calls[0]["contents"] == combined
+    config = calls[0]["config"]
+    assert config.system_instruction is None
+    assert config.speech_config.voice_config.prebuilt_voice_config.voice_name == "Achernar"
     assert output.read_bytes().startswith(b"RIFF")
     assert metadata["provider"] == "gemini"
     assert metadata["voice"] == "Achernar"
     assert metadata["requested_style"] == "natural_vocal_smile"
+    assert metadata["canonical_narration_text"] == BENCHMARK_TEXT
+    assert metadata["canonical_narration_text_hash"] == gemini.sha256_text(BENCHMARK_TEXT)
+    assert metadata["serialized_provider_input_hash"] == gemini.sha256_text(combined)
+    assert metadata["request_format_version"] == gemini.REQUEST_FORMAT_VERSION
     assert metadata["request_attempt_count"] == 1
     assert metadata["fallback_used"] is False
 
