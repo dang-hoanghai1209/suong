@@ -28,7 +28,12 @@ class MusicLibraryError(RuntimeError):
 @dataclass(frozen=True)
 class MusicTrack:
     track_id: str
+    title: str
+    creator: str
+    source: str
     file_path: Path
+    source_sha256: str
+    source_duration: float
     moods: tuple[str, ...]
     supported_recipes: tuple[str, ...]
     energy: str
@@ -41,6 +46,7 @@ class MusicTrack:
     license_reference: Path
     attribution_required: bool
     attribution_text: str
+    content_id_registered: bool
     enabled: bool
 
 
@@ -107,7 +113,12 @@ def load_library(root: Path | None = None) -> dict[str, MusicTrack]:
             raise MusicLibraryError(f"track {track_id} needs moods and supported_recipes")
         track = MusicTrack(
             track_id=track_id,
+            title=str(raw.get("title") or "").strip(),
+            creator=str(raw.get("creator") or "").strip(),
+            source=str(raw.get("source") or "").strip(),
             file_path=file_path,
+            source_sha256=str(raw.get("source_sha256") or "").strip().upper(),
+            source_duration=max(0.0, float(raw.get("source_duration") or 0.0)),
             moods=moods,
             supported_recipes=recipes,
             energy=energy,
@@ -120,8 +131,29 @@ def load_library(root: Path | None = None) -> dict[str, MusicTrack]:
             license_reference=license_reference,
             attribution_required=bool(raw.get("attribution_required", False)),
             attribution_text=str(raw.get("attribution_text") or "").strip(),
+            content_id_registered=bool(raw.get("content_id_registered", False)),
             enabled=bool(raw.get("enabled", True)),
         )
+        if track.source_sha256:
+            actual_hash = hashlib.sha256(file_path.read_bytes()).hexdigest().upper()
+            if actual_hash != track.source_sha256:
+                raise MusicLibraryError(
+                    f"track {track_id} SHA256 does not match catalog metadata"
+                )
+            if not all((track.title, track.creator, track.source, track.source_duration)):
+                raise MusicLibraryError(
+                    f"track {track_id} has incomplete production provenance metadata"
+                )
+            license_text = license_reference.read_text(encoding="utf-8")
+            required_license_facts = (
+                f"Track ID: {track.track_id}",
+                f"License type: {track.license_type}",
+                track.source_sha256,
+            )
+            if any(fact not in license_text for fact in required_license_facts):
+                raise MusicLibraryError(
+                    f"track {track_id} license reference does not match catalog metadata"
+                )
         if track.loop_safe and track.loop_end <= track.loop_start:
             raise MusicLibraryError(
                 f"track {track_id} loop_end must be greater than loop_start"

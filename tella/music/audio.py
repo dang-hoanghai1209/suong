@@ -97,7 +97,16 @@ async def prepare_music(
     if track is None:
         raise RuntimeError(f"selected music track is unavailable: {plan.selected_music_track_id}")
     profile = get_music_profile(plan.selected_music_profile_id)
+    mix_overrides = (plan.music_metadata or {}).get("mix_overrides", {})
+    base_gain_db = float(mix_overrides.get("base_gain_db", profile.base_gain_db))
+    ducking_ratio = float(mix_overrides.get("ducking_ratio", profile.ducking_ratio))
+    ducking_attack_ms = int(mix_overrides.get("ducking_attack_ms", profile.ducking_attack_ms))
+    ducking_release_ms = int(mix_overrides.get("ducking_release_ms", profile.ducking_release_ms))
     source_duration = await probe_duration(track.file_path)
+    if track.source_duration and abs(source_duration - track.source_duration) > 0.01:
+        raise RuntimeError(
+            f"music track {track.track_id} duration does not match catalog metadata"
+        )
     offset = min(track.default_start_offset, max(0.0, source_duration - 0.1))
     remaining = max(0.0, source_duration - offset)
     needs_loop = remaining + 0.01 < duration
@@ -116,7 +125,7 @@ async def prepare_music(
         f"atrim=duration={duration:.6f},asetpts=N/SR/TB,"
         f"afade=t=in:st=0:d={fade_in:.3f},"
         f"afade=t=out:st={fade_out_start:.3f}:d={fade_out:.3f},"
-        f"volume={profile.base_gain_db:.2f}dB"
+        f"volume={base_gain_db:.2f}dB"
     )
     operations: list[str] = []
 
@@ -175,6 +184,8 @@ async def prepare_music(
         "source_duration": round(source_duration, 3),
         "output_duration": round(output_duration, 3),
         "start_offset": offset,
+        "trim_start": offset,
+        "trim_end": round(offset + duration, 6),
         "trim_or_loop_operations": operations,
         "loop_used": needs_loop,
         "loop_start": track.loop_start,
@@ -182,14 +193,20 @@ async def prepare_music(
         "loop_discontinuity_status": "passed" if not needs_loop or track.loop_safe else "failed",
         "fade_in_seconds": fade_in,
         "fade_out_seconds": fade_out,
-        "base_gain_db": profile.base_gain_db,
+        "base_gain_db": base_gain_db,
         "prepared_music_path": str(prepared),
         "ducking": {
             "threshold": profile.ducking_threshold,
-            "ratio": profile.ducking_ratio,
-            "attack_ms": profile.ducking_attack_ms,
-            "release_ms": profile.ducking_release_ms,
+            "ratio": ducking_ratio,
+            "attack_ms": ducking_attack_ms,
+            "release_ms": ducking_release_ms,
         },
+        "normalization": {
+            "integrated_loudness_target_lufs": DEFAULT_MASTERING.final_loudness_lufs,
+            "true_peak_target_dbtp": DEFAULT_MASTERING.final_true_peak_dbtp,
+            "loudness_range_target_lu": 7,
+        },
+        "limiter": {"limit_linear": 0.891251, "limit_dbtp": -1.0},
     }
     return prepared, metadata
 
@@ -205,13 +222,20 @@ async def mix_music_and_narration(
 ) -> Path:
     if not narration.is_file():
         raise RuntimeError(f"missing narration audio: {narration}")
+    exact_duration = plan.total_duration or plan.narration_duration
+    if exact_duration <= 0:
+        raise RuntimeError("music mix requires a positive planned duration")
     profile = get_music_profile(plan.selected_music_profile_id)
+    mix_overrides = (plan.music_metadata or {}).get("mix_overrides", {})
+    ducking_ratio = float(mix_overrides.get("ducking_ratio", profile.ducking_ratio))
+    ducking_attack_ms = int(mix_overrides.get("ducking_attack_ms", profile.ducking_attack_ms))
+    ducking_release_ms = int(mix_overrides.get("ducking_release_ms", profile.ducking_release_ms))
     filter_graph = (
         "[1:a]aresample=44100,asplit=2[narr_mix][narr_sc];"
         "[2:a]aresample=44100[music];"
         f"[music][narr_sc]sidechaincompress=threshold={profile.ducking_threshold}:"
-        f"ratio={profile.ducking_ratio}:attack={profile.ducking_attack_ms}:"
-        f"release={profile.ducking_release_ms}[ducked];"
+        f"ratio={ducking_ratio}:attack={ducking_attack_ms}:"
+        f"release={ducking_release_ms}[ducked];"
         "[narr_mix][ducked]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
         f"loudnorm=I={config.final_loudness_lufs}:TP={config.final_true_peak_dbtp}:LRA=7,"
         "alimiter=limit=0.891251[outa]"
@@ -225,7 +249,7 @@ async def mix_music_and_narration(
             "-filter_complex", filter_graph,
             "-map", "0:v", "-map", "[outa]",
             "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
-            "-ar", "44100", "-ac", "2", "-shortest",
+            "-ar", "44100", "-ac", "2", "-t", f"{exact_duration:.6f}", "-shortest",
             "-movflags", "+faststart", str(output),
         ],
         "music ducking and mastering",
@@ -295,6 +319,7 @@ async def run_audio_qc(
     status = "failed" if failures else ("warning" if warnings else "passed")
     qc = {
         "status": status,
+        "final_qc_result": status,
         "narration_loudness_lufs": narration_stats["integrated_lufs"],
         "music_loudness_lufs": (
             music_stats["integrated_lufs"] if music_stats else None
@@ -302,12 +327,17 @@ async def run_audio_qc(
         "final_integrated_loudness_lufs": final_stats["integrated_lufs"],
         "true_peak_dbtp": final_stats["true_peak_dbtp"],
         "clipping_detected": clipping,
+        "clipping_status": "failed" if clipping else "passed",
         "silent_audio_detected": silent,
+        "silence_status": "failed" if silent else "passed",
         "narration_music_balance_status": balance_status,
         "loop_discontinuity_status": loop_discontinuity_status,
         "expected_duration": round(expected_duration, 3),
         "output_duration": round(final_duration, 3),
         "duration_mismatch": round(duration_delta, 3),
+        "duration_match_status": (
+            "passed" if duration_delta <= config.duration_tolerance_seconds else "failed"
+        ),
         "final_loudness_target_lufs": config.final_loudness_lufs,
         "final_true_peak_limit_dbtp": config.final_true_peak_dbtp,
         "failure_reasons": failures,

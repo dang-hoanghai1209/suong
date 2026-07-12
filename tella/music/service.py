@@ -81,6 +81,7 @@ def configure_music(
 
     root = default_library_root()
     tracks = load_library(root)
+    catalog = json.loads((root / "library.json").read_text(encoding="utf-8"))
     history_path = Path(plan.music_history_path)
     recent = read_recent_track_ids(history_path)
     seed = (
@@ -126,6 +127,8 @@ def configure_music(
         "selection_seed": selection.seed,
         "recent_track_ids": list(selection.recent_track_ids),
         "music_profile_id": profile.profile_id,
+        "catalog_version": catalog.get("version"),
+        "profile_version": 1,
         "profile_energy": profile.energy,
         "profile_moods": list(profile.preferred_moods),
         "license": {
@@ -133,8 +136,15 @@ def configure_music(
             "license_reference": str(track.license_reference),
             "attribution_required": track.attribution_required,
             "attribution_text": track.attribution_text,
+            "content_id_registered": track.content_id_registered,
         },
         "track": {
+            "track_id": track.track_id,
+            "title": track.title,
+            "creator": track.creator,
+            "source": track.source,
+            "source_sha256": track.source_sha256,
+            "source_duration": track.source_duration,
             "moods": list(track.moods),
             "energy": track.energy,
             "intro_safe_seconds": track.intro_safe_seconds,

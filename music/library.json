@@ -1,4 +1,28 @@
 {
   "version": 1,
-  "tracks": []
+  "tracks": [
+    {
+      "track_id": "practical_calm_01",
+      "title": "Lofi Study - Calm Peaceful Chill Hop",
+      "creator": "FASSounds",
+      "source": "Pixabay Music",
+      "file_path": "tracks/practical_calm_01.mp3",
+      "source_sha256": "7E1C5715443C6FB2E4AF66AF3316ADCE4638F2F8C53680D70665AEED41D74CF5",
+      "source_duration": 147.226094,
+      "moods": ["calm", "encouraging", "practical", "focus"],
+      "supported_recipes": ["practical_life_steps_v1"],
+      "energy": "medium_low",
+      "intro_safe_seconds": 8.0,
+      "loop_safe": false,
+      "loop_start": 0.0,
+      "loop_end": 0.0,
+      "default_start_offset": 8.0,
+      "license_type": "Pixabay Content License",
+      "license_reference": "licenses/practical_calm_01.txt",
+      "attribution_required": false,
+      "attribution_text": "Music by FASSounds from Pixabay",
+      "content_id_registered": true,
+      "enabled": true
+    }
+  ]
 }

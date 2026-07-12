@@ -1073,6 +1073,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         dest="tts_voice",
         help="TTS voice override, e.g. vi-VN-HoaiMyNeural (also TELLA_TTS_VOICE)",
     )
+    p.add_argument("--tts-model", default=None, help="Explicit TTS model (also TELLA_TTS_MODEL)")
     p.add_argument(
         "--voice-profile",
         default=None,
@@ -1093,6 +1094,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--tts-style",
         default=None,
+        choices=["natural", "vocal_smile", "natural_vocal_smile"],
         help="Narration flow style metadata for TTS processing (default emotional_storytelling).",
     )
     p.add_argument(
@@ -1372,6 +1374,8 @@ def main(argv: list[str] | None = None) -> int:
         args.tts_continuous = selected_recipe.narration_mode == "continuous"
 
     os.environ["TELLA_TTS_PROVIDER"] = voice_resolution.resolved_tts_provider
+    if args.tts_model:
+        os.environ["TELLA_TTS_MODEL"] = args.tts_model
     if voice_resolution.resolved_voice:
         os.environ["TELLA_TTS_VOICE"] = voice_resolution.resolved_voice
     logger.info(
