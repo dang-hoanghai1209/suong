@@ -525,7 +525,12 @@ class Scene(BaseModel):
     reused_from_job: str = Field("", max_length=300)
     reused_from_scene: int = 0
     reused_asset_path: str = Field("", max_length=300)
+    reused_asset_hash: str = Field("", max_length=80)
     reused_asset_prompt_hash_mismatch: bool = False
+    reuse_source_job_id: str = Field("", max_length=160)
+    reuse_eligible: bool = False
+    reuse_match_reason: str = Field("", max_length=500)
+    reuse_mismatch_reason: str = Field("", max_length=500)
     reuse_mode: str = Field("", max_length=40)
     reuse_assets_mode: str = Field("", max_length=40)
     reuse_prompt_match: bool = False
@@ -787,6 +792,23 @@ class TellaScenePlan(BaseModel):
     silence_postprocess_applied: bool = False
     original_narration_duration: float = 0.0
     processed_narration_duration: float = 0.0
+    planner_estimated_duration_seconds: float = 0.0
+    original_narration_duration_seconds: float = 0.0
+    fitted_narration_duration_seconds: float = 0.0
+    duration_fit_required: bool = False
+    duration_fit_applied: bool = False
+    duration_fit_reason: str = Field("", max_length=300)
+    duration_fit_target_seconds: float = 0.0
+    duration_fit_tempo: float = 1.0
+    duration_fit_scale: float = 1.0
+    duration_fit_safe_range_min: float = 0.85
+    duration_fit_safe_range_max: float = 1.15
+    duration_fit_within_safe_range: bool = True
+    source_narration_path: str = Field("", max_length=500)
+    fitted_narration_path: str = Field("", max_length=500)
+    actual_final_video_duration_seconds: float = 0.0
+    actual_duration_validation_status: str = Field("not_evaluated", max_length=40)
+    actual_duration_failure_reason: str = Field("", max_length=500)
     longest_silence_before: float = 0.0
     longest_silence_after: float = 0.0
     tts_provider: str = Field("", max_length=80)

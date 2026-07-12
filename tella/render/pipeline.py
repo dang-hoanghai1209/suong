@@ -288,6 +288,19 @@ def _practical_motion_profile(scene) -> str:
     return "practical_zoom_in"
 
 
+def _render_progress_message(
+    original_scene_index: int,
+    execution_order: int,
+    current_total: int,
+    duration: float,
+) -> str:
+    return (
+        f"rendered scene original_scene={original_scene_index:02d} "
+        f"execution={execution_order}/{current_total} "
+        f"({duration:.2f}s, video-only)"
+    )
+
+
 async def _render_scene(
     *,
     asset_path: Path,
@@ -635,7 +648,7 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
             "plan.narration_audio_filename empty — did synthesize_all run?"
         )
 
-    for scene in body_scenes:
+    for execution_order, scene in enumerate(body_scenes, start=1):
         if not scene.image_filenames:
             raise RuntimeError(
                 f"scene {scene.scene_index}: no image_filenames "
@@ -788,8 +801,12 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
         )
         scene_mp4s.append(out_mp4)
         logger.info(
-            "rendered scene %d/%d (%.2fs, video-only)",
-            scene.scene_index, len(body_scenes), scene.duration,
+            _render_progress_message(
+                scene.scene_index,
+                execution_order,
+                len(body_scenes),
+                scene.duration,
+            )
         )
 
     # Stage 2: concat the video-only scenes → silent_video.mp4

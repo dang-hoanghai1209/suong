@@ -615,6 +615,28 @@ def _reuse_assets_mode() -> str:
     return "strict"
 
 
+def _required_reuse_scene_indices() -> set[int]:
+    raw = (os.environ.get("TELLA_REQUIRE_REUSED_SCENE_INDICES") or "").strip()
+    if not raw:
+        return set()
+    indices: set[int] = set()
+    for piece in raw.split(","):
+        try:
+            index = int(piece.strip())
+        except ValueError as exc:
+            raise RuntimeError(
+                "TELLA_REQUIRE_REUSED_SCENE_INDICES must be comma-separated "
+                f"positive integers; received {raw!r}"
+            ) from exc
+        if index <= 0:
+            raise RuntimeError(
+                "TELLA_REQUIRE_REUSED_SCENE_INDICES must contain only "
+                f"positive integers; received {raw!r}"
+            )
+        indices.add(index)
+    return indices
+
+
 def _skip_image_generation() -> bool:
     return _env_bool("TELLA_SKIP_IMAGE_GENERATION")
 
@@ -702,6 +724,12 @@ def _load_reuse_index(job_dir: Path) -> dict[tuple[int, str], dict]:
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning("reuse-assets could not read %s: %s", plan_path, exc)
         return {}
+    source_recipe_id = str(data.get("recipe_id") or "")
+    source_recipe_version = int(data.get("recipe_version") or 0)
+    source_aspect_ratio = str(data.get("aspect_ratio") or "")
+    source_visual_theme = str(
+        data.get("visual_theme_id") or data.get("theme") or ""
+    )
     index: dict[tuple[int, str], dict] = {}
     for item in data.get("scenes", []):
         if not isinstance(item, dict) or item.get("kind") != "scene":
@@ -721,18 +749,99 @@ def _load_reuse_index(job_dir: Path) -> dict[tuple[int, str], dict]:
         src = source_dir / asset_path
         if not src.is_file():
             continue
+        source_asset_hash = str(item.get("asset_hash") or "")
         index[(int(item.get("scene_index") or 0), prompt_hash)] = {
             "source_path": src,
             "source_asset_path": asset_path,
             "source_prompt_hash": prompt_hash,
+            "source_provider_prompt_hash": str(
+                item.get("provider_prompt_initial_hash") or ""
+            ),
+            "source_asset_hash": source_asset_hash,
+            "actual_asset_hash": _sha256_short(src),
             "source_job_id": source_dir.name,
             "source_scene_index": int(item.get("scene_index") or 0),
+            "source_recipe_id": source_recipe_id,
+            "source_recipe_version": source_recipe_version,
+            "source_aspect_ratio": source_aspect_ratio,
+            "source_visual_theme": source_visual_theme,
+            "source_scene_role": str(item.get("scene_role") or ""),
+            "source_step_number": int(item.get("step_number") or 0),
+            "source_visual_action": str(item.get("visual_action") or ""),
             "image_source": item.get("image_source") or "ai_image_provider",
             "image_provider": item.get("image_provider") or "cloudflare",
             "asset_status": item.get("asset_status") or "done",
         }
     logger.info("reuse-assets index loaded: %d reusable scene assets", len(index))
     return index
+
+
+def _practical_reuse_mismatch_reasons(
+    plan: TellaScenePlan,
+    scene,
+    cached: dict,
+    *,
+    asset_prompt_hash: str,
+    provider_prompt_hash: str,
+) -> list[str]:
+    """Return fail-closed reasons for Practical Life Steps asset reuse."""
+    checks = (
+        (
+            str(cached.get("source_recipe_id") or "")
+            == str(plan.recipe_id or ""),
+            "recipe ID does not match",
+        ),
+        (
+            int(cached.get("source_recipe_version") or 0)
+            == int(plan.recipe_version or 0),
+            "recipe version does not match",
+        ),
+        (
+            str(cached.get("source_scene_role") or "")
+            == str(scene.scene_role or ""),
+            "scene role does not match",
+        ),
+        (
+            int(cached.get("source_step_number") or 0)
+            == int(scene.step_number or 0),
+            "step number does not match",
+        ),
+        (
+            str(cached.get("source_provider_prompt_hash") or "")
+            == provider_prompt_hash,
+            "provider prompt hash does not match",
+        ),
+        (
+            str(cached.get("source_prompt_hash") or "")
+            == asset_prompt_hash,
+            "asset prompt hash does not match",
+        ),
+        (
+            str(cached.get("source_aspect_ratio") or "")
+            == str(plan.aspect_ratio or ""),
+            "aspect ratio does not match",
+        ),
+        (
+            str(cached.get("source_visual_theme") or "")
+            == str(plan.visual_theme_id or plan.theme or ""),
+            "visual theme does not match",
+        ),
+        (
+            str(cached.get("source_visual_action") or "").strip()
+            == str(scene.visual_action or "").strip(),
+            "visual action does not match",
+        ),
+        (
+            bool(cached.get("source_asset_hash")),
+            "source asset hash is missing",
+        ),
+        (
+            str(cached.get("source_asset_hash") or "")
+            == str(cached.get("actual_asset_hash") or ""),
+            "source asset content hash does not match its plan metadata",
+        ),
+    )
+    return [reason for matched, reason in checks if not matched]
 
 
 def _load_loose_reuse_index(job_dir: Path) -> dict[int, dict]:
@@ -1830,11 +1939,21 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
     reuse_index = _load_reuse_index(job_dir)
     loose_reuse_index = _load_loose_reuse_index(job_dir) if plan.reuse_mode == "loose_debug" else {}
     request_budget = _CloudflareRequestBudget(plan, body_scenes, max_ai_images)
+    required_reuse_indices = _required_reuse_scene_indices()
+    reuse_source_job_id = (
+        _source_job_id(job_dir) if _reuse_assets_enabled() else ""
+    )
 
     for scene in body_scenes:
         scene.local_fallback_allowed = local_fallback_allowed
         scene.reuse_mode = plan.reuse_mode
         scene.skip_image_generation = skip_image_generation
+        scene.reuse_source_job_id = reuse_source_job_id
+        scene.reuse_eligible = False
+        scene.reuse_match_reason = ""
+        scene.reuse_mismatch_reason = (
+            "" if reuse_source_job_id else "reuse source not configured"
+        )
 
     if plan.reuse_mode == "loose_debug":
         logger.warning(
@@ -2145,6 +2264,14 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         scene.reused_from_job = scene.reused_from_job_id
         scene.reused_from_scene = int(cached.get("source_scene_index") or 0)
         scene.reused_asset_path = str(cached.get("source_asset_path") or src)
+        scene.reuse_source_job_id = str(cached.get("source_job_id") or "")
+        scene.reuse_eligible = True
+        scene.reuse_match_reason = (
+            "strict practical metadata matched"
+            if plan.theme == "practical_life_steps"
+            else "strict asset prompt hash matched"
+        )
+        scene.reuse_mismatch_reason = ""
         scene.reused_asset_prompt_hash_mismatch = bool(prompt_hash_mismatch)
         scene.reuse_mode = reuse_mode
         scene.reuse_assets_mode = (
@@ -2176,23 +2303,70 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
             used_local_fallback=False,
         )
         _record_asset(scene, out)
+        scene.reused_asset_hash = scene.asset_hash
         logger.info(
             "scene %02d reused asset from job=%s source_scene=%02d mode=%s "
-            "prompt_match=%s provider_requests=0 source=%s",
+            "prompt_match=%s provider_requests=0 source=%s asset_hash=%s",
             scene.scene_index,
             scene.reused_from_job_id,
             scene.reused_from_scene,
             scene.reuse_assets_mode,
             str(scene.reuse_prompt_match).lower(),
             src,
+            scene.reused_asset_hash,
         )
         return True
 
     def _try_reuse_asset(scene, prompt_hash: str, out: Path) -> bool:
+        def _reject_required_reuse() -> None:
+            if scene.scene_index in required_reuse_indices:
+                raise RuntimeError(
+                    "required strict reuse failed before provider submission "
+                    f"for scene {scene.scene_index:02d}: "
+                    f"{scene.reuse_mismatch_reason or 'unknown mismatch'}"
+                )
+
         if not reuse_index:
+            if reuse_source_job_id:
+                scene.reuse_mismatch_reason = (
+                    "source plan has no eligible reusable assets"
+                )
+            _reject_required_reuse()
             return False
-        cached = reuse_index.get((scene.scene_index, prompt_hash))
-        if not cached:
+        candidates = [
+            cached
+            for (source_scene_index, _), cached in reuse_index.items()
+            if source_scene_index == scene.scene_index
+        ]
+        if not candidates:
+            scene.reuse_mismatch_reason = (
+                "source plan has no candidate for this scene index"
+            )
+            _reject_required_reuse()
+            return False
+        cached = reuse_index.get((scene.scene_index, prompt_hash)) or candidates[0]
+        if plan.theme == "practical_life_steps":
+            mismatch_reasons = _practical_reuse_mismatch_reasons(
+                plan,
+                scene,
+                cached,
+                asset_prompt_hash=prompt_hash,
+                provider_prompt_hash=scene.provider_prompt_initial_hash,
+            )
+            if mismatch_reasons:
+                scene.reuse_mismatch_reason = "; ".join(mismatch_reasons)
+                logger.info(
+                    "scene %02d strict practical reuse rejected source_job=%s "
+                    "reasons=%s",
+                    scene.scene_index,
+                    reuse_source_job_id,
+                    scene.reuse_mismatch_reason,
+                )
+                _reject_required_reuse()
+                return False
+        elif str(cached.get("source_prompt_hash") or "") != prompt_hash:
+            scene.reuse_mismatch_reason = "asset prompt hash does not match"
+            _reject_required_reuse()
             return False
         return _apply_reused_asset(
             scene,
@@ -2726,7 +2900,12 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         len(body_scenes), plan.media_source, width, height,
     )
     try:
-        await asyncio.gather(*[_one(i, s) for i, s in enumerate(body_scenes)])
+        if _env_bool("TELLA_AI_IMAGE_SEQUENTIAL"):
+            logger.info("AI image execution mode=sequential fail-fast")
+            for i, scene in enumerate(body_scenes):
+                await _one(i, scene)
+        else:
+            await asyncio.gather(*[_one(i, s) for i, s in enumerate(body_scenes)])
     finally:
         request_budget.sync_finish_metadata()
     logger.info("fetch_assets: all %d scenes done", len(body_scenes))

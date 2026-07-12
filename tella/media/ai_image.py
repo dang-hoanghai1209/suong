@@ -62,6 +62,17 @@ _before_request_hook: contextvars.ContextVar[
 ] = contextvars.ContextVar("cloudflare_before_request_hook", default=None)
 
 
+def _positive_env_int(name: str, default: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning("invalid %s=%r; using %d", name, raw, default)
+        return default
+
+
 class CloudflareAIError(RuntimeError):
     """Structured Cloudflare Workers AI failure."""
 
@@ -197,6 +208,12 @@ async def generate_image(
         raise RuntimeError(
             "CF AI: no credentials (set CF_ACCOUNTS or CF_ACCOUNT_ID + CF_AI_TOKEN)"
         )
+    account_limit = _positive_env_int("TELLA_CF_MAX_ACCOUNTS", len(creds))
+    creds = creds[:account_limit]
+    attempt_limit = _positive_env_int(
+        "TELLA_CF_MAX_RETRIES_PER_ACCOUNT",
+        MAX_RETRIES_PER_ACCOUNT,
+    )
 
     payload: dict = {
         "prompt": (prompt or "").strip(),
@@ -212,7 +229,7 @@ async def generate_image(
         url = f"https://api.cloudflare.com/client/v4/accounts/{aid}/ai/run/{model}"
         headers = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
         quota_exhausted = False
-        for attempt in range(1, MAX_RETRIES_PER_ACCOUNT + 1):
+        for attempt in range(1, attempt_limit + 1):
             try:
                 await _throttle()
                 async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
@@ -275,7 +292,7 @@ async def generate_image(
             except (httpx.HTTPError, httpx.ReadTimeout) as exc:
                 last_err = exc
                 logger.warning("cf-ai network err attempt %d: %s", attempt, exc)
-            if attempt < MAX_RETRIES_PER_ACCOUNT:
+            if attempt < attempt_limit:
                 await asyncio.sleep(RETRY_BACKOFF_SECONDS * attempt)
         if quota_exhausted:
             logger.info("cf-ai account %d quota exhausted, rotating", cred_idx)

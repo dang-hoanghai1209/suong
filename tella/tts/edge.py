@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 from pathlib import Path
 
@@ -25,6 +26,21 @@ RETRY_BACKOFF_SECONDS = (3.0, 7.0, 15.0, 30.0)
 # Small jitter between requests prevents bursting Microsoft's rate limiter
 # when the composer hits us with many concurrent scenes.
 INTER_REQUEST_THROTTLE = 0.25
+
+
+def _max_retries() -> int:
+    raw = (os.environ.get("TELLA_EDGE_MAX_RETRIES") or "").strip()
+    if not raw:
+        return MAX_RETRIES
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning(
+            "invalid TELLA_EDGE_MAX_RETRIES=%r; using %d",
+            raw,
+            MAX_RETRIES,
+        )
+        return MAX_RETRIES
 
 
 def _normalize_signed(value: str, unit: str) -> str:
@@ -79,7 +95,8 @@ async def synthesize(
     pitch = _normalize_signed(pitch, "Hz")
 
     last_err: Exception | None = None
-    for attempt in range(1, MAX_RETRIES + 1):
+    attempt_limit = _max_retries()
+    for attempt in range(1, attempt_limit + 1):
         try:
             communicate = edge_tts.Communicate(
                 text=text,
@@ -105,16 +122,16 @@ async def synthesize(
             last_err = exc
             logger.warning(
                 "edge-tts attempt %d/%d failed (%s): %s",
-                attempt, MAX_RETRIES, type(exc).__name__, exc,
+                attempt, attempt_limit, type(exc).__name__, exc,
             )
-            if attempt < MAX_RETRIES:
+            if attempt < attempt_limit:
                 backoff = RETRY_BACKOFF_SECONDS[
                     min(attempt - 1, len(RETRY_BACKOFF_SECONDS) - 1)
                 ]
                 await asyncio.sleep(backoff)
 
     raise RuntimeError(
-        f"edge-tts failed after {MAX_RETRIES} attempts: {last_err}"
+        f"edge-tts failed after {attempt_limit} attempts: {last_err}"
     )
 
 

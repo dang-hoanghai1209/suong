@@ -69,6 +69,10 @@ from tella.recipes import (
 )
 from tella.render.pipeline import render
 from tella.tts.synth_all import synthesize_all
+from tella.tts.duration_fit import (
+    reconcile_practical_narration_duration,
+    validate_actual_video_duration,
+)
 from tella.voice_profiles import (
     VoiceProfileNotFoundError,
     VoiceResolution,
@@ -919,6 +923,7 @@ async def run_pipeline(
                 google_tts_voice=google_tts_voice,
             ),
         )
+        await reconcile_practical_narration_duration(plan, job_dir)
     except Exception:
         _ensure_run_metadata(plan, job_dir)
         plan_json.write_text(
@@ -943,6 +948,16 @@ async def run_pipeline(
     # ── 6. Render MP4 ──────────────────────────────────────────────────
     logger.info("step 6/6 — render (ffmpeg)")
     final = await render(plan, job_dir)
+    try:
+        await validate_actual_video_duration(plan, final)
+    except Exception:
+        _ensure_run_metadata(plan, job_dir)
+        plan_json.write_text(
+            json.dumps(plan.model_dump(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        _restore_fetch_env()
+        raise
     _ensure_run_metadata(plan, job_dir)
     plan_json.write_text(
         json.dumps(plan.model_dump(), ensure_ascii=False, indent=2),
