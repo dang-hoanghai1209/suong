@@ -10,6 +10,7 @@ from pathlib import Path
 
 from tella.composer.compose import compose_timing
 from tella.media.fetch import fetch_assets
+from tella.music.service import configure_music
 from tella.planner.models import TellaScenePlan
 from tella.render.pipeline import render
 from tella.tts.duration_fit import (
@@ -51,7 +52,14 @@ async def _preview_frame(video: Path, destination: Path) -> None:
         raise RuntimeError(f"preview frame extraction failed: {message[-500:]}")
 
 
-async def rerender_local(source_job: Path, target_job: Path) -> Path:
+async def rerender_local(
+    source_job: Path,
+    target_job: Path,
+    *,
+    music_track_id: str = "",
+    music_profile_id: str = "",
+    no_music: bool = False,
+) -> Path:
     source_job = source_job.resolve()
     target_job = target_job.resolve()
     if target_job.exists():
@@ -121,6 +129,13 @@ async def rerender_local(source_job: Path, target_job: Path) -> Path:
     plan.actual_duration_failure_reason = ""
 
     await reconcile_practical_narration_duration(plan, target_job)
+    configure_music(
+        plan,
+        target_job,
+        requested_track_id=music_track_id,
+        requested_profile_id=music_profile_id,
+        no_music=no_music,
+    )
     compose_timing(plan)
     _write_metadata(plan, target_job)
     video = await render(plan, target_job)
@@ -134,8 +149,21 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-job", type=Path, required=True)
     parser.add_argument("--target-job", type=Path, required=True)
+    parser.add_argument("--music-track", default="")
+    parser.add_argument("--music-profile", default="")
+    parser.add_argument("--no-music", action="store_true")
     args = parser.parse_args()
-    video = asyncio.run(rerender_local(args.source_job, args.target_job))
+    if args.no_music and (args.music_track or args.music_profile):
+        parser.error("--no-music cannot be combined with music overrides")
+    video = asyncio.run(
+        rerender_local(
+            args.source_job,
+            args.target_job,
+            music_track_id=args.music_track,
+            music_profile_id=args.music_profile,
+            no_music=args.no_music,
+        )
+    )
     print(video)
     return 0
 

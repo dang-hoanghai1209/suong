@@ -848,6 +848,19 @@ class TellaScenePlan(BaseModel):
     ai_images_generated: int = 0
     ai_images_reused: int = 0
 
+    # Optional local licensed music and final audio QC.
+    music_enabled: bool = False
+    music_no_music: bool = False
+    requested_music_track_id: str = Field("", max_length=80)
+    requested_music_profile_id: str = Field("", max_length=80)
+    selected_music_track_id: str = Field("", max_length=80)
+    selected_music_profile_id: str = Field("", max_length=80)
+    selected_music_path: str = Field("", max_length=500)
+    music_selection_reason: str = Field("", max_length=500)
+    music_history_path: str = Field("", max_length=500)
+    music_metadata: dict[str, Any] = Field(default_factory=dict)
+    audio_qc: dict[str, Any] = Field(default_factory=dict)
+
     total_duration: float = 0.0
 
     @model_validator(mode="after")

@@ -826,9 +826,78 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
     # Stage 3: mux the single continuous narration onto the silent video.
     final_path = job_dir / "video.mp4"
     narration_path = job_dir / plan.narration_audio_filename
-    await _mux_audio(silent_video, narration_path, final_path)
-    logger.info("render done → %s (%.2fs, continuous narration mixed)",
-                final_path, plan.total_duration)
+    if not narration_path.is_file():
+        raise RuntimeError(f"missing narration audio: {narration_path}")
+    from tella.music.audio import (
+        mix_music_and_narration,
+        prepare_music,
+        run_audio_qc,
+    )
+    from tella.music.service import record_music_usage, write_music_metadata
+
+    prepared_music = None
+    loop_status = "not_applicable"
+    if plan.music_enabled:
+        prepared_music, processing = await prepare_music(
+            plan,
+            job_dir,
+            duration=plan.total_duration,
+        )
+        plan.music_metadata = {
+            **(plan.music_metadata or {}),
+            "processing": processing,
+        }
+        write_music_metadata(plan, job_dir)
+        loop_status = str(processing["loop_discontinuity_status"])
+        await mix_music_and_narration(
+            plan,
+            silent_video,
+            narration_path,
+            prepared_music,
+            final_path,
+        )
+    else:
+        await _mux_audio(silent_video, narration_path, final_path)
+        plan.music_metadata = {
+            **(plan.music_metadata or {}),
+            "status": (plan.music_metadata or {}).get("status", "disabled"),
+            "selected_track": "",
+            "output_duration": plan.total_duration,
+        }
+        write_music_metadata(plan, job_dir)
+
+    await run_audio_qc(
+        plan,
+        job_dir,
+        narration=narration_path,
+        prepared_music=prepared_music,
+        final_video=final_path,
+        expected_duration=plan.total_duration,
+        loop_discontinuity_status=loop_status,
+    )
+    if plan.music_enabled:
+        plan.music_metadata = {
+            **plan.music_metadata,
+            "output_duration": plan.audio_qc.get("output_duration"),
+            "loudness_statistics": {
+                "music_loudness_lufs": plan.audio_qc.get("music_loudness_lufs"),
+                "final_integrated_loudness_lufs": plan.audio_qc.get(
+                    "final_integrated_loudness_lufs"
+                ),
+                "true_peak_dbtp": plan.audio_qc.get("true_peak_dbtp"),
+            },
+            "qc_result": plan.audio_qc.get("status"),
+        }
+        write_music_metadata(plan, job_dir)
+        record_music_usage(plan, job_dir)
+    logger.info(
+        "render done: %s (%.2fs, narration=%s music=%s audio_qc=%s)",
+        final_path,
+        plan.total_duration,
+        plan.tts_provider or "continuous",
+        plan.selected_music_track_id or "none",
+        plan.audio_qc.get("status", "unknown"),
+    )
     return final_path
 
 

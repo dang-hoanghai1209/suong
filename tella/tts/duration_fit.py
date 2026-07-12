@@ -108,6 +108,15 @@ def _sync_duration_metadata(plan: TellaScenePlan) -> None:
     }
 
 
+def _is_complete_practical_execution(plan: TellaScenePlan) -> bool:
+    indices = [
+        scene.scene_index
+        for scene in plan.scenes
+        if scene.kind == "scene"
+    ]
+    return indices == list(range(1, 8))
+
+
 def _scale_scene_audio_durations(
     plan: TellaScenePlan,
     original_duration: float,
@@ -171,6 +180,17 @@ async def reconcile_practical_narration_duration(
     plan.duration_fit_reason = "actual narration already satisfies recipe duration"
     plan.source_narration_path = str(current)
     plan.fitted_narration_path = ""
+
+    if not _is_complete_practical_execution(plan):
+        plan.duration_fit_required = False
+        plan.duration_fit_applied = False
+        plan.duration_fit_reason = (
+            "partial practical execution; full recipe duration fit skipped"
+        )
+        plan.actual_duration_validation_status = "not_applicable_partial"
+        plan.actual_duration_failure_reason = ""
+        _sync_duration_metadata(plan)
+        return
 
     if not plan.duration_fit_required:
         plan.narration_duration = round(actual_duration, 2)
@@ -260,6 +280,11 @@ async def validate_actual_video_duration(
         return
     duration = await probe_duration(Path(video_path))
     plan.actual_final_video_duration_seconds = round(duration, 3)
+    if not _is_complete_practical_execution(plan):
+        plan.actual_duration_validation_status = "not_applicable_partial"
+        plan.actual_duration_failure_reason = ""
+        _sync_duration_metadata(plan)
+        return
     if PRACTICAL_MIN_DURATION <= duration <= PRACTICAL_MAX_DURATION:
         plan.actual_duration_validation_status = "passed"
         plan.actual_duration_failure_reason = ""

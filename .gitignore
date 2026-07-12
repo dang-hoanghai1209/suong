@@ -25,6 +25,9 @@ out/
 *.mp3
 .tts_cache/
 channels/*/jobs/
+music/tracks/*
+!music/tracks/.gitkeep
+music/usage_history.jsonl
 
 # ─── Per-channel state (auto-ideate history, like .env, never published) ───
 channels/*/history.jsonl

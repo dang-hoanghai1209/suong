@@ -73,6 +73,7 @@ from tella.tts.duration_fit import (
     reconcile_practical_narration_duration,
     validate_actual_video_duration,
 )
+from tella.music.service import configure_music
 from tella.voice_profiles import (
     VoiceProfileNotFoundError,
     VoiceResolution,
@@ -638,6 +639,9 @@ async def run_pipeline(
     tts_continuous: bool | None = None,
     tts_max_pause_ms: int | None = None,
     tts_style: str | None = None,
+    music_track_id: str = "",
+    music_profile_id: str = "",
+    no_music: bool = False,
     recipe: RecipeDefinition | None = None,
     voice_resolution: VoiceResolution | None = None,
 ) -> Path:
@@ -924,6 +928,13 @@ async def run_pipeline(
             ),
         )
         await reconcile_practical_narration_duration(plan, job_dir)
+        configure_music(
+            plan,
+            job_dir,
+            requested_track_id=music_track_id,
+            requested_profile_id=music_profile_id,
+            no_music=no_music,
+        )
     except Exception:
         _ensure_run_metadata(plan, job_dir)
         plan_json.write_text(
@@ -1083,6 +1094,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--tts-style",
         default=None,
         help="Narration flow style metadata for TTS processing (default emotional_storytelling).",
+    )
+    p.add_argument(
+        "--music-track",
+        default="",
+        dest="music_track_id",
+        help="Select a licensed local music track by stable track ID.",
+    )
+    p.add_argument(
+        "--music-profile",
+        default="",
+        dest="music_profile_id",
+        help="Override the recipe's local music profile.",
+    )
+    p.add_argument(
+        "--no-music",
+        action="store_true",
+        help="Disable background music while retaining narration audio QC.",
     )
     p.add_argument(
         "--allow-local-image-fallback",
@@ -1389,6 +1417,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--topic is required unless --script-file or --exact-script is provided")
     if args.preview_scenes and args.preview_scene_indices:
         parser.error("use either --preview-scenes or --preview-scene-indices, not both")
+    if args.no_music and (args.music_track_id or args.music_profile_id):
+        parser.error("--no-music cannot be combined with --music-track or --music-profile")
 
     try:
         final = asyncio.run(
@@ -1425,6 +1455,9 @@ def main(argv: list[str] | None = None) -> int:
                 tts_continuous=args.tts_continuous,
                 tts_max_pause_ms=args.tts_max_pause_ms,
                 tts_style=args.tts_style,
+                music_track_id=args.music_track_id,
+                music_profile_id=args.music_profile_id,
+                no_music=args.no_music,
                 recipe=selected_recipe,
                 voice_resolution=voice_resolution,
             )

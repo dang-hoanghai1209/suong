@@ -466,6 +466,46 @@ def test_practical_duration_fit_leaves_in_range_audio_unchanged(
     assert not (tmp_path / "assets" / "narration_duration_fitted.mp3").exists()
 
 
+def test_partial_practical_preview_skips_full_recipe_duration_fit(
+    monkeypatch,
+    tmp_path,
+):
+    plan = _step_preview_plan()
+    source = tmp_path / "assets" / "narration.mp3"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"short-preview")
+    plan.narration_audio_path = str(source)
+    plan.narration_audio_filename = "assets/narration.mp3"
+
+    async def fake_probe(path):
+        return 9.0
+
+    async def fail_atempo(*args, **kwargs):
+        raise AssertionError("partial preview reached atempo")
+
+    monkeypatch.setattr(duration_fit, "probe_duration", fake_probe)
+    monkeypatch.setattr(duration_fit, "_run_atempo", fail_atempo)
+
+    asyncio.run(duration_fit.reconcile_practical_narration_duration(plan, tmp_path))
+    asyncio.run(
+        duration_fit.validate_actual_video_duration(
+            plan,
+            tmp_path / "video.mp4",
+        )
+    )
+
+    assert plan.narration_duration == pytest.approx(9.0)
+    assert plan.actual_final_video_duration_seconds == pytest.approx(9.0)
+    assert plan.duration_fit_required is False
+    assert plan.duration_fit_applied is False
+    assert plan.duration_fit_reason == (
+        "partial practical execution; full recipe duration fit skipped"
+    )
+    assert plan.actual_duration_validation_status == "not_applicable_partial"
+    assert source.read_bytes() == b"short-preview"
+    assert not (tmp_path / "assets" / "narration_duration_fitted.mp3").exists()
+
+
 def test_practical_duration_fit_uses_pitch_preserving_ffmpeg_atempo(
     monkeypatch,
     tmp_path,
@@ -1091,30 +1131,31 @@ def test_preview_indices_select_after_full_recipe_validation(monkeypatch, tmp_pa
             scene.image_filenames = [f"assets/scene_{scene.scene_index:02d}.jpg"]
 
     async def fake_tts(plan, job_dir, **kwargs):
-        plan.narration_audio_filename = "narration.mp3"
+        audio = Path(job_dir) / "assets" / "narration.mp3"
+        audio.parent.mkdir(parents=True, exist_ok=True)
+        audio.write_bytes(b"preview-audio")
+        plan.narration_audio_filename = "assets/narration.mp3"
+        plan.narration_audio_path = str(audio)
         plan.narration_duration = 9.0
         for scene in plan.scenes:
             scene.audio_duration = 3.0
 
     async def fake_render(plan, job_dir):
-        return Path(job_dir) / "video.mp4"
+        video = Path(job_dir) / "video.mp4"
+        video.write_bytes(b"preview-video")
+        return video
 
-    async def fake_local_duration_boundary(*args, **kwargs):
-        return None
+    async def fake_probe(path):
+        return 9.0
+
+    async def fail_atempo(*args, **kwargs):
+        raise AssertionError("three-scene preview reached atempo")
 
     monkeypatch.setattr(cli, "fetch_assets", fake_fetch)
     monkeypatch.setattr(cli, "synthesize_all", fake_tts)
     monkeypatch.setattr(cli, "render", fake_render)
-    monkeypatch.setattr(
-        cli,
-        "reconcile_practical_narration_duration",
-        fake_local_duration_boundary,
-    )
-    monkeypatch.setattr(
-        cli,
-        "validate_actual_video_duration",
-        fake_local_duration_boundary,
-    )
+    monkeypatch.setattr(duration_fit, "probe_duration", fake_probe)
+    monkeypatch.setattr(duration_fit, "_run_atempo", fail_atempo)
 
     result = asyncio.run(
         cli.run_pipeline(
@@ -1140,6 +1181,9 @@ def test_preview_indices_select_after_full_recipe_validation(monkeypatch, tmp_pa
     assert selected == [3, 4, 5]
     assert data["recipe_validation_status"] == "passed"
     assert [scene["scene_index"] for scene in data["scenes"]] == [3, 4, 5]
+    assert data["narration_duration"] == pytest.approx(9.0)
+    assert data["duration_fit_applied"] is False
+    assert data["actual_duration_validation_status"] == "not_applicable_partial"
 
 
 def test_normal_cli_render_route_is_active_with_external_pipeline_mocked(
