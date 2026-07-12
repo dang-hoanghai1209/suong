@@ -1,0 +1,29 @@
+{
+  "name": "life_insight_symbolic",
+  "display_name": "Life Insight Symbolic",
+  "description": "Direct symbolic life-insight reels with muted blue-gray charcoal space, warm amber emphasis, readable hand-drawn actions, and controlled negative space.",
+  "image_style_suffix": ", hand-drawn symbolic editorial illustration, muted blue-gray charcoal background, soft warm amber and burnt-orange emphasis, simple readable adult figures, clear symbolic action, clean charcoal lines, controlled negative space, medium visual contrast, calm mature mood, wordless unbranded artwork",
+  "color_palette": {
+    "primary": "#65717b",
+    "accent": "#d58a45",
+    "bg": "#343b42",
+    "text": "#f7f2e8"
+  },
+  "font_family": "sans-serif",
+  "voice_pace_default": "medium",
+  "voice_gender_default": "male",
+  "transition": "cut",
+  "image_grade": {
+    "enabled": true,
+    "brightness": 0.93,
+    "contrast": 1.06,
+    "saturation": 0.90,
+    "overlay_color": "#35414a",
+    "overlay_opacity": 0.14
+  },
+  "ken_burns": {
+    "start_scale": 1.0,
+    "end_scale": 1.025,
+    "easing": "linear"
+  }
+}

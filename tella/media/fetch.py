@@ -48,6 +48,7 @@ from tella.media.visual_qc import (
     summarize_qc_attempts,
 )
 from tella.planner.models import SceneQCResult, StyleBible, TellaScenePlan, VisualBible
+from tella.planner.life_insight_visuals import build_life_insight_provider_prompt
 from tella.planner.visual_bible import build_visual_bible, save_visual_bible
 from tella.planner.visual_prompts import build_scene_visual_plan, repair_prompt
 
@@ -2312,6 +2313,11 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                     prompt_for_cf = _minimalist_provider_prompt(scene)
                 elif plan.theme == "minimalist_symbolic_reel":
                     prompt_for_cf = _cloudflare_safe_symbolic_prompt(scene)
+                elif plan.theme == "life_insight_symbolic":
+                    prompt_for_cf = (
+                        scene.provider_prompt_variant
+                        or build_life_insight_provider_prompt(scene)
+                    )
                 prompt_hash = _asset_prompt_hash(
                     prompt_for_cf,
                     width=width,
@@ -2319,7 +2325,7 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                     seed=_seed_for_scene(plan, scene) if plan.theme == "minimalist_emotional" else _VIDEO_SEED,
                 )
                 scene.asset_prompt_hash = prompt_hash
-                if plan.theme == "minimalist_symbolic_reel":
+                if plan.theme in {"minimalist_symbolic_reel", "life_insight_symbolic"}:
                     scene.provider_prompt_initial = prompt_for_cf
                     scene.provider_prompt_initial_hash = _provider_prompt_hash(
                         prompt_for_cf
@@ -2347,6 +2353,12 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                         prompt_for_cf,
                         max_len=500,
                     )
+                    if plan.theme == "life_insight_symbolic":
+                        logger.info(
+                            "life insight provider prompt scene=%02d summary=%s",
+                            scene.scene_index,
+                            json.dumps(scene.sanitized_prompt_summary, ensure_ascii=False),
+                        )
                 if plan.theme == "minimalist_emotional":
                     scene.original_prompt_hash = scene.original_prompt_hash or prompt_hash
                     scene.original_prompt_summary = scene.original_prompt_summary or _prompt_summary(
@@ -2438,6 +2450,21 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                             used_local_fallback=False,
                         )
                         scene.prompt_used = scene.prompt_used or prompt_for_cf
+                    elif plan.theme == "life_insight_symbolic":
+                        _finalize_minimalist_scene_metadata(
+                            scene,
+                            visual_mode="life_insight_symbolic",
+                            provider="cloudflare",
+                        )
+                        _set_image_source_metadata(
+                            scene,
+                            image_source="ai_image_provider",
+                            image_provider="cloudflare",
+                            asset_path=out,
+                            job_dir=job_dir,
+                            used_local_fallback=False,
+                        )
+                        scene.prompt_used = prompt_for_cf
                     _record_asset(scene, out)
                 except _SymbolicQCFailure:
                     raise

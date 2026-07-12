@@ -482,6 +482,18 @@ def _log_life_insight_plan_metadata(plan) -> None:
         sum(not scene.evidence_condition_complete for scene in plan.scenes),
         sum(scene.unsupported_inference_detected for scene in plan.scenes),
     )
+    for scene in (item for item in plan.scenes if item.kind == "scene"):
+        logger.info(
+            "life_insight visual scene=%02d role=%s variant=%s composition=%s "
+            "object=%s palette=%s prompt=%s",
+            scene.scene_index,
+            scene.scene_role,
+            scene.visual_variant_id,
+            scene.composition_pattern,
+            scene.main_character_or_object,
+            scene.palette_id,
+            json.dumps(scene.provider_prompt_variant, ensure_ascii=False),
+        )
 
 
 def _slugify(text: str, max_len: int = 40) -> str:
@@ -563,12 +575,6 @@ async def run_pipeline(
     life_insight_planner = bool(
         recipe is not None and recipe.planner_id == "life_insight_symbolic"
     )
-    if life_insight_planner and not dry_run_plan:
-        raise RuntimeError(
-            "life_insight_symbolic_v1 is planner-only until its visual theme "
-            "is implemented; use --dry-run-plan"
-        )
-
     # ── 0. Setup output folder ─────────────────────────────────────────
     if not job_id:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -699,16 +705,6 @@ async def run_pipeline(
             voice_pace=pace,
             voice_gender=voice_gender,
         )
-    if preview_scenes is not None and preview_scenes > 0:
-        original_count = len(plan.scenes)
-        plan.scenes = plan.scenes[: max(1, int(preview_scenes))]
-        for idx, scene in enumerate(plan.scenes, start=1):
-            scene.scene_index = idx
-        logger.info(
-            "preview-scenes active: %d -> %d scenes",
-            original_count,
-            len(plan.scenes),
-        )
     # Channel branding — env contract shared with the Shortcraft worker:
     # CHANNEL_NAME / CHANNEL_HANDLE / DEMO_MODE. A blank name or DEMO_MODE=1
     # means no brand row (the standalone wizard sets these env vars too).
@@ -750,6 +746,27 @@ async def run_pipeline(
         logger.info("dry-run-plan active; wrote %s and skipped media/TTS/render", plan_json)
         _restore_fetch_env()
         return plan_json
+
+    if preview_scenes is not None and preview_scenes > 0:
+        original_count = len(plan.scenes)
+        plan.scenes = plan.scenes[: max(1, int(preview_scenes))]
+        for idx, scene in enumerate(plan.scenes, start=1):
+            scene.scene_index = idx
+        plan.global_narration_text = " ".join(
+            scene.voice_script.strip()
+            for scene in plan.scenes
+            if scene.kind == "scene" and scene.voice_script.strip()
+        )
+        plan_json.write_text(
+            json.dumps(plan.model_dump(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info(
+            "preview-scenes active after full plan validation: %d -> %d scenes roles=%s",
+            original_count,
+            len(plan.scenes),
+            ",".join(scene.scene_role for scene in plan.scenes),
+        )
 
     # ── 3 + 4. Media + TTS in parallel ─────────────────────────────────
     logger.info("step 3/6 — fetch %d assets (%s)", len(plan.scenes), plan.media_source)
@@ -853,6 +870,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "mindfulness",
             "minimalist_emotional",
             "minimalist_symbolic_reel",
+            "life_insight_symbolic",
         ],
     )
     p.add_argument(
@@ -1164,16 +1182,6 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         args.tts_continuous = selected_recipe.narration_mode == "continuous"
-        if (
-            selected_recipe.planner_id == "life_insight_symbolic"
-            and not args.dry_run_plan
-        ):
-            print(
-                "ERROR: life_insight_symbolic_v1 is planner-only until its "
-                "visual theme is implemented; use --dry-run-plan",
-                file=sys.stderr,
-            )
-            return 2
 
     os.environ["TELLA_TTS_PROVIDER"] = voice_resolution.resolved_tts_provider
     if voice_resolution.resolved_voice:
@@ -1194,7 +1202,6 @@ def main(argv: list[str] | None = None) -> int:
     requires_gemini = not (
         selected_recipe is not None
         and selected_recipe.planner_id == "life_insight_symbolic"
-        and args.dry_run_plan
     )
     if (
         requires_gemini

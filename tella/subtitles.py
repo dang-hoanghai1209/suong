@@ -52,13 +52,13 @@ def sanitize_subtitle_text(text: str) -> SubtitleSanitization:
 
 
 def subtitle_text_for_style(text: str, subtitle_style: str) -> SubtitleSanitization:
-    if subtitle_style == "reel_minimal":
+    if subtitle_style in {"reel_minimal", "insight_reel"}:
         return sanitize_subtitle_text(text)
     return SubtitleSanitization(text=text or "")
 
 
 def sanitize_highlight_words(words: list[str], subtitle_style: str) -> list[str]:
-    if subtitle_style != "reel_minimal":
+    if subtitle_style not in {"reel_minimal", "insight_reel"}:
         return list(words)
     return [
         result.text

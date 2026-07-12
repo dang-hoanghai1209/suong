@@ -6,6 +6,7 @@ from typing import Any
 
 from tella._voice_pace import VoicePace
 from tella.planner.models import Scene, TellaScenePlan
+from tella.planner.life_insight_visuals import apply_life_insight_visuals
 from tella.planner.voices import edge_voice_for
 
 _ROLES_8 = (
@@ -197,7 +198,7 @@ def plan_life_insight_from_script(
         scenes=scenes,
     )
     enforce_life_insight_plan(plan)
-    return plan
+    return apply_life_insight_visuals(plan)
 
 
 def plan_life_insight_from_topic(

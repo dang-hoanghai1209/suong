@@ -162,6 +162,8 @@ def _build_bg_filter(
     canvas_h: int,
     duration: float,
     ken_burns_max_scale: float,
+    motion_profile: str = "",
+    scene_index: int = 1,
 ) -> str:
     """Background-only filter chain (scale+crop+Ken Burns / fps).
 
@@ -178,9 +180,19 @@ def _build_bg_filter(
     if not is_video:
         total_frames = max(2, int(duration * OUTPUT_FPS))
         zoom_step = (ken_burns_max_scale - 1.0) / max(1, total_frames - 1)
+        if motion_profile == "controlled_slow_pan":
+            last_frame = max(1, total_frames - 1)
+            if scene_index % 2:
+                x_expr = f"(iw-iw/zoom)*(0.35+0.30*on/{last_frame})"
+            else:
+                x_expr = f"(iw-iw/zoom)*(0.65-0.30*on/{last_frame})"
+            y_expr = "ih/2-(ih/zoom/2)"
+        else:
+            x_expr = "iw/2-(iw/zoom/2)"
+            y_expr = "ih/2-(ih/zoom/2)"
         chains.append(
             f"zoompan=z='min(zoom+{zoom_step:.6f},{ken_burns_max_scale})':"
-            f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+            f"x='{x_expr}':y='{y_expr}':"
             f"d={total_frames}:s={canvas_w}x{canvas_h}:fps={OUTPUT_FPS}"
         )
     else:
@@ -257,6 +269,7 @@ async def _render_scene(
     font_file: Path,
     scene_index: int,
     ken_burns_max_scale: float,
+    motion_profile: str = "",
     subtitle_style: str = "",
     highlight_words: list[str] | None = None,
     channel_name: str | None = None,
@@ -293,6 +306,8 @@ async def _render_scene(
         canvas_h=canvas_h,
         duration=duration,
         ken_burns_max_scale=ken_burns_max_scale,
+        motion_profile=motion_profile,
+        scene_index=scene_index,
     )
 
     cmd: list[str] = ["ffmpeg", "-y", "-loglevel", "error"]
@@ -550,6 +565,17 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
             0.25,
         )
     use_crossfade = theme_spec.transition.strip().lower() == "crossfade"
+    transition_profile = plan.transition_profile_id or (
+        "subtle_crossfade" if use_crossfade else "cut"
+    )
+    motion_profile = plan.motion_profile_id or "slow_ken_burns"
+    logger.info(
+        "render routing theme=%s subtitle=%s transition=%s motion=%s",
+        plan.theme,
+        plan.subtitle_style,
+        transition_profile,
+        motion_profile,
+    )
 
     # Channel brand row — shown on every scene unless demo mode / blank.
     # Name only (no handle/slug) plus an optional circular avatar.
@@ -601,7 +627,11 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
             )
         out_mp4 = work_dir / f"scene_{scene.scene_index:02d}.mp4"
 
-        title_lines = [] if plan.theme in {"minimalist_emotional", "minimalist_symbolic_reel"} else wrap(
+        title_lines = [] if plan.theme in {
+            "minimalist_emotional",
+            "minimalist_symbolic_reel",
+            "life_insight_symbolic",
+        } else wrap(
             scene.title, title_cpl, max_lines=TITLE_MAX_LINES
         )
         caption_result = subtitle_text_for_style(
@@ -617,11 +647,19 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
         caption_lines = wrap(
             caption_result.text,
             caption_cpl,
-            max_lines=CAPTION_MAX_LINES,
+            max_lines=2 if plan.subtitle_style == "insight_reel" else CAPTION_MAX_LINES,
         )
         title_text = "\n".join(title_lines) if title_lines else None
         caption_text = "\n".join(caption_lines) if caption_lines else None
 
+        scene_motion_profile = motion_profile
+        scene_zoom_scale = ken_burns_max_scale
+        if (
+            plan.theme == "life_insight_symbolic"
+            and scene.scene_role == "conclusion"
+        ):
+            scene_motion_profile = "controlled_slow_hold"
+            scene_zoom_scale = min(1.012, ken_burns_max_scale)
         await _render_scene(
             asset_path=asset_path,
             out_path=out_mp4,
@@ -637,7 +675,8 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
             work_dir=work_dir,
             font_file=font_file,
             scene_index=scene.scene_index,
-            ken_burns_max_scale=ken_burns_max_scale,
+            ken_burns_max_scale=scene_zoom_scale,
+            motion_profile=scene_motion_profile,
             subtitle_style=plan.subtitle_style,
             highlight_words=sanitize_highlight_words(
                 scene.subtitle_highlight_words,

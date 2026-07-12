@@ -54,6 +54,12 @@ _REEL_MINIMAL_SHADOW_COLOR = (38, 29, 26, 210)
 _REEL_MINIMAL_STROKE_COLOR = (48, 36, 31, 230)
 _REEL_MINIMAL_SHADOW_OFFSET = 3
 _REEL_MINIMAL_STROKE_WIDTH = 1
+_INSIGHT_REEL_TEXT_COLOR = (248, 245, 236, 255)
+_INSIGHT_REEL_HIGHLIGHT_COLOR = (222, 145, 72, 255)
+_INSIGHT_REEL_SHADOW_COLOR = (20, 27, 32, 225)
+_INSIGHT_REEL_STROKE_COLOR = (28, 36, 42, 240)
+_INSIGHT_REEL_SHADOW_OFFSET = 3
+_INSIGHT_REEL_STROKE_WIDTH = 2
 _REEL_MINIMAL_CAPTION_CENTER_Y_RATIO = 0.79
 _REEL_MINIMAL_CAPTION_SAFE_TOP_RATIO = 0.72
 _REEL_MINIMAL_CAPTION_SAFE_BOTTOM_RATIO = 0.84
@@ -185,9 +191,10 @@ def _draw_reel_caption(
     safe_bottom: int,
     wrap_w: int,
     highlight_words: list[str],
+    subtitle_style: str = "reel_minimal",
 ) -> None:
-    caption = subtitle_text_for_style(caption, "reel_minimal").text
-    highlight_words = sanitize_highlight_words(highlight_words, "reel_minimal")
+    caption = subtitle_text_for_style(caption, subtitle_style).text
+    highlight_words = sanitize_highlight_words(highlight_words, subtitle_style)
     lines = _wrap_pixel(caption, font, wrap_w, 2)
     if not lines:
         return
@@ -223,27 +230,42 @@ def _draw_reel_caption(
                     or _ascii_key(stripped) in phrase_word_keys
                 )
             )
-            fill = (
-                _REEL_MINIMAL_HIGHLIGHT_COLOR
-                if is_highlight
-                else _REEL_MINIMAL_TEXT_COLOR
-            )
+            if subtitle_style == "insight_reel":
+                fill = (
+                    _INSIGHT_REEL_HIGHLIGHT_COLOR
+                    if is_highlight
+                    else _INSIGHT_REEL_TEXT_COLOR
+                )
+                shadow_color = _INSIGHT_REEL_SHADOW_COLOR
+                stroke_color = _INSIGHT_REEL_STROKE_COLOR
+                shadow_offset = _INSIGHT_REEL_SHADOW_OFFSET
+                stroke_width = _INSIGHT_REEL_STROKE_WIDTH
+            else:
+                fill = (
+                    _REEL_MINIMAL_HIGHLIGHT_COLOR
+                    if is_highlight
+                    else _REEL_MINIMAL_TEXT_COLOR
+                )
+                shadow_color = _REEL_MINIMAL_SHADOW_COLOR
+                stroke_color = _REEL_MINIMAL_STROKE_COLOR
+                shadow_offset = _REEL_MINIMAL_SHADOW_OFFSET
+                stroke_width = _REEL_MINIMAL_STROKE_WIDTH
             draw.text(
                 (
-                    cur_x + _REEL_MINIMAL_SHADOW_OFFSET,
-                    cur_y + _REEL_MINIMAL_SHADOW_OFFSET,
+                    cur_x + shadow_offset,
+                    cur_y + shadow_offset,
                 ),
                 token,
                 font=font,
-                fill=_REEL_MINIMAL_SHADOW_COLOR,
+                fill=shadow_color,
             )
             draw.text(
                 (cur_x, cur_y),
                 token,
                 font=font,
                 fill=fill,
-                stroke_width=_REEL_MINIMAL_STROKE_WIDTH,
-                stroke_fill=_REEL_MINIMAL_STROKE_COLOR,
+                stroke_width=stroke_width,
+                stroke_fill=stroke_color,
             )
             cur_x += token_w
         cur_y += line_h + LINE_SPACING
@@ -433,7 +455,7 @@ def render_overlay_png(
 
     if caption:
         cap_font = ImageFont.truetype(str(font_file), CAPTION_FONT_SIZE)
-        if subtitle_style == "reel_minimal":
+        if subtitle_style in {"reel_minimal", "insight_reel"}:
             _draw_reel_caption(
                 draw,
                 caption=caption,
@@ -444,6 +466,7 @@ def render_overlay_png(
                 safe_bottom=safe_bottom,
                 wrap_w=wrap_w,
                 highlight_words=highlight_words or [],
+                subtitle_style=subtitle_style,
             )
             cap_lines = []
         else:
