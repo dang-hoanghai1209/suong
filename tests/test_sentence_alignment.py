@@ -143,6 +143,6 @@ def test_network_guard_blocks_provider_style_socket_calls():
     try:
         script._install_network_guard()
         with pytest.raises(RuntimeError, match="network access is disabled"):
-            socket.socket().connect(("127.0.0.1", 9))
+            socket.socket().connect(("203.0.113.1", 9))
     finally:
         socket.socket.connect = original

@@ -17,10 +17,18 @@ EXPECTED_TEXT_SHA256 = "8ecc739570f4c7c993264fa928c0f5955a151422fbbfa68dc1bb0e79
 
 
 def _install_network_guard() -> None:
+    original_connect = socket.socket.connect
+
+    def guarded_connect(sock, address):
+        host = address[0] if isinstance(address, tuple) and address else ""
+        if host in {"127.0.0.1", "::1", "localhost"}:
+            return original_connect(sock, address)
+        raise RuntimeError("network access is disabled for local sentence alignment")
+
     def blocked(*args, **kwargs):
         raise RuntimeError("network access is disabled for local sentence alignment")
     socket.create_connection = blocked
-    socket.socket.connect = blocked
+    socket.socket.connect = guarded_connect
 
 
 def _parse_manual(raw: str) -> list[float] | None:
