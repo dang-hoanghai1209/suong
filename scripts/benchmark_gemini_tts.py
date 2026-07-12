@@ -30,7 +30,7 @@ async def _run(cmd: list[str], label: str) -> None:
 async def normalize_audio(raw: Path, normalized: Path) -> None:
     await _run([
         "ffmpeg", "-y", "-loglevel", "error", "-i", str(raw),
-        "-af", "loudnorm=I=-16:TP=-1:LRA=7,alimiter=limit=0.891251",
+        "-af", "loudnorm=I=-16:TP=-1:LRA=7,alimiter=limit=0.891251:level=false",
         "-ar", "24000", "-ac", "1", str(normalized),
     ], "benchmark loudness normalization")
 

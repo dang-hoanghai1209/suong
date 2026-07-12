@@ -105,6 +105,11 @@ def test_dry_run_has_zero_calls_and_distinct_paths(tmp_path, monkeypatch):
     assert all(e["raw_output_path"] != e["normalized_output_path"] for e in manifest["entries"])
 
 
+def test_normalizer_disables_limiter_auto_leveling():
+    source = Path("scripts/benchmark_gemini_tts.py").read_text(encoding="utf-8")
+    assert "alimiter=limit=0.891251:level=false" in source
+
+
 def test_maximum_request_count_and_voice_limit_are_enforced(tmp_path):
     with pytest.raises(ValueError, match="maximum"):
         asyncio.run(run_benchmark(
