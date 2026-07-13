@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from itertools import combinations
 from typing import Any
 
-from tella._voice_pace import VoicePace
+from tella._voice_pace import VoicePace, normalize_voice_rate
 from tella.planner.models import Scene, TellaScenePlan
 from tella.planner.practical_life_steps_visuals import apply_practical_life_steps_visuals
 from tella.planner.voices import edge_voice_for
@@ -1075,8 +1075,7 @@ def _estimate_scene_duration(word_count: int, index: int, voice_rate: str) -> fl
 
 
 def _words_per_second(voice_rate: str) -> float:
-    match = re.fullmatch(r"([+-]?\d{1,3})%", (voice_rate or "-2%").strip())
-    percent = int(match.group(1)) if match else -2
+    percent = int(normalize_voice_rate(voice_rate).rstrip("%"))
     return max(1.5, 3.0 * (100 + percent) / 98.0)
 
 

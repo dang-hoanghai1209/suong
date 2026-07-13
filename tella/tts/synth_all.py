@@ -27,6 +27,7 @@ import re
 import shutil
 from pathlib import Path
 
+from tella._voice_pace import normalize_voice_rate
 from tella.planner.models import TellaScenePlan
 from tella.tts import edge, gemini, google
 from tella.tts.providers import EdgeTTSProvider, TTSResult, get_tts_provider
@@ -271,11 +272,8 @@ def _env_float(name: str, default: float) -> tuple[float, bool]:
 
 
 def _edge_rate_to_speed(edge_rate: str) -> float:
-    raw = (edge_rate or "0%").strip().rstrip("%")
-    try:
-        return round(1.0 + int(raw) / 100.0, 3)
-    except ValueError:
-        return 1.0
+    raw = normalize_voice_rate(edge_rate).rstrip("%")
+    return round(1.0 + int(raw) / 100.0, 3)
 
 
 def _resolve_tts_settings(plan: TellaScenePlan, requested_provider: str) -> dict:

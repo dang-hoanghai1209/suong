@@ -73,6 +73,18 @@ def test_resume_requires_recipe_and_artifact_hashes(tmp_path):
     assert not evaluate_resume(job, CALLIRRHOE_PRODUCTION_CONFIG)["artifacts"]["plan"]["valid"]
 
 
+def test_new_production_manifest_serializes_canonical_neutral_rate(tmp_path):
+    run = ProductionRun(tmp_path, CALLIRRHOE_PRODUCTION_CONFIG)
+    manifest = json.loads(run.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["recipe"]["voice_rate"] == "+0%"
+    assert manifest["recipe_fingerprint"] == production_fingerprint(
+        CALLIRRHOE_PRODUCTION_CONFIG
+    )
+    assert evaluate_resume(tmp_path, CALLIRRHOE_PRODUCTION_CONFIG)[
+        "fingerprint_compatibility"
+    ] == "canonical"
+
+
 def test_incompatible_recipe_fingerprint_stops_resume(tmp_path):
     run = ProductionRun(tmp_path, CALLIRRHOE_PRODUCTION_CONFIG)
     manifest = json.loads(run.manifest_path.read_text())
@@ -81,6 +93,86 @@ def test_incompatible_recipe_fingerprint_stops_resume(tmp_path):
     decision = evaluate_resume(tmp_path, CALLIRRHOE_PRODUCTION_CONFIG)
     assert not decision["compatible"]
     assert "recipe fingerprint mismatch" in decision["reasons"]
+
+
+def _completed_legacy_neutral_job(job: Path) -> tuple[dict[str, Path], list[Path]]:
+    run = ProductionRun(job, CALLIRRHOE_PRODUCTION_CONFIG)
+    paths = {
+        "plan": job / "plan.json",
+        "raw_narration": job / "assets" / "narration_raw.wav",
+        "normalized_narration": job / "assets" / "narration.wav",
+        "alignment": job / "alignment_metadata.json",
+        "mixed_audio": job / "assets" / "final_mixed_audio.m4a",
+        "silent_video": job / "_render" / "silent_video.mp4",
+        "final_video": job / "video.mp4",
+    }
+    for index, path in enumerate(paths.values()):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"legacy-artifact-{index}".encode())
+    images = []
+    for index in range(7):
+        path = job / "assets" / f"scene_{index + 1}.jpg"
+        path.write_bytes(f"legacy-image-{index}".encode())
+        images.append(path)
+    run.record_artifact_hashes(
+        paths,
+        image_artifacts=images,
+        qc_results={"audio": "passed", "video": "passed"},
+    )
+    manifest = json.loads(run.manifest_path.read_text(encoding="utf-8"))
+    manifest["recipe"]["voice_rate"] = "0%"
+    manifest["recipe_fingerprint"] = (
+        "575946730cd92f8fa0ab0367d4114ea65ecd38cdb97c4d4597b2c0c670d403d4"
+    )
+    run.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    return paths, images
+
+
+def test_legacy_neutral_rate_manifest_reuses_all_valid_completed_artifacts(tmp_path):
+    _completed_legacy_neutral_job(tmp_path)
+    decision = evaluate_resume(tmp_path, CALLIRRHOE_PRODUCTION_CONFIG)
+    assert decision["compatible"] is True
+    assert decision["fingerprint_compatibility"] == "legacy_neutral_rate_v1"
+    assert decision["estimated_gemini_requests"] == 0
+    assert decision["estimated_image_requests"] == 0
+    assert decision["render_required"] is False
+    assert decision["artifacts"]["raw_narration"]["valid"] is True
+    assert decision["artifacts"]["final_video"]["valid"] is True
+
+
+@pytest.mark.parametrize(
+    ("field", "changed"),
+    [
+        ("model", "different-model"),
+        ("voice", "Leda"),
+        ("music_track", "different-track"),
+        ("track_offset_seconds", 9.0),
+        ("max_image_requests", 6),
+    ],
+)
+def test_legacy_neutral_fingerprint_does_not_mask_other_recipe_changes(
+    tmp_path, field, changed
+):
+    _completed_legacy_neutral_job(tmp_path)
+    changed_config = CALLIRRHOE_PRODUCTION_CONFIG.model_copy(update={field: changed})
+    decision = evaluate_resume(tmp_path, changed_config)
+    assert decision["compatible"] is False
+    assert decision["fingerprint_compatibility"] == "manifest recipe configuration mismatch"
+
+
+def test_legacy_compatibility_still_requires_narration_and_image_hashes(tmp_path):
+    paths, images = _completed_legacy_neutral_job(tmp_path)
+    paths["raw_narration"].write_bytes(b"changed narration")
+    decision = evaluate_resume(tmp_path, CALLIRRHOE_PRODUCTION_CONFIG)
+    assert decision["compatible"] is True
+    assert decision["estimated_gemini_requests"] == 1
+    assert decision["render_required"] is True
+    paths, images = _completed_legacy_neutral_job(tmp_path / "images")
+    images[3].write_bytes(b"changed image")
+    image_decision = evaluate_resume(tmp_path / "images", CALLIRRHOE_PRODUCTION_CONFIG)
+    assert image_decision["compatible"] is True
+    assert image_decision["estimated_image_requests"] == 7
+    assert image_decision["render_required"] is True
 
 
 def test_invalid_image_hash_prevents_reuse(tmp_path):

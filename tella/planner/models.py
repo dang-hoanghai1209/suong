@@ -19,7 +19,9 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from tella._voice_pace import normalize_voice_rate
 
 # ─── Vocabulary ────────────────────────────────────────────────────────
 
@@ -718,7 +720,7 @@ class TellaScenePlan(BaseModel):
     # the planner runs — planner just receives these as inputs and echoes
     # them back on the plan so the composer + TTS know what to do).
     voice_pace_name: VoicePaceName = "medium"
-    voice_edge_rate: str = Field("0%", pattern=r"^[+-]?\d{1,3}%$")
+    voice_edge_rate: str = Field("+0%", pattern=r"^[+-]\d{1,3}%$")
     voice_google_rate: float = Field(1.00, ge=0.25, le=4.0)
     voice_gender: VoiceGender = "male"
     voice_name: str = ""
@@ -865,6 +867,16 @@ class TellaScenePlan(BaseModel):
     audio_qc: dict[str, Any] = Field(default_factory=dict)
 
     total_duration: float = 0.0
+
+    @field_validator("voice_edge_rate")
+    @classmethod
+    def _normalize_voice_edge_rate(cls, value: str) -> str:
+        return normalize_voice_rate(value)
+
+    @field_validator("resolved_voice_rate")
+    @classmethod
+    def _normalize_resolved_voice_rate(cls, value: str) -> str:
+        return normalize_voice_rate(value) if value else value
 
     @model_validator(mode="after")
     def _validate_symbolic_reel_contract(self) -> "TellaScenePlan":

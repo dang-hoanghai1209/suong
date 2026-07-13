@@ -23,7 +23,7 @@ def test_production_recipe_resolves_explicit_contract():
         "gemini", "gemini-3.1-flash-tts-preview", "Callirrhoe",
         "natural_vocal_smile",
     )
-    assert config.voice_rate == "0%"
+    assert config.voice_rate == "+0%"
     assert not config.post_tts_atempo and not config.duration_fitting
     assert not config.edge_fallback and not config.model_fallback
     assert config.alignment_enabled and not config.alignment_asr_enabled
@@ -59,6 +59,7 @@ def test_request_envelope_is_bounded_and_zero_call(tmp_path):
     )
     assert envelope["maximum_gemini_requests"] == 1
     assert envelope["maximum_image_requests"] == 7
+    assert envelope["effective_voice_rate"] == "+0%"
     assert envelope["external_calls_performed"] == 0
     assert envelope["render_operations_performed"] == 0
     assert envelope["retry_policy"] == "no retries"
@@ -82,6 +83,7 @@ def test_cli_production_dry_run_writes_metadata_only(tmp_path, monkeypatch):
     }
     data = json.loads((tmp_path / "dry" / "request_envelope.json").read_text())
     assert data["external_calls_performed"] == 0
+    assert data["effective_voice_rate"] == "+0%"
 
 
 def test_cli_rejects_ambiguous_production_overrides(tmp_path):

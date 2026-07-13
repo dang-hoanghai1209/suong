@@ -17,6 +17,8 @@ from pathlib import Path
 
 import edge_tts
 
+from tella._voice_pace import normalize_voice_rate
+
 logger = logging.getLogger("tella.tts.edge")
 
 # Microsoft's Edge TTS sometimes returns NoAudioReceived under load —
@@ -90,7 +92,7 @@ async def synthesize(
     # edge-tts ≥ 7.x requires explicit sign on rate / pitch / volume.
     # Tella's voice_pace strings are already signed ("+5%", "-5%") — but a
     # bare "0%" is not, so normalize defensively.
-    rate = _normalize_signed(rate, "%")
+    rate = normalize_voice_rate(rate)
     volume = _normalize_signed(volume, "%")
     pitch = _normalize_signed(pitch, "Hz")
 

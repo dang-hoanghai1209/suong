@@ -20,15 +20,15 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import re
 from pathlib import Path
 
 import httpx
 
+from tella._voice_pace import normalize_voice_rate
+
 logger = logging.getLogger("tella.tts.google")
 
 _API_URL = "https://texttospeech.googleapis.com/v1/text:synthesize"
-_RATE_RE = re.compile(r"^([+-]?)(\d{1,3})%?$")
 _REQUEST_TIMEOUT = 60.0
 
 # Process-wide kill switch — set to True after the first auth / quota failure
@@ -53,13 +53,7 @@ def rate_to_speaking_rate(edge_rate: str) -> float:
     ``"+25%"`` → ``1.25``. ``"-10%"`` → ``0.9``. Google's safe range is
     ``[0.25, 4.0]`` — values outside get clamped.
     """
-    m = _RATE_RE.match((edge_rate or "+0%").strip())
-    if not m:
-        return 1.0
-    sign, num = m.group(1), m.group(2)
-    pct = int(num)
-    if sign == "-":
-        pct = -pct
+    pct = int(normalize_voice_rate(edge_rate).rstrip("%"))
     rate = 1.0 + pct / 100.0
     return max(0.25, min(4.0, rate))
 

@@ -44,7 +44,12 @@ try:
 except ImportError:
     pass
 
-from tella._voice_pace import PRESETS, default_pace_for_theme, resolve_pace
+from tella._voice_pace import (
+    PRESETS,
+    default_pace_for_theme,
+    normalize_voice_rate,
+    resolve_pace,
+)
 from tella.composer.compose import compose_timing
 from tella.ingest.topic_translator import SUPPORTED_LANGS, translate_topic
 from tella.media.fetch import fetch_assets
@@ -89,6 +94,8 @@ from tella.production import (
     dry_run_envelope,
     evaluate_resume,
     get_production_config,
+    record_unhandled_production_failure,
+    validate_production_voice_configuration,
 )
 from tella.production_lock import JobLockConflict, ProductionJobLock
 from tella.atomic_write import atomic_write_json
@@ -199,11 +206,8 @@ def _parse_preview_scene_indices(raw: str) -> list[int]:
 
 
 def _edge_rate_to_speed(edge_rate: str) -> float:
-    raw = (edge_rate or "0%").strip().rstrip("%")
-    try:
-        return round(1.0 + int(raw) / 100.0, 3)
-    except ValueError:
-        return 1.0
+    raw = normalize_voice_rate(edge_rate).rstrip("%")
+    return round(1.0 + int(raw) / 100.0, 3)
 
 
 def _requested_tts_provider() -> str:
@@ -705,6 +709,9 @@ async def _run_pipeline_unlocked(
         )
         if production_run:
             production_run.advance(ProductionStage.recipe_resolved, {"recipe": job_dir / "recipe.json"})
+            validate_production_voice_configuration(
+                production_config, voice_resolution, recipe
+            )
     logger.info("job: %s (mode=%s)", job_dir, "script" if use_script else "topic")
     previous_env = {
         "TELLA_ALLOW_LOCAL_IMAGE_FALLBACK": os.environ.get("TELLA_ALLOW_LOCAL_IMAGE_FALLBACK"),
@@ -948,10 +955,12 @@ async def _run_pipeline_unlocked(
     # ── 3 + 4. Media + TTS in parallel ─────────────────────────────────
     logger.info("step 3/6 — fetch %d assets (%s)", len(plan.scenes), plan.media_source)
     logger.info("step 4/6 — synthesize TTS narration in parallel")
+    failed_stage = ProductionStage.images_ready.value
     try:
         if production_run:
             await fetch_assets(plan, job_dir)
             production_run.advance(ProductionStage.images_ready)
+            failed_stage = ProductionStage.narration_ready.value
             production_run.counts["gemini"] = 1
             await synthesize_all(
                 plan,
@@ -976,6 +985,7 @@ async def _run_pipeline_unlocked(
                     google_tts_voice=google_tts_voice,
                 ),
             )
+        failed_stage = ProductionStage.aligned.value
         if voice_resolution is not None and not voice_resolution.post_tts_atempo_enabled:
             plan.duration_fit_required = False
             plan.duration_fit_applied = False
@@ -989,6 +999,7 @@ async def _run_pipeline_unlocked(
             production_run.advance(ProductionStage.aligned, {
                 "alignment": job_dir / "alignment_metadata.json",
             })
+        failed_stage = ProductionStage.music_ready.value
         configure_music(
             plan,
             job_dir,
@@ -1022,7 +1033,7 @@ async def _run_pipeline_unlocked(
         )
         _restore_fetch_env()
         if production_run:
-            production_run.fail(production_run.stage.value, exc)
+            production_run.fail(failed_stage, exc)
         raise
 
     # ── 5. Compose timing ──────────────────────────────────────────────
@@ -1109,7 +1120,14 @@ async def run_pipeline(**kwargs) -> Path:
         operation="production-resume" if kwargs.get("resume") else "production-run",
         recover_stale=recover_stale_lock,
     ):
-        return await _run_pipeline_unlocked(**kwargs)
+        try:
+            return await _run_pipeline_unlocked(**kwargs)
+        except (KeyboardInterrupt, SystemExit) as exc:
+            record_unhandled_production_failure(job_dir, production_config, exc)
+            raise
+        except Exception as exc:
+            record_unhandled_production_failure(job_dir, production_config, exc)
+            raise
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -1499,6 +1517,7 @@ def main(argv: list[str] | None = None) -> int:
         out_root = Path(args.out_root or os.environ.get("TELLA_OUTPUT_DIR") or "./out")
         job_id = args.job_id or f"production_dry_{selected_recipe.recipe_id}"
         job_dir = out_root / job_id
+        run: ProductionRun | None = None
         try:
             with ProductionJobLock(
                 job_dir, recipe_id=production_config.recipe_id,
@@ -1517,9 +1536,17 @@ def main(argv: list[str] | None = None) -> int:
                 run.advance(ProductionStage.recipe_resolved, {
                     "recipe": recipe_path, "request_envelope": envelope_path,
                 })
+                validate_production_voice_configuration(
+                    production_config, voice_resolution, selected_recipe
+                )
         except JobLockConflict as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
+        except Exception as exc:
+            if run is not None:
+                run.fail(ProductionStage.planned.value, exc)
+            logger.exception("production dry-run validation failed: %s", exc)
+            return 1
         print(json.dumps(envelope, ensure_ascii=False, indent=2))
         print(f"\n[OK] Production dry-run: {job_dir}")
         return 0

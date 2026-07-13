@@ -3,14 +3,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 import shutil
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from tella.atomic_write import atomic_write_json
+from tella._voice_pace import normalize_voice_rate
 
 PRODUCTION_SCHEMA_VERSION = 1
 CALLIRRHOE_RECIPE_ID = "practical_life_steps_callirrhoe_v1"
@@ -42,7 +45,7 @@ class ProductionSummaryStatus(StrEnum):
 
 
 class ProductionConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, validate_default=True)
     schema_version: int = PRODUCTION_SCHEMA_VERSION
     recipe_id: str = CALLIRRHOE_RECIPE_ID
     recipe_version: int = 1
@@ -98,6 +101,11 @@ class ProductionConfig(BaseModel):
     audio_qc_required: bool = True
     video_qc_required: bool = True
     max_image_requests: int = 7
+
+    @field_validator("voice_rate")
+    @classmethod
+    def _normalize_voice_rate(cls, value: str) -> str:
+        return normalize_voice_rate(value)
 
 
 CALLIRRHOE_PRODUCTION_CONFIG = ProductionConfig()
@@ -179,8 +187,49 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _canonical_config_dump(config: ProductionConfig) -> dict[str, Any]:
+    payload = config.model_dump()
+    payload["voice_rate"] = normalize_voice_rate(payload["voice_rate"])
+    return payload
+
+
 def production_fingerprint(config: ProductionConfig) -> str:
-    return stable_hash(config.model_dump())
+    return stable_hash(_canonical_config_dump(config))
+
+
+def _legacy_neutral_rate_fingerprint(config: ProductionConfig) -> str:
+    payload = _canonical_config_dump(config)
+    if payload["voice_rate"] == "+0%":
+        payload["voice_rate"] = "0%"
+    return stable_hash(payload)
+
+
+def _fingerprint_compatibility(
+    manifest: dict[str, Any], config: ProductionConfig
+) -> tuple[bool, str]:
+    recorded = str(manifest.get("recipe_fingerprint") or "")
+    expected_recipe = _canonical_config_dump(config)
+    manifest_recipe = manifest.get("recipe")
+    if not isinstance(manifest_recipe, dict):
+        return False, "manifest recipe missing"
+    canonical_manifest_recipe = dict(manifest_recipe)
+    try:
+        canonical_manifest_recipe["voice_rate"] = normalize_voice_rate(
+            canonical_manifest_recipe.get("voice_rate")
+        )
+    except ValueError:
+        return False, "manifest recipe voice rate invalid"
+    if canonical_manifest_recipe != expected_recipe:
+        return False, "manifest recipe configuration mismatch"
+    if recorded == production_fingerprint(config):
+        return True, "canonical"
+    if (
+        expected_recipe["voice_rate"] == "+0%"
+        and recorded == _legacy_neutral_rate_fingerprint(config)
+        and manifest_recipe.get("voice_rate") == "0%"
+    ):
+        return True, "legacy_neutral_rate_v1"
+    return False, "recipe fingerprint mismatch"
 
 
 def tts_cache_key(*, provider: str, model: str, voice: str, style: str,
@@ -199,7 +248,7 @@ def tts_cache_key(*, provider: str, model: str, voice: str, style: str,
 def classify_error(exc: BaseException) -> tuple[str, str]:
     text = str(exc)
     upper = text.upper()
-    if isinstance(exc, (KeyboardInterrupt, InterruptedError)):
+    if isinstance(exc, (KeyboardInterrupt, InterruptedError, SystemExit)):
         return "interrupted", "interrupted"
     if "429" in text or "RESOURCE_EXHAUSTED" in upper:
         return "quota_failure", "quota_or_rate_limit"
@@ -220,12 +269,57 @@ def classify_error(exc: BaseException) -> tuple[str, str]:
     return "partial_failure", "unexpected_failure"
 
 
+_SECRET_RE = re.compile(
+    r"(?i)(api[_-]?key|authorization|bearer|credential|access[_-]?token)"
+    r"\s*[:=]?\s*\S+"
+)
+
+
 def _safe_message(exc: BaseException) -> str:
     text = str(exc)
-    for marker in ("API_KEY", "Authorization", "Bearer "):
-        if marker.lower() in text.lower():
-            return "provider failure; credential details redacted"
+    secret_values = (
+        value for name, value in os.environ.items()
+        if value and any(marker in name.upper() for marker in (
+            "KEY", "TOKEN", "AUTHORIZATION", "CREDENTIAL",
+        ))
+    )
+    if _SECRET_RE.search(text) or any(value in text for value in secret_values):
+        return "operation failed; credential-bearing details redacted"
     return text[:500]
+
+
+def validate_production_voice_configuration(
+    config: ProductionConfig,
+    resolution: Any | None = None,
+    recipe: Any | None = None,
+) -> str:
+    """Validate shared production planner/voice settings without provider work."""
+    effective_rate = normalize_voice_rate(config.voice_rate)
+    if resolution is not None and resolution.resolved_voice_rate:
+        resolved_rate = normalize_voice_rate(resolution.resolved_voice_rate)
+        if resolved_rate != effective_rate:
+            raise ValueError(
+                "resolved voice rate does not match the production recipe rate"
+            )
+    if recipe is not None:
+        expected = {
+            "recipe_id": config.recipe_id,
+            "recipe_version": config.recipe_version,
+            "planner_id": config.planner_id,
+            "voice_profile_id": config.voice_profile,
+            "minimum_scene_count": config.scene_count,
+            "maximum_scene_count": config.scene_count,
+        }
+        mismatches = [
+            field for field, value in expected.items()
+            if getattr(recipe, field, None) != value
+        ]
+        if mismatches:
+            raise ValueError(
+                "production recipe configuration mismatch: "
+                + ", ".join(mismatches)
+            )
+    return effective_rate
 
 
 class ProductionRun:
@@ -256,7 +350,7 @@ class ProductionRun:
     def write_manifest(self, extra: dict[str, Any] | None = None) -> None:
         payload = {
             "production_schema_version": PRODUCTION_SCHEMA_VERSION,
-            "recipe": self.config.model_dump(),
+            "recipe": _canonical_config_dump(self.config),
             "recipe_fingerprint": production_fingerprint(self.config),
             "created_or_updated": datetime.now(timezone.utc).isoformat(),
             "resume_requested": self.resume,
@@ -338,17 +432,71 @@ class ProductionRun:
     def fail(self, failed_stage: str, exc: BaseException) -> None:
         status, category = classify_error(exc)
         self.stage = ProductionStage.failed
-        self.write_summary(status, resumable=True,
-                           recommended=f"resume from {failed_stage} after resolving {category}",
+        resumable = status != ProductionSummaryStatus.validation_failure.value
+        self.write_summary(status, resumable=resumable,
+                           recommended=(
+                               f"resume from {failed_stage} after resolving {category}"
+                               if resumable else
+                               f"correct {category} before starting a new production job"
+                           ),
                            failed_stage=failed_stage, error_category=category,
                            safe_error_message=_safe_message(exc))
+
+
+def record_unhandled_production_failure(
+    job_dir: Path,
+    config: ProductionConfig,
+    exc: BaseException,
+) -> None:
+    """Complete an initialized production summary at the outer CLI boundary."""
+    summary_path = Path(job_dir) / "production_summary.json"
+    if not summary_path.is_file():
+        return
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if summary.get("status") != ProductionSummaryStatus.partial_failure.value:
+        return
+    if summary.get("failed_stage") and summary.get("error_category"):
+        return
+    next_stage = {
+        "": ProductionStage.recipe_resolved.value,
+        ProductionStage.initialized.value: ProductionStage.recipe_resolved.value,
+        ProductionStage.recipe_resolved.value: ProductionStage.planned.value,
+        ProductionStage.planned.value: ProductionStage.images_ready.value,
+        ProductionStage.images_ready.value: ProductionStage.narration_ready.value,
+        ProductionStage.narration_ready.value: ProductionStage.aligned.value,
+        ProductionStage.aligned.value: ProductionStage.music_ready.value,
+        ProductionStage.music_ready.value: ProductionStage.rendered.value,
+        ProductionStage.rendered.value: ProductionStage.qc_passed.value,
+        ProductionStage.qc_passed.value: ProductionStage.completed.value,
+    }
+    last_successful = str(summary.get("last_successful_stage") or "")
+    failed_stage = next_stage.get(last_successful, last_successful or "production")
+    status, category = classify_error(exc)
+    resumable = status != ProductionSummaryStatus.validation_failure.value
+    summary.update({
+        "status": status,
+        "current_stage": ProductionStage.failed.value,
+        "failed_stage": failed_stage,
+        "error_category": category,
+        "safe_error_message": _safe_message(exc),
+        "resumable": resumable,
+        "recommended_resume_action": (
+            f"resume from {failed_stage} after resolving {category}"
+            if resumable else
+            f"correct {category} before starting a new production job"
+        ),
+    })
+    atomic_write_json(summary_path, summary)
 
 
 def evaluate_resume(job_dir: Path, config: ProductionConfig) -> dict[str, Any]:
     job_dir = Path(job_dir)
     result = {"compatible": False, "artifacts": {}, "resume_stage": "initialized",
               "reasons": [], "estimated_gemini_requests": 1, "estimated_image_requests": 7,
-              "render_required": True}
+              "render_required": True, "fingerprint_compatibility": "not_evaluated"}
     manifest_path = job_dir / "production_manifest.json"
     if not manifest_path.is_file():
         result["reasons"].append("production manifest missing")
@@ -358,8 +506,10 @@ def evaluate_resume(job_dir: Path, config: ProductionConfig) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         result["reasons"].append("production manifest invalid")
         return result
-    if manifest.get("recipe_fingerprint") != production_fingerprint(config):
-        result["reasons"].append("recipe fingerprint mismatch")
+    fingerprint_valid, fingerprint_mode = _fingerprint_compatibility(manifest, config)
+    result["fingerprint_compatibility"] = fingerprint_mode
+    if not fingerprint_valid:
+        result["reasons"].append(fingerprint_mode)
         return result
     result["compatible"] = True
     checks = (
@@ -426,6 +576,7 @@ def dry_run_envelope(config: ProductionConfig, job_dir: Path, *, resume: bool) -
         "planner": config.planner_version,
         "voice_profile": config.voice_profile, "provider": config.provider,
         "model": config.model, "voice": config.voice, "style": config.style,
+        "effective_voice_rate": normalize_voice_rate(config.voice_rate),
         "maximum_gemini_requests": config.max_tts_requests,
         "maximum_image_requests": config.max_image_requests,
         "retry_policy": "no retries", "fallback_policy": "no provider or model fallback",
@@ -488,5 +639,6 @@ __all__ = [
     "LocalTTSCache", "ProductionConfig", "ProductionRun", "ProductionStage",
     "ProductionSummaryStatus", "classify_error",
     "apply_sentence_alignment", "dry_run_envelope", "evaluate_resume", "file_sha256", "get_production_config",
-    "production_fingerprint", "stable_hash", "tts_cache_key",
+    "production_fingerprint", "record_unhandled_production_failure", "stable_hash", "tts_cache_key",
+    "validate_production_voice_configuration",
 ]

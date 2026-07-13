@@ -4,7 +4,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from tella._voice_pace import normalize_voice_rate
 
 logger = logging.getLogger("tella.voice_profiles")
 
@@ -19,7 +21,7 @@ class VoiceProfileDefinition(BaseModel):
     profile_id: str = Field(..., pattern=r"^[a-z][a-z0-9_]*$", max_length=80)
     provider: str = Field(..., min_length=2, max_length=40)
     voice: str = Field(..., min_length=2, max_length=120)
-    rate: str = Field(..., pattern=r"^[+-]?\d{1,3}%$")
+    rate: str = Field(..., pattern=r"^[+-]\d{1,3}%$")
     role: str = Field(..., min_length=2, max_length=160)
     suitable_narrative_modes: list[str] = Field(..., min_length=1)
     model: str = Field("", exclude=True)
@@ -28,6 +30,11 @@ class VoiceProfileDefinition(BaseModel):
     post_tts_atempo_enabled: bool = Field(True, exclude=True)
     automatic_edge_fallback_enabled: bool = Field(True, exclude=True)
     automatic_model_fallback_enabled: bool = Field(True, exclude=True)
+
+    @field_validator("rate", mode="before")
+    @classmethod
+    def _normalize_rate(cls, value: str) -> str:
+        return normalize_voice_rate(value)
 
 
 class VoiceResolution(BaseModel):
@@ -202,7 +209,7 @@ def resolve_voice(
     else:
         provider = (legacy_provider or "edge").strip().lower()
         voice = (legacy_voice or "").strip()
-        rate = (legacy_rate or "").strip()
+        rate = legacy_rate or ""
         compatibility = "not_checked"
 
     direct_overrides: list[str] = []
@@ -213,8 +220,11 @@ def resolve_voice(
         voice = explicit_voice.strip()
         direct_overrides.append("voice")
     if explicit_voice_rate is not None:
-        rate = explicit_voice_rate.strip()
+        rate = explicit_voice_rate
         direct_overrides.append("rate")
+
+    if rate:
+        rate = normalize_voice_rate(rate)
 
     if profile is not None:
         source = (
