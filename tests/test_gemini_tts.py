@@ -369,15 +369,59 @@ def test_official_gemini_client_disables_sdk_transport_retry(monkeypatch):
 
     captured = {}
     sentinel = object()
+    aliases = (
+        "GEMINI_API_KEY",
+        "GEMINI_API_KEYS",
+        "GOOGLE_API_KEY",
+        "GOOGLE_TTS_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "TELLA_GEMINI_PROCESS_CREDENTIAL_NAME",
+    )
 
     def fake_client(**kwargs):
         captured.update(kwargs)
         return sentinel
 
+    def forbidden_socket(*args, **kwargs):
+        pytest.fail("official-client retry test attempted a socket connection")
+
+    for name in aliases:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "unit-test-dummy-never-authenticate")
     monkeypatch.setattr(genai, "Client", fake_client)
+    monkeypatch.setattr(socket, "create_connection", forbidden_socket)
+    monkeypatch.setattr(socket.socket, "connect", forbidden_socket)
     assert gemini._official_client() is sentinel
     retry = captured["http_options"].retry_options
     assert retry.attempts == 1
+
+
+def test_official_gemini_client_still_rejects_missing_credentials(monkeypatch):
+    from google import genai
+
+    for name in (
+        "GEMINI_API_KEY",
+        "GEMINI_API_KEYS",
+        "GOOGLE_API_KEY",
+        "GOOGLE_TTS_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "TELLA_GEMINI_PROCESS_CREDENTIAL_NAME",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    def forbidden_client(**kwargs):
+        pytest.fail("SDK client was constructed without a credential")
+
+    def forbidden_socket(*args, **kwargs):
+        pytest.fail("missing-credential test attempted a socket connection")
+
+    monkeypatch.setattr(genai, "Client", forbidden_client)
+    monkeypatch.setattr(socket, "create_connection", forbidden_socket)
+    monkeypatch.setattr(socket.socket, "connect", forbidden_socket)
+    with pytest.raises(
+        RuntimeError, match="Gemini TTS credential is not configured"
+    ):
+        gemini._official_client()
 
 
 def test_fake_gemini_429_is_one_submission_no_retry_or_fallback(tmp_path):
