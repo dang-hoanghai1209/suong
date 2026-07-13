@@ -9,9 +9,12 @@
 - Confirm fresh-clone tests pass without `music/tracks/practical_calm_01.mp3`.
 - Record the full test count and confirm tests made zero production-provider calls.
 - Run the production recipe dry-run and review its request envelope.
+- For `phone_out_of_reach`, confirm the declared canonical script version, repository-relative path, SHA256, seven exact sentences, and logical scene-role mapping match in the suite, plan, production manifest, and request envelope; the dry-run and real job must use that same script file.
 - Manually review an accepted local production video, subtitle/scene timing, and narration.
 - Require a completed visual-acceptance report with no unreviewed required scenes and passing thresholds.
 - Review every regenerated scene again and retain source/derived lineage metadata.
+- Reject acceptance when a required canonical script is missing, reordered, rewritten, stale, or hash-mismatched; image QC cannot waive script-identity validation.
+- Use a new job ID for each controlled run; never reuse either a dry-run or real-production reserved ID.
 - Review the selected music license, attribution, and Content ID status.
 - Confirm production outputs are ignored and no API key or credential file is tracked.
 - Confirm the intended merge target.

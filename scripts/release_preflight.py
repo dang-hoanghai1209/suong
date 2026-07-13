@@ -146,10 +146,37 @@ def runtime_contract_checks(repo: Path) -> list[CheckResult]:
         ])
     except Exception as exc:
         checks.append(CheckResult("production_contract", "FAIL", f"production contract unavailable: {type(exc).__name__}"))
+    try:
+        from tella.visual_acceptance import canonical_script_for_case, load_suite
+        suite = load_suite(
+            repo / "configs" / "acceptance" / "practical_life_steps_visual_v1.json",
+            repository_root=repo,
+        )
+        case, script = canonical_script_for_case(
+            suite, "phone_out_of_reach", repo
+        )
+        valid_script = (
+            case.expected_recipe == PRODUCTION_RECIPE
+            and case.expected_scene_count == script.scene_count == 7
+        )
+        checks.append(CheckResult(
+            "canonical_acceptance_script",
+            "PASS" if valid_script else "FAIL",
+            "phone_out_of_reach canonical script validated"
+            if valid_script else "canonical acceptance script contract mismatch",
+        ))
+    except Exception as exc:
+        checks.append(CheckResult(
+            "canonical_acceptance_script",
+            "FAIL",
+            f"canonical acceptance script unavailable: {type(exc).__name__}",
+        ))
     required = [
         repo / "tella" / "atomic_write.py", repo / "tella" / "production_lock.py",
         repo / "tella" / "production.py", repo / "tella" / "cli.py",
         repo / "music" / "library.json", repo / "music" / "licenses" / "practical_calm_01.txt",
+        repo / "configs" / "acceptance" / "practical_life_steps_visual_v1.json",
+        repo / "configs" / "acceptance" / "scripts" / "phone_out_of_reach_v1.txt",
     ]
     missing = [path.name for path in required if not path.is_file()]
     checks.append(CheckResult("required_sources", "FAIL" if missing else "PASS",

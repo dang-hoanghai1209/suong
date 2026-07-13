@@ -10,6 +10,12 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from tella.acceptance_script import (
+    CanonicalScript,
+    CanonicalScriptReference,
+    canonicalize_script_bytes,
+    load_canonical_script,
+)
 from tella.atomic_write import atomic_write_text
 from tella.planner.models import TellaScenePlan
 from tella.production import file_sha256, stable_hash
@@ -17,6 +23,13 @@ from tella.scene_regeneration import SceneCorrection
 
 
 VISUAL_ACCEPTANCE_SCHEMA_VERSION = 1
+DEFAULT_ACCEPTANCE_SUITE_PATH = Path(
+    "configs/acceptance/practical_life_steps_visual_v1.json"
+)
+EXPECTED_SCRIPT_ROLE_IDENTITIES = (
+    "hook", "context", "step_1", "step_2", "step_3",
+    "common_mistake", "today_action",
+)
 _UNSAFE_NOTES = re.compile(
     r"(?i)(api[_-]?key|authorization|bearer|credential|access[_-]?token|"
     r"provider\s*[:=]|model\s*[:=]|system_instruction)"
@@ -166,6 +179,7 @@ class AcceptanceCase(BaseModel):
     high_risk_scenes: list[int]
     expected_request_budget: int = 7
     manual_review_required: bool = True
+    canonical_script: CanonicalScriptReference | None = None
 
 
 class AcceptanceSuite(BaseModel):
@@ -188,6 +202,8 @@ class AcceptanceSuite(BaseModel):
                 raise ValueError("every acceptance case must target the production recipe")
             if case.expected_scene_count != 7:
                 raise ValueError("every acceptance case must require exactly seven scenes")
+            if case.case_id == "phone_out_of_reach" and case.canonical_script is None:
+                raise ValueError("phone_out_of_reach requires a canonical script")
         return self
 
 
@@ -197,17 +213,205 @@ def _write_json(path: Path, payload: Any) -> Path:
     )
 
 
-def load_suite(path: Path) -> AcceptanceSuite:
-    return AcceptanceSuite.model_validate_json(Path(path).read_text(encoding="utf-8"))
+def _repository_root(path: Path) -> Path:
+    resolved = Path(path).resolve()
+    for candidate in (resolved.parent, *resolved.parents):
+        if (candidate / "pyproject.toml").is_file():
+            return candidate
+    module_root = Path(__file__).resolve().parents[1]
+    if (module_root / "pyproject.toml").is_file():
+        return module_root
+    raise ValueError("repository root could not be determined for acceptance suite")
+
+
+def load_suite(path: Path, *, repository_root: Path | None = None) -> AcceptanceSuite:
+    suite_path = Path(path).resolve()
+    suite = AcceptanceSuite.model_validate_json(suite_path.read_text(encoding="utf-8"))
+    root = Path(repository_root).resolve() if repository_root else _repository_root(suite_path)
+    for case in suite.cases:
+        if case.canonical_script is not None:
+            load_canonical_script(
+                case.canonical_script,
+                root,
+                expected_scene_count=case.expected_scene_count,
+            )
+    return suite
+
+
+def canonical_script_for_case(
+    suite: AcceptanceSuite,
+    case_id: str,
+    repository_root: Path,
+) -> tuple[AcceptanceCase, CanonicalScript]:
+    matches = [case for case in suite.cases if case.case_id == case_id]
+    if len(matches) != 1 or matches[0].canonical_script is None:
+        raise ValueError(f"acceptance case {case_id!r} has no canonical script")
+    case = matches[0]
+    script = load_canonical_script(
+        case.canonical_script,
+        repository_root,
+        expected_scene_count=case.expected_scene_count,
+    )
+    return case, script
+
+
+def canonical_script_for_input(
+    script_path: Path,
+    repository_root: Path,
+) -> tuple[dict[str, Any], CanonicalScript] | None:
+    root = Path(repository_root).resolve()
+    suite_path = root / DEFAULT_ACCEPTANCE_SUITE_PATH
+    suite = load_suite(suite_path, repository_root=root)
+    raw_input = Path(script_path)
+    candidate = raw_input if raw_input.is_absolute() else root / raw_input
+    is_junction = getattr(candidate, "is_junction", lambda: False)
+    if candidate.is_symlink() or bool(is_junction()):
+        raise ValueError("canonical script input must not be a symlink or junction")
+    resolved_input = candidate.resolve()
+    for case in suite.cases:
+        if case.canonical_script is None:
+            continue
+        declared = root.joinpath(*Path(case.canonical_script.script_path).parts).resolve()
+        if resolved_input != declared:
+            continue
+        _, script = canonical_script_for_case(suite, case.case_id, root)
+        identity = {
+            "acceptance_suite_id": suite.suite_id,
+            "acceptance_suite_path": DEFAULT_ACCEPTANCE_SUITE_PATH.as_posix(),
+            "acceptance_case_id": case.case_id,
+            "expected_recipe_id": case.expected_recipe,
+            "expected_recipe_version": 1,
+            "expected_scene_count": case.expected_scene_count,
+            "expected_scene_roles": list(EXPECTED_SCRIPT_ROLE_IDENTITIES),
+            **script.identity(),
+            "canonical_script_sentences": list(script.sentences),
+        }
+        return identity, script
+    return None
 
 
 def load_review(path: Path) -> JobReview:
     return JobReview.model_validate_json(Path(path).read_text(encoding="utf-8"))
 
 
+def _plan_role_identities(plan: TellaScenePlan) -> list[str]:
+    roles = []
+    for scene in [item for item in plan.scenes if item.kind == "scene"]:
+        roles.append(
+            f"step_{scene.step_number}"
+            if scene.scene_role == "practical_step"
+            else scene.scene_role
+        )
+    return roles
+
+
+def validate_job_script_identity(job_dir: Path) -> dict[str, Any]:
+    job_dir = Path(job_dir).resolve()
+    plan_path = job_dir / "plan.json"
+    manifest_path = job_dir / "production_manifest.json"
+    errors: list[str] = []
+    manifest = (
+        json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest_path.is_file() else {}
+    )
+    if not plan_path.is_file():
+        recorded = manifest.get("canonical_script_identity")
+        if isinstance(recorded, dict) and recorded.get("acceptance_case_id"):
+            return {
+                "valid": False,
+                "required": True,
+                "errors": ["plan missing for canonical script identity"],
+                "canonical_script_sha256": "",
+            }
+        return {"valid": True, "required": False, "errors": [], "canonical_script_sha256": ""}
+    plan = TellaScenePlan.model_validate_json(plan_path.read_text(encoding="utf-8"))
+    if not plan.acceptance_case_id:
+        recorded = manifest.get("canonical_script_identity")
+        if isinstance(recorded, dict) and recorded.get("acceptance_case_id"):
+            return {
+                "valid": False,
+                "required": True,
+                "errors": ["plan canonical script identity missing"],
+                "canonical_script_sha256": "",
+            }
+        return {"valid": True, "required": False, "errors": [], "canonical_script_sha256": ""}
+    root = _repository_root(job_dir)
+    suite_path = root / (plan.acceptance_suite_path or DEFAULT_ACCEPTANCE_SUITE_PATH)
+    suite = load_suite(suite_path, repository_root=root)
+    try:
+        case, script = canonical_script_for_case(
+            suite, plan.acceptance_case_id, root
+        )
+    except ValueError as exc:
+        return {"valid": False, "required": True, "errors": [str(exc)], "canonical_script_sha256": ""}
+    scenes = [scene for scene in plan.scenes if scene.kind == "scene"]
+    sentences = [scene.voice_script for scene in scenes]
+    roles = _plan_role_identities(plan)
+    try:
+        _, _, narration_hash = canonicalize_script_bytes(
+            ("\n".join(sentences) + "\n").encode("utf-8"),
+            expected_scene_count=case.expected_scene_count,
+        )
+    except ValueError as exc:
+        narration_hash = ""
+        errors.append(str(exc))
+    expected_metadata = {
+        "acceptance_suite_id": suite.suite_id,
+        "acceptance_case_id": case.case_id,
+        "source_script_version": script.script_version,
+        "source_script_path": script.script_path,
+        "canonical_script_sha256": script.canonical_script_sha256,
+        "source_script_scene_count": script.scene_count,
+    }
+    for field, expected in expected_metadata.items():
+        if getattr(plan, field, None) != expected:
+            errors.append(f"plan {field} mismatch")
+    if plan.recipe_id != case.expected_recipe or plan.recipe_version != 1:
+        errors.append("plan recipe identity mismatch")
+    if len(scenes) != case.expected_scene_count:
+        errors.append("plan scene count mismatch")
+    if sentences != list(script.sentences):
+        errors.append("plan narration does not match canonical script")
+    if roles != list(EXPECTED_SCRIPT_ROLE_IDENTITIES):
+        errors.append("plan scene-role mapping does not match canonical script")
+    if narration_hash != script.canonical_script_sha256:
+        errors.append("plan narration SHA256 does not match canonical script")
+    if not manifest_path.is_file():
+        errors.append("production manifest missing canonical script identity")
+    else:
+        identity = manifest.get("canonical_script_identity")
+        if not isinstance(identity, dict):
+            errors.append("production manifest canonical script identity missing")
+        else:
+            for field, expected in {
+                "acceptance_case_id": case.case_id,
+                "script_version": script.script_version,
+                "script_path": script.script_path,
+                "canonical_script_sha256": script.canonical_script_sha256,
+                "script_scene_count": script.scene_count,
+            }.items():
+                if identity.get(field) != expected:
+                    errors.append(f"production manifest {field} mismatch")
+    return {
+        "valid": not errors,
+        "required": True,
+        "errors": errors,
+        "acceptance_case_id": case.case_id,
+        "canonical_script_sha256": script.canonical_script_sha256,
+        "script_version": script.script_version,
+        "scene_roles": roles,
+    }
+
+
 def initialize_review(job_dir: Path, output: Path) -> JobReview:
     job_dir = Path(job_dir).resolve()
     plan = TellaScenePlan.model_validate_json((job_dir / "plan.json").read_text(encoding="utf-8"))
+    script_identity = validate_job_script_identity(job_dir)
+    if not script_identity["valid"]:
+        raise ValueError(
+            "acceptance script identity validation failed: "
+            + "; ".join(script_identity["errors"])
+        )
     scenes = [scene for scene in plan.scenes if scene.kind == "scene"]
     if [scene.scene_index for scene in scenes] != list(range(1, 8)):
         raise ValueError("acceptance review requires scene indices 1 through 7")
@@ -230,7 +434,7 @@ def initialize_review(job_dir: Path, output: Path) -> JobReview:
             requested_action=scene.visual_action or scene.scene_action,
             automated_qc_result={
                 "technical_asset_status": scene.asset_status,
-                "automated_visual_qc": scene.symbolic_qc_status,
+                "automated_visual_qc": scene.symbolic_qc_final_status,
             },
         ))
     result = JobReview(
@@ -239,6 +443,7 @@ def initialize_review(job_dir: Path, output: Path) -> JobReview:
             "production_status": summary.get("status", "unknown"),
             "audio_qc": summary.get("qc_results", {}).get("audio", "unknown"),
             "video_qc": summary.get("qc_results", {}).get("video", "unknown"),
+            "canonical_script_identity": script_identity,
         }, scenes=reviews,
     )
     _write_json(Path(output), result.model_dump(mode="json"))
@@ -280,8 +485,13 @@ def validate_review(job_dir: Path, review: JobReview) -> dict[str, Any]:
             missing.append(scene.scene_index)
         elif file_sha256(image) != scene.image_sha256:
             stale.append(scene.scene_index)
-    return {"valid": not stale and not missing, "stale_scene_indices": stale,
-            "missing_scene_indices": missing}
+    script_identity = validate_job_script_identity(job_dir)
+    return {
+        "valid": not stale and not missing and script_identity["valid"],
+        "stale_scene_indices": stale,
+        "missing_scene_indices": missing,
+        "canonical_script_identity": script_identity,
+    }
 
 
 def aggregate_job(job_dir: Path, review: JobReview, policy: AcceptanceThresholds) -> dict[str, Any]:
@@ -415,5 +625,6 @@ __all__ = [
     "JobDecision", "JobReview", "RequestedActionMatch", "SceneDecision",
     "SceneReview", "StyleComposition", "UnwantedReadableText",
     "aggregate_job", "corrections_from_review", "initialize_review",
-    "load_review", "load_suite", "report_acceptance", "validate_review",
+    "canonical_script_for_case", "canonical_script_for_input", "load_review",
+    "load_suite", "report_acceptance", "validate_job_script_identity", "validate_review",
 ]

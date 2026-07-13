@@ -668,6 +668,13 @@ class TellaScenePlan(BaseModel):
     recipe_duration_range: list[float] = Field(default_factory=list)
     recipe_validation_status: str = Field("not_selected", max_length=40)
     recipe_validation_errors: list[str] = Field(default_factory=list)
+    acceptance_suite_id: str = Field("", max_length=120)
+    acceptance_suite_path: str = Field("", max_length=300)
+    acceptance_case_id: str = Field("", max_length=120)
+    source_script_version: int = 0
+    source_script_path: str = Field("", max_length=300)
+    source_script_scene_count: int = 0
+    canonical_script_sha256: str = Field("", max_length=64)
     recipe_overlap_score: float = 0.0
     recipe_overlap_detected: bool = False
     overlap_repair_applied: bool = False

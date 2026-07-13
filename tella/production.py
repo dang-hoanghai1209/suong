@@ -323,11 +323,19 @@ def validate_production_voice_configuration(
 
 
 class ProductionRun:
-    def __init__(self, job_dir: Path, config: ProductionConfig, *, resume: bool = False):
+    def __init__(
+        self,
+        job_dir: Path,
+        config: ProductionConfig,
+        *,
+        resume: bool = False,
+        script_identity: dict[str, Any] | None = None,
+    ):
         self.job_dir = Path(job_dir)
         self.job_dir.mkdir(parents=True, exist_ok=True)
         self.config = config
         self.resume = resume
+        self.script_identity = dict(script_identity or {})
         self.stage = ProductionStage.initialized
         self.last_successful_stage = ""
         self.counts = {"gemini": 0, "edge": 0, "image_provider": 0,
@@ -354,6 +362,10 @@ class ProductionRun:
             "recipe_fingerprint": production_fingerprint(self.config),
             "created_or_updated": datetime.now(timezone.utc).isoformat(),
             "resume_requested": self.resume,
+            **(
+                {"canonical_script_identity": self.script_identity}
+                if self.script_identity else {}
+            ),
             **(extra or {}),
         }
         atomic_write_json(self.manifest_path, payload)
@@ -492,7 +504,11 @@ def record_unhandled_production_failure(
     atomic_write_json(summary_path, summary)
 
 
-def evaluate_resume(job_dir: Path, config: ProductionConfig) -> dict[str, Any]:
+def evaluate_resume(
+    job_dir: Path,
+    config: ProductionConfig,
+    expected_script_identity: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     job_dir = Path(job_dir)
     result = {"compatible": False, "artifacts": {}, "resume_stage": "initialized",
               "reasons": [], "estimated_gemini_requests": 1, "estimated_image_requests": 7,
@@ -511,6 +527,12 @@ def evaluate_resume(job_dir: Path, config: ProductionConfig) -> dict[str, Any]:
     if not fingerprint_valid:
         result["reasons"].append(fingerprint_mode)
         return result
+    if expected_script_identity is not None:
+        recorded_identity = manifest.get("canonical_script_identity")
+        expected_identity = dict(expected_script_identity)
+        if recorded_identity != expected_identity:
+            result["reasons"].append("canonical script identity mismatch")
+            return result
     result["compatible"] = True
     checks = (
         ("plan", "plan.json", "planned"),
@@ -564,8 +586,14 @@ def evaluate_resume(job_dir: Path, config: ProductionConfig) -> dict[str, Any]:
     return result
 
 
-def dry_run_envelope(config: ProductionConfig, job_dir: Path, *, resume: bool) -> dict[str, Any]:
-    decision = evaluate_resume(job_dir, config) if resume else {
+def dry_run_envelope(
+    config: ProductionConfig,
+    job_dir: Path,
+    *,
+    resume: bool,
+    script_identity: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    decision = evaluate_resume(job_dir, config, script_identity) if resume else {
         "compatible": False, "artifacts": {}, "resume_stage": "initialized",
         "reasons": ["fresh job"], "estimated_gemini_requests": 1,
         "estimated_image_requests": config.max_image_requests, "render_required": True,
@@ -582,6 +610,7 @@ def dry_run_envelope(config: ProductionConfig, job_dir: Path, *, resume: bool) -
         "retry_policy": "no retries", "fallback_policy": "no provider or model fallback",
         "alignment_mode": config.alignment_mode, "music_track": config.music_track,
         "music_profile": config.music_profile, "expected_output_directory": str(job_dir),
+        "canonical_script_identity": dict(script_identity or {}),
         "resume_evaluation": decision,
         "estimated_requests_after_resume": {
             "gemini": decision["estimated_gemini_requests"],

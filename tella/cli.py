@@ -99,6 +99,7 @@ from tella.production import (
 )
 from tella.production_lock import JobLockConflict, ProductionJobLock
 from tella.atomic_write import atomic_write_json
+from tella.visual_acceptance import canonical_script_for_input
 
 logger = logging.getLogger("tella.cli")
 
@@ -111,21 +112,56 @@ def _write_recipe_manifest(
     validation_errors: list[str] | None = None,
     estimated_duration_seconds: float | None = None,
     voice_resolution: VoiceResolution | None = None,
+    script_identity: dict | None = None,
 ) -> Path:
     out = job_dir / "recipe.json"
+    payload = recipe_manifest(
+        recipe,
+        validation_status=validation_status,
+        validation_errors=validation_errors,
+        estimated_duration_seconds=estimated_duration_seconds,
+        voice_resolution=(
+            voice_resolution.model_dump() if voice_resolution else None
+        ),
+    )
+    if script_identity:
+        payload["canonical_script_identity"] = dict(script_identity)
     atomic_write_json(
         out,
-        recipe_manifest(
-                recipe,
-                validation_status=validation_status,
-                validation_errors=validation_errors,
-                estimated_duration_seconds=estimated_duration_seconds,
-                voice_resolution=(
-                    voice_resolution.model_dump() if voice_resolution else None
-                ),
-            ),
+        payload,
     )
     return out
+
+
+def _apply_canonical_script_identity(plan, identity: dict | None) -> None:
+    if not identity:
+        return
+    scenes = [scene for scene in plan.scenes if scene.kind == "scene"]
+    expected_sentences = list(identity["canonical_script_sentences"])
+    if [scene.voice_script for scene in scenes] != expected_sentences:
+        raise ValueError("planned narration does not match the canonical acceptance script")
+    if len(scenes) != int(identity["expected_scene_count"]):
+        raise ValueError("planned scene count does not match the canonical acceptance script")
+    roles = [
+        f"step_{scene.step_number}"
+        if scene.scene_role == "practical_step"
+        else scene.scene_role
+        for scene in scenes
+    ]
+    if roles != list(identity["expected_scene_roles"]):
+        raise ValueError("planned scene roles do not match the canonical acceptance script")
+    if (
+        plan.recipe_id != identity["expected_recipe_id"]
+        or plan.recipe_version != int(identity["expected_recipe_version"])
+    ):
+        raise ValueError("planned recipe does not match the canonical acceptance script")
+    plan.acceptance_suite_id = identity["acceptance_suite_id"]
+    plan.acceptance_suite_path = identity["acceptance_suite_path"]
+    plan.acceptance_case_id = identity["acceptance_case_id"]
+    plan.source_script_version = int(identity["script_version"])
+    plan.source_script_path = identity["script_path"]
+    plan.source_script_scene_count = int(identity["script_scene_count"])
+    plan.canonical_script_sha256 = identity["canonical_script_sha256"]
 
 
 def _validate_recipe_plan(
@@ -654,6 +690,7 @@ async def _run_pipeline_unlocked(
     no_music: bool = False,
     recipe: RecipeDefinition | None = None,
     voice_resolution: VoiceResolution | None = None,
+    script_identity: dict | None = None,
     resume: bool = False,
 ) -> Path:
     """Execute the full Tella pipeline. Returns the path to the final MP4.
@@ -683,7 +720,7 @@ async def _run_pipeline_unlocked(
     job_dir.mkdir(parents=True, exist_ok=True)
     production_config = get_production_config(recipe.recipe_id) if recipe else None
     resume_decision = (
-        evaluate_resume(job_dir, production_config)
+        evaluate_resume(job_dir, production_config, script_identity)
         if production_config and resume else None
     )
     if resume and production_config and not resume_decision["compatible"]:
@@ -697,7 +734,12 @@ async def _run_pipeline_unlocked(
     if resume_decision and resume_decision["artifacts"].get("raw_narration", {}).get("valid"):
         os.environ["TELLA_TTS_RESUME_RAW"] = str(job_dir / "assets" / "narration_raw.wav")
     production_run = (
-        ProductionRun(job_dir, production_config, resume=resume)
+        ProductionRun(
+            job_dir,
+            production_config,
+            resume=resume,
+            script_identity=script_identity,
+        )
         if production_config else None
     )
     if recipe is not None:
@@ -706,6 +748,7 @@ async def _run_pipeline_unlocked(
             recipe,
             validation_status="pending_plan_validation",
             voice_resolution=voice_resolution,
+            script_identity=script_identity,
         )
         if production_run:
             production_run.advance(ProductionStage.recipe_resolved, {"recipe": job_dir / "recipe.json"})
@@ -820,6 +863,7 @@ async def _run_pipeline_unlocked(
             duration_mode=duration_mode,
             voice_pace=pace,
             voice_gender=voice_gender,
+            preserve_narration=bool(recipe and recipe.natural_duration),
         )
     elif practical_steps_planner:
         plan = plan_practical_life_steps_from_topic(
@@ -880,6 +924,7 @@ async def _run_pipeline_unlocked(
             job_dir,
             voice_resolution,
         )
+    _apply_canonical_script_identity(plan, script_identity)
     plan_json.write_text(
         json.dumps(plan.model_dump(), ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -1497,6 +1542,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
+    user_script = ""
+    script_identity: dict | None = None
+    if args.script_file and args.exact_script:
+        parser.error("use either --script-file or --exact-script, not both")
+    if args.script_file:
+        script_path = Path(args.script_file)
+        declared = canonical_script_for_input(script_path, _REPO_ROOT)
+        if declared is not None:
+            script_identity, canonical_script = declared
+            user_script = canonical_script.canonical_narration_text.removesuffix("\n")
+        else:
+            user_script = script_path.read_text(encoding="utf-8").strip()
+    elif args.exact_script:
+        user_script = args.exact_script.strip()
+
     if args.production_dry_run:
         if selected_recipe is None or production_config is None:
             parser.error("--production-dry-run requires a registered production recipe")
@@ -1524,13 +1584,24 @@ def main(argv: list[str] | None = None) -> int:
                 operation="production-dry-run",
                 recover_stale=args.recover_stale_lock,
             ):
-                run = ProductionRun(job_dir, production_config, resume=args.resume)
+                run = ProductionRun(
+                    job_dir,
+                    production_config,
+                    resume=args.resume,
+                    script_identity=script_identity,
+                )
                 recipe_path = _write_recipe_manifest(
                     job_dir, selected_recipe,
                     validation_status="definition_validated",
                     voice_resolution=voice_resolution,
+                    script_identity=script_identity,
                 )
-                envelope = dry_run_envelope(production_config, job_dir, resume=args.resume)
+                envelope = dry_run_envelope(
+                    production_config,
+                    job_dir,
+                    resume=args.resume,
+                    script_identity=script_identity,
+                )
                 envelope_path = job_dir / "request_envelope.json"
                 atomic_write_json(envelope_path, envelope)
                 run.advance(ProductionStage.recipe_resolved, {
@@ -1547,7 +1618,10 @@ def main(argv: list[str] | None = None) -> int:
                 run.fail(ProductionStage.planned.value, exc)
             logger.exception("production dry-run validation failed: %s", exc)
             return 1
-        print(json.dumps(envelope, ensure_ascii=False, indent=2))
+        # Keep dry-run JSON printable on Windows hosts whose redirected stdout
+        # still reports a legacy code page. The persisted envelope remains
+        # UTF-8 with readable canonical text.
+        print(json.dumps(envelope, ensure_ascii=True, indent=2))
         print(f"\n[OK] Production dry-run: {job_dir}")
         return 0
 
@@ -1684,14 +1758,6 @@ def main(argv: list[str] | None = None) -> int:
 
     out_root = Path(args.out_root or os.environ.get("TELLA_OUTPUT_DIR") or "./out")
     out_root.mkdir(parents=True, exist_ok=True)
-    user_script = ""
-    if args.script_file and args.exact_script:
-        parser.error("use either --script-file or --exact-script, not both")
-    if args.script_file:
-        script_path = Path(args.script_file)
-        user_script = script_path.read_text(encoding="utf-8").strip()
-    elif args.exact_script:
-        user_script = args.exact_script.strip()
     if not args.topic.strip() and not user_script:
         parser.error("--topic is required unless --script-file or --exact-script is provided")
     if args.preview_scenes and args.preview_scene_indices:
@@ -1739,6 +1805,7 @@ def main(argv: list[str] | None = None) -> int:
                 no_music=args.no_music,
                 recipe=selected_recipe,
                 voice_resolution=voice_resolution,
+                script_identity=script_identity,
                 resume=args.resume,
                 recover_stale_lock=args.recover_stale_lock,
             )

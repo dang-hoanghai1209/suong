@@ -213,6 +213,7 @@ def plan_practical_life_steps_from_script(
     duration_mode: str = "short",
     voice_pace: VoicePace | None = None,
     voice_gender: str | None = None,
+    preserve_narration: bool = False,
     seed: int = 0,
 ) -> TellaScenePlan:
     del seed
@@ -258,7 +259,9 @@ def plan_practical_life_steps_from_script(
         global_narration_text=" ".join(segments),
         scenes=scenes,
     )
-    enforce_practical_life_steps_plan(plan, roles=roles)
+    enforce_practical_life_steps_plan(
+        plan, roles=roles, preserve_narration=preserve_narration
+    )
     return apply_practical_life_steps_visuals(plan)
 
 
@@ -274,6 +277,7 @@ def enforce_practical_life_steps_plan(
     plan: TellaScenePlan,
     *,
     roles: tuple[str, ...] | None = None,
+    preserve_narration: bool = False,
 ) -> None:
     scenes = [scene for scene in plan.scenes if scene.kind == "scene"]
     resolved_roles = roles or _roles_for_segments([scene.voice_script for scene in scenes])
@@ -284,7 +288,9 @@ def enforce_practical_life_steps_plan(
         errors.append("scene-role assignment does not match scene count")
 
     _initialize_scene_metadata(scenes, resolved_roles, plan.voice_edge_rate)
-    _fit_duration(plan, scenes, resolved_roles)
+    _fit_duration(
+        plan, scenes, resolved_roles, preserve_narration=preserve_narration
+    )
     if plan.duration_validation_status == "failed":
         errors.append(plan.duration_failure_reason)
 
@@ -381,6 +387,8 @@ def _fit_duration(
     plan: TellaScenePlan,
     scenes: list[Scene],
     roles: tuple[str, ...],
+    *,
+    preserve_narration: bool = False,
 ) -> None:
     original_words = sum(_word_count(scene.original_voice_script) for scene in scenes)
     original_duration = _estimated_total(
@@ -395,6 +403,17 @@ def _fit_duration(
     )
     plan.narration_fit_applied = False
     plan.narration_fit_pass_count = 0
+
+    if preserve_narration:
+        plan.narration_fit_required = False
+        plan.fitted_total_word_count = original_words
+        plan.fitted_estimated_duration_seconds = original_duration
+        plan.duration_reduction_seconds = 0.0
+        plan.duration_reduction_ratio = 0.0
+        plan.duration_validation_status = "passed"
+        plan.duration_failure_reason = ""
+        plan.narration_fit_status = "disabled_for_canonical_natural_duration"
+        return
 
     if original_duration > _HARD_DURATION_RANGE[1]:
         role_priority = (
