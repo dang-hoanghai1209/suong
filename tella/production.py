@@ -17,6 +17,165 @@ from tella._voice_pace import normalize_voice_rate
 
 PRODUCTION_SCHEMA_VERSION = 1
 CALLIRRHOE_RECIPE_ID = "practical_life_steps_callirrhoe_v1"
+_SUBMISSION_KEYS = ("gemini", "edge", "image_provider", "retries", "fallbacks")
+_TRANSPORT_KEYS = ("gemini", "image_provider")
+_RESULT_PROVIDERS = ("gemini", "image_provider")
+
+
+def _zero_submissions() -> dict[str, int]:
+    return {key: 0 for key in _SUBMISSION_KEYS}
+
+
+def _zero_transport_attempts() -> dict[str, int]:
+    return {key: 0 for key in _TRANSPORT_KEYS}
+
+
+def _zero_provider_results() -> dict[str, dict[str, int]]:
+    return {
+        provider: {"successful": 0, "failed": 0}
+        for provider in _RESULT_PROVIDERS
+    }
+
+
+def _nonnegative_counts(value: Any, keys: tuple[str, ...]) -> dict[str, int]:
+    source = value if isinstance(value, dict) else {}
+    result: dict[str, int] = {}
+    for key in keys:
+        try:
+            result[key] = max(0, int(source.get(key) or 0))
+        except (TypeError, ValueError):
+            # Accounting fields never grant artifact reuse.  Treat malformed
+            # legacy counters as absent while artifact identity still fails
+            # closed through its independent hash validation.
+            result[key] = 0
+    return result
+
+
+def _invocation_limits(config: "ProductionConfig") -> dict[str, int]:
+    return {
+        "gemini": config.max_tts_requests,
+        "edge": 0,
+        "image_provider": config.max_image_requests,
+        "retries": 0,
+        "fallbacks": 0,
+    }
+
+
+def image_request_accounting(plan: Any) -> dict[str, int]:
+    """Reconstruct image request facts from persisted per-scene evidence."""
+    scenes = [
+        scene for scene in getattr(plan, "scenes", [])
+        if getattr(scene, "kind", "scene") == "scene"
+    ]
+    submissions = sum(
+        max(0, int(getattr(scene, "provider_request_count_for_scene", 0) or 0))
+        for scene in scenes
+    )
+    transport_attempts = sum(
+        max(0, int(getattr(scene, "actual_cloudflare_request_count_for_scene", 0) or 0))
+        for scene in scenes
+    )
+    successful_responses = sum(
+        max(0, int(getattr(scene, "ai_images_generated", 0) or 0))
+        for scene in scenes
+    )
+    return {
+        "submissions": submissions,
+        "transport_attempts": transport_attempts,
+        "successful": successful_responses,
+        "failed": max(0, transport_attempts - successful_responses),
+    }
+
+
+def _persisted_accounting(job_dir: Path) -> dict[str, Any]:
+    """Read counters without mutating a production job."""
+    job_dir = Path(job_dir)
+    manifest: dict[str, Any] = {}
+    summary: dict[str, Any] = {}
+    plan_data: dict[str, Any] = {}
+    for path, target in (
+        (job_dir / "production_manifest.json", manifest),
+        (job_dir / "production_summary.json", summary),
+        (job_dir / "plan.json", plan_data),
+    ):
+        if not path.is_file():
+            continue
+        try:
+            target.update(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            continue
+    manifest_submissions = _nonnegative_counts(
+        manifest.get("external_submission_counts"), _SUBMISSION_KEYS
+    )
+    summary_submissions = _nonnegative_counts(
+        summary.get("external_submission_counts"), _SUBMISSION_KEYS
+    )
+    submissions = {
+        key: max(manifest_submissions[key], summary_submissions[key])
+        for key in _SUBMISSION_KEYS
+    }
+    manifest_transport = _nonnegative_counts(
+        manifest.get("external_transport_attempt_counts"), _TRANSPORT_KEYS
+    )
+    summary_transport = _nonnegative_counts(
+        summary.get("external_transport_attempt_counts"), _TRANSPORT_KEYS
+    )
+    transport = {
+        key: max(manifest_transport[key], summary_transport[key])
+        for key in _TRANSPORT_KEYS
+    }
+    results = _zero_provider_results()
+    manifest_results = manifest.get("provider_result_counts") or {}
+    summary_results = summary.get("provider_result_counts") or {}
+    for provider in _RESULT_PROVIDERS:
+        from_manifest = _nonnegative_counts(
+            manifest_results.get(provider), ("successful", "failed")
+        )
+        from_summary = _nonnegative_counts(
+            summary_results.get(provider), ("successful", "failed")
+        )
+        results[provider] = {
+            key: max(from_manifest[key], from_summary[key])
+            for key in ("successful", "failed")
+        }
+    if plan_data:
+        from tella.planner.models import TellaScenePlan
+        try:
+            plan = TellaScenePlan.model_validate(plan_data)
+        except Exception:
+            plan = None
+        if plan is not None:
+            images = image_request_accounting(plan)
+            submissions["image_provider"] = max(
+                submissions["image_provider"], images["submissions"]
+            )
+            transport["image_provider"] = max(
+                transport["image_provider"], images["transport_attempts"]
+            )
+            results["image_provider"]["successful"] = max(
+                results["image_provider"]["successful"], images["successful"]
+            )
+            results["image_provider"]["failed"] = max(
+                results["image_provider"]["failed"], images["failed"]
+            )
+    if not transport["gemini"]:
+        transport["gemini"] = submissions["gemini"]
+    if (
+        submissions["gemini"]
+        and summary.get("failed_stage") == ProductionStage.narration_ready.value
+        and summary.get("status") in {
+            ProductionSummaryStatus.provider_failure.value,
+            ProductionSummaryStatus.quota_failure.value,
+        }
+    ):
+        results["gemini"]["failed"] = max(
+            results["gemini"]["failed"], 1
+        )
+    return {
+        "submissions": submissions,
+        "transport_attempts": transport,
+        "results": results,
+    }
 
 
 class ProductionStage(StrEnum):
@@ -338,10 +497,39 @@ class ProductionRun:
         self.script_identity = dict(script_identity or {})
         self.stage = ProductionStage.initialized
         self.last_successful_stage = ""
-        self.counts = {"gemini": 0, "edge": 0, "image_provider": 0,
-                       "retries": 0, "fallbacks": 0}
+        persisted = _persisted_accounting(self.job_dir) if resume else {
+            "submissions": _zero_submissions(),
+            "transport_attempts": _zero_transport_attempts(),
+            "results": _zero_provider_results(),
+        }
+        self.counts = dict(persisted["submissions"])
+        self.transport_attempts = dict(persisted["transport_attempts"])
+        self.provider_results = {
+            key: dict(value) for key, value in persisted["results"].items()
+        }
+        self._accounting_baseline = {
+            "submissions": dict(self.counts),
+            "transport_attempts": dict(self.transport_attempts),
+            "results": {
+                key: dict(value) for key, value in self.provider_results.items()
+            },
+        }
+        self.invocation_counts = _zero_submissions()
+        self.invocation_transport_attempts = _zero_transport_attempts()
+        self.invocation_provider_results = _zero_provider_results()
+        self.invocation_limits = _invocation_limits(config)
         self.artifacts: dict[str, str] = {}
         self.artifact_issues: dict[str, dict[str, str]] = {}
+        if resume and self.summary_path.is_file():
+            try:
+                previous = json.loads(self.summary_path.read_text(encoding="utf-8"))
+                self.last_successful_stage = str(
+                    previous.get("last_successful_stage") or ""
+                )
+                for key, value in previous.get("generated_artifact_paths", {}).items():
+                    self.artifacts[str(key)] = str(value)
+            except (OSError, json.JSONDecodeError):
+                pass
         if not (resume and self.manifest_path.is_file()):
             self.write_manifest()
         self.write_summary("partial_failure", resumable=True,
@@ -362,6 +550,14 @@ class ProductionRun:
             "recipe_fingerprint": production_fingerprint(self.config),
             "created_or_updated": datetime.now(timezone.utc).isoformat(),
             "resume_requested": self.resume,
+            "external_submission_counts": self.counts,
+            "external_transport_attempt_counts": self.transport_attempts,
+            "provider_result_counts": self.provider_results,
+            "current_invocation_submission_counts": self.invocation_counts,
+            "current_invocation_transport_attempt_counts": self.invocation_transport_attempts,
+            "current_invocation_provider_result_counts": self.invocation_provider_results,
+            "current_invocation_request_limits": self.invocation_limits,
+            "current_invocation_remaining_budget": self.remaining_invocation_budget(),
             **(
                 {"canonical_script_identity": self.script_identity}
                 if self.script_identity else {}
@@ -369,6 +565,115 @@ class ProductionRun:
             **(extra or {}),
         }
         atomic_write_json(self.manifest_path, payload)
+
+    def _persist_accounting_manifest(self) -> None:
+        if not self.manifest_path.is_file():
+            return
+        current = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        current["external_submission_counts"] = dict(self.counts)
+        current["external_transport_attempt_counts"] = dict(
+            self.transport_attempts
+        )
+        current["provider_result_counts"] = {
+            key: dict(value) for key, value in self.provider_results.items()
+        }
+        current["current_invocation_submission_counts"] = dict(
+            self.invocation_counts
+        )
+        current["current_invocation_transport_attempt_counts"] = dict(
+            self.invocation_transport_attempts
+        )
+        current["current_invocation_provider_result_counts"] = {
+            key: dict(value)
+            for key, value in self.invocation_provider_results.items()
+        }
+        current["current_invocation_request_limits"] = dict(
+            self.invocation_limits
+        )
+        current["current_invocation_remaining_budget"] = (
+            self.remaining_invocation_budget()
+        )
+        atomic_write_json(self.manifest_path, current)
+
+    def remaining_invocation_budget(self) -> dict[str, int]:
+        return {
+            key: max(0, maximum - self.invocation_counts.get(key, 0))
+            for key, maximum in self.invocation_limits.items()
+        }
+
+    def record_submission(
+        self, provider: str, *, transport_attempts: int = 1
+    ) -> None:
+        if provider not in {"gemini", "edge", "image_provider"}:
+            raise ValueError(f"unsupported production provider counter: {provider}")
+        maximum = self.invocation_limits[provider]
+        used = self.invocation_counts[provider]
+        if used >= maximum:
+            raise RuntimeError(
+                f"{provider} request budget exhausted for current invocation: "
+                f"used={used}, maximum={maximum}"
+            )
+        self.invocation_counts[provider] += 1
+        self.counts[provider] = self.counts.get(provider, 0) + 1
+        if provider in self.transport_attempts:
+            attempts = max(0, int(transport_attempts))
+            self.transport_attempts[provider] += attempts
+            self.invocation_transport_attempts[provider] += attempts
+        self._persist_accounting_manifest()
+
+    def record_provider_result(self, provider: str, *, successful: bool) -> None:
+        if provider not in self.provider_results:
+            raise ValueError(f"unsupported production provider result: {provider}")
+        key = "successful" if successful else "failed"
+        self.provider_results[provider][key] += 1
+        self.invocation_provider_results[provider][key] += 1
+        self._persist_accounting_manifest()
+
+    def record_image_stage(self, plan: Any, plan_path: Path) -> list[Path]:
+        """Persist image-stage counts and hashes before later stages can fail."""
+        accounting = image_request_accounting(plan)
+        if accounting["submissions"] > self.invocation_limits["image_provider"]:
+            raise RuntimeError(
+                "image_provider request budget exhausted for current invocation: "
+                f"used={accounting['submissions']}, "
+                f"maximum={self.invocation_limits['image_provider']}"
+            )
+        baseline = self._accounting_baseline
+        self.counts["image_provider"] = (
+            baseline["submissions"]["image_provider"]
+            + accounting["submissions"]
+        )
+        self.invocation_counts["image_provider"] = accounting["submissions"]
+        self.transport_attempts["image_provider"] = (
+            baseline["transport_attempts"]["image_provider"]
+            + accounting["transport_attempts"]
+        )
+        self.invocation_transport_attempts["image_provider"] = accounting[
+            "transport_attempts"
+        ]
+        for key in ("successful", "failed"):
+            self.provider_results["image_provider"][key] = (
+                baseline["results"]["image_provider"][key] + accounting[key]
+            )
+            self.invocation_provider_results["image_provider"][key] = accounting[key]
+        images: list[Path] = []
+        for scene in getattr(plan, "scenes", []):
+            if getattr(scene, "kind", "scene") != "scene":
+                continue
+            relative = str(getattr(scene, "asset_path", "") or "")
+            if not relative:
+                continue
+            path = self.job_dir / relative
+            if path.is_file():
+                images.append(path)
+        self.artifacts["plan"] = str(plan_path)
+        for index, path in enumerate(images, start=1):
+            self.artifacts[f"image_{index}"] = str(path)
+        self.record_artifact_hashes(
+            {"plan": Path(plan_path)}, image_artifacts=images
+        )
+        self._persist_accounting_manifest()
+        return images
 
     def record_artifact_hashes(
         self,
@@ -381,17 +686,20 @@ class ProductionRun:
         current: dict[str, Any] = {}
         if self.manifest_path.is_file():
             current = json.loads(self.manifest_path.read_text(encoding="utf-8"))
-        current["artifact_hashes"] = {
+        hashes = dict(current.get("artifact_hashes") or {})
+        hashes.update({
             key: file_sha256(path) for key, path in artifacts.items() if path.is_file()
-        }
-        current["image_artifacts"] = [
-            {
-                "path": str(path.relative_to(self.job_dir)),
-                "sha256": file_sha256(path),
-            }
-            for path in (image_artifacts or [])
-            if path.is_file()
-        ]
+        })
+        current["artifact_hashes"] = hashes
+        if image_artifacts is not None:
+            current["image_artifacts"] = [
+                {
+                    "path": str(path.relative_to(self.job_dir)),
+                    "sha256": file_sha256(path),
+                }
+                for path in image_artifacts
+                if path.is_file()
+            ]
         if qc_results is not None:
             current["qc_results"] = dict(qc_results)
         atomic_write_json(self.manifest_path, current)
@@ -433,12 +741,20 @@ class ProductionRun:
             "error_category": error_category,
             "safe_error_message": safe_error_message,
             "external_submission_counts": self.counts,
+            "external_transport_attempt_counts": self.transport_attempts,
+            "provider_result_counts": self.provider_results,
+            "current_invocation_submission_counts": self.invocation_counts,
+            "current_invocation_transport_attempt_counts": self.invocation_transport_attempts,
+            "current_invocation_provider_result_counts": self.invocation_provider_results,
+            "current_invocation_request_limits": self.invocation_limits,
+            "current_invocation_remaining_budget": self.remaining_invocation_budget(),
             "generated_artifact_paths": self.artifacts,
             "preserved_artifact_paths": preserved,
             "invalid_or_missing_artifact_paths": {**auto_missing, **self.artifact_issues},
             "resumable": resumable,
             "recommended_resume_action": recommended,
         }
+        self._persist_accounting_manifest()
         atomic_write_json(self.summary_path, payload)
 
     def fail(self, failed_stage: str, exc: BaseException) -> None:
@@ -504,15 +820,242 @@ def record_unhandled_production_failure(
     atomic_write_json(summary_path, summary)
 
 
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_INVENTORY_EXCLUSIONS = {".tella-job.lock", ".reuse_plan.json"}
+
+
+def source_inventory_sha256(job_dir: Path) -> str:
+    """Hash a canonical full-SHA256 inventory without mutating the job."""
+    root = Path(job_dir).resolve()
+    inventory: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+        relative = path.relative_to(root).as_posix()
+        if relative in _INVENTORY_EXCLUSIONS:
+            continue
+        is_junction = getattr(path, "is_junction", lambda: False)
+        if path.is_symlink() or bool(is_junction()) or not path.is_file():
+            continue
+        inventory.append({
+            "path": relative,
+            "size": path.stat().st_size,
+            "sha256": file_sha256(path),
+        })
+    encoded = json.dumps(
+        inventory, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def build_legacy_image_resume_attestation(
+    job_dir: Path,
+    config: ProductionConfig,
+) -> dict[str, Any]:
+    """Build, but never auto-write, the explicit legacy full-hash attestation."""
+    job_dir = Path(job_dir)
+    manifest = json.loads(
+        (job_dir / "production_manifest.json").read_text(encoding="utf-8")
+    )
+    plan_data = json.loads((job_dir / "plan.json").read_text(encoding="utf-8"))
+    scenes = [item for item in plan_data.get("scenes", []) if item.get("kind") == "scene"]
+    images = []
+    for scene in scenes:
+        relative = Path(str(scene.get("asset_path") or ""))
+        path = job_dir / relative
+        images.append({
+            "scene_index": int(scene.get("scene_index") or 0),
+            "provider": str(scene.get("image_provider") or ""),
+            "path": relative.as_posix(),
+            "sha256": file_sha256(path),
+        })
+    identity = manifest.get("canonical_script_identity") or {}
+    return {
+        "schema_version": 1,
+        "attestation_type": "legacy_image_resume_full_sha256",
+        "job_id": job_dir.name,
+        "recipe_fingerprint": production_fingerprint(config),
+        "canonical_script_sha256": identity.get("canonical_script_sha256", ""),
+        "plan_sha256": file_sha256(job_dir / "plan.json"),
+        "source_inventory_sha256": source_inventory_sha256(job_dir),
+        "images": images,
+    }
+
+
+def _validate_legacy_attestation(
+    job_dir: Path,
+    config: ProductionConfig,
+    manifest: dict[str, Any],
+    candidate_images: list[dict[str, str]],
+    attestation_path: Path | None,
+) -> tuple[bool, str]:
+    if attestation_path is None:
+        return False, (
+            "legacy image hashes are 16-character SHA256 prefixes; explicit "
+            "versioned full-SHA256 resume attestation required"
+        )
+    path = Path(attestation_path)
+    root = Path(job_dir).resolve()
+    is_junction = getattr(path, "is_junction", lambda: False)
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        return False, "legacy resume attestation missing"
+    if (
+        path.is_symlink()
+        or bool(is_junction())
+        or not resolved.is_file()
+        or resolved == root
+        or root in resolved.parents
+    ):
+        return False, "legacy resume attestation must be a regular file outside the source job"
+    try:
+        data = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False, "legacy resume attestation invalid"
+    identity = manifest.get("canonical_script_identity") or {}
+    expected_scalars = {
+        "schema_version": 1,
+        "attestation_type": "legacy_image_resume_full_sha256",
+        "job_id": Path(job_dir).name,
+        "recipe_fingerprint": production_fingerprint(config),
+        "canonical_script_sha256": identity.get("canonical_script_sha256", ""),
+        "plan_sha256": file_sha256(Path(job_dir) / "plan.json"),
+        "source_inventory_sha256": source_inventory_sha256(job_dir),
+    }
+    for key, expected in expected_scalars.items():
+        if data.get(key) != expected:
+            return False, f"legacy resume attestation {key} mismatch"
+    items = data.get("images")
+    if not isinstance(items, list) or len(items) != config.scene_count:
+        return False, "legacy resume attestation must contain exactly seven images"
+    candidates = {item["path"]: item["sha256"] for item in candidate_images}
+    seen_indices: list[int] = []
+    for item in items:
+        if not isinstance(item, dict):
+            return False, "legacy resume attestation image entry invalid"
+        relative = str(item.get("path") or "")
+        digest = str(item.get("sha256") or "").lower()
+        try:
+            index = int(item.get("scene_index"))
+        except (TypeError, ValueError):
+            return False, "legacy resume attestation scene index invalid"
+        seen_indices.append(index)
+        if item.get("provider") != "cloudflare":
+            return False, "legacy resume attestation provider mismatch"
+        if not _SHA256_RE.fullmatch(digest) or candidates.get(relative) != digest:
+            return False, "legacy resume attestation image hash mismatch"
+    if seen_indices != list(range(1, config.scene_count + 1)):
+        return False, "legacy resume attestation scene indices mismatch"
+    return True, "explicit versioned full-SHA256 resume attestation matched"
+
+
+def _validated_legacy_plan_images(
+    job_dir: Path,
+    manifest: dict[str, Any],
+    config: ProductionConfig,
+    attestation_path: Path | None = None,
+) -> tuple[list[dict[str, str]], bool, str]:
+    """Validate pre-accounting image evidence without changing the source job."""
+    identity = manifest.get("canonical_script_identity")
+    if not isinstance(identity, dict) or not identity.get("canonical_script_sha256"):
+        return [], False, "manifest image hashes missing"
+    plan_path = job_dir / "plan.json"
+    if not plan_path.is_file():
+        return [], False, "legacy plan missing"
+    try:
+        from tella.planner.models import TellaScenePlan
+        plan = TellaScenePlan.model_validate_json(
+            plan_path.read_text(encoding="utf-8")
+        )
+    except Exception:
+        return [], False, "legacy plan invalid"
+    if plan.recipe_id != config.recipe_id or plan.recipe_version != config.recipe_version:
+        return [], False, "legacy plan recipe mismatch"
+    plan_identity = {
+        "acceptance_suite_id": plan.acceptance_suite_id,
+        "acceptance_suite_path": plan.acceptance_suite_path,
+        "acceptance_case_id": plan.acceptance_case_id,
+        "script_version": plan.source_script_version,
+        "script_path": plan.source_script_path,
+        "canonical_script_sha256": plan.canonical_script_sha256,
+        "script_scene_count": plan.source_script_scene_count,
+    }
+    for key, value in plan_identity.items():
+        if identity.get(key) != value:
+            return [], False, f"legacy plan {key} mismatch"
+    scenes = [scene for scene in plan.scenes if scene.kind == "scene"]
+    if [scene.scene_index for scene in scenes] != list(
+        range(1, config.scene_count + 1)
+    ):
+        return [], False, "legacy plan scene indices mismatch"
+    expected_sentences = identity.get("canonical_script_sentences")
+    if not isinstance(expected_sentences, list) or [
+        scene.voice_script for scene in scenes
+    ] != expected_sentences:
+        return [], False, "legacy plan narration mismatch"
+    roles = [
+        f"step_{scene.step_number}"
+        if scene.scene_role == "practical_step"
+        else scene.scene_role
+        for scene in scenes
+    ]
+    if roles != identity.get("expected_scene_roles"):
+        return [], False, "legacy plan role mismatch"
+    items: list[dict[str, str]] = []
+    total_submissions = 0
+    total_transport = 0
+    root = job_dir.resolve()
+    for scene in scenes:
+        if scene.asset_status != "done" or scene.image_provider != "cloudflare":
+            return [], False, "legacy image provider evidence incomplete"
+        if scene.ai_images_generated < 1:
+            return [], False, "legacy image success evidence missing"
+        submissions = max(0, int(scene.provider_request_count_for_scene))
+        transport = max(0, int(scene.actual_cloudflare_request_count_for_scene))
+        if submissions < 1 or transport < 1:
+            return [], False, "legacy image request evidence missing"
+        total_submissions += submissions
+        total_transport += transport
+        relative = Path(scene.asset_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            return [], False, "legacy image path is unsafe"
+        path = job_dir / relative
+        is_junction = getattr(path, "is_junction", lambda: False)
+        resolved = path.resolve()
+        if (
+            path.is_symlink()
+            or bool(is_junction())
+            or root not in resolved.parents
+            or not resolved.is_file()
+        ):
+            return [], False, "legacy image artifact missing or aliased"
+        actual = file_sha256(resolved)
+        if not scene.asset_hash or actual[:16] != scene.asset_hash:
+            return [], False, "legacy image hash mismatch"
+        items.append({"path": relative.as_posix(), "sha256": actual})
+    if (
+        total_submissions != int(plan.ai_images_requested)
+        or total_transport != int(plan.image_request_budget_used_at_finish)
+    ):
+        return [], False, "legacy image accounting totals mismatch"
+    valid, reason = _validate_legacy_attestation(
+        job_dir, config, manifest, items, attestation_path
+    )
+    return items, valid, reason
+
+
 def evaluate_resume(
     job_dir: Path,
     config: ProductionConfig,
     expected_script_identity: dict[str, Any] | None = None,
+    resume_attestation_path: Path | None = None,
 ) -> dict[str, Any]:
     job_dir = Path(job_dir)
     result = {"compatible": False, "artifacts": {}, "resume_stage": "initialized",
               "reasons": [], "estimated_gemini_requests": 1, "estimated_image_requests": 7,
-              "render_required": True, "fingerprint_compatibility": "not_evaluated"}
+              "render_required": True, "fingerprint_compatibility": "not_evaluated",
+              "reusable_image_count": 0,
+              "maximum_gemini_sdk_attempts": config.tts_attempts,
+              "application_retries": 0, "fallbacks": 0}
     manifest_path = job_dir / "production_manifest.json"
     if not manifest_path.is_file():
         result["reasons"].append("production manifest missing")
@@ -534,6 +1077,13 @@ def evaluate_resume(
             result["reasons"].append("canonical script identity mismatch")
             return result
     result["compatible"] = True
+    legacy_images: list[dict[str, str]] = []
+    legacy_plan_valid = False
+    legacy_reason = ""
+    if not manifest.get("image_artifacts"):
+        legacy_images, legacy_plan_valid, legacy_reason = _validated_legacy_plan_images(
+            job_dir, manifest, config, resume_attestation_path
+        )
     checks = (
         ("plan", "plan.json", "planned"),
         ("raw_narration", "assets/narration_raw.wav", "narration_ready"),
@@ -549,26 +1099,42 @@ def evaluate_resume(
         path = job_dir / relative
         expected = metadata_hashes.get(key, "")
         own_hash_valid = path.is_file() and bool(expected) and file_sha256(path) == expected
+        if key == "plan" and not expected and legacy_plan_valid:
+            own_hash_valid = True
         valid = own_hash_valid and upstream_valid
         if key in {"alignment", "mixed_audio", "silent_video", "final_video"} and not upstream_valid:
             reason = "upstream artifact invalid"
         else:
-            reason = "hash matched" if valid else "missing or hash mismatch"
+            reason = (
+                "canonical legacy plan and image metadata validated"
+                if key == "plan" and valid and not expected
+                else ("hash matched" if valid else "missing or hash mismatch")
+            )
         result["artifacts"][key] = {"path": str(path), "valid": valid,
                                     "reason": reason}
         if valid:
             result["resume_stage"] = stage
         if key in {"plan", "raw_narration", "normalized_narration", "alignment", "mixed_audio", "silent_video"}:
             upstream_valid = upstream_valid and valid
-    image_valid = True
-    for item in manifest.get("image_artifacts", []):
+    image_items = manifest.get("image_artifacts", []) or (
+        legacy_images if legacy_plan_valid else []
+    )
+    image_valid = bool(image_items)
+    for item in image_items:
         path = job_dir / item.get("path", "")
         if not path.is_file() or file_sha256(path) != item.get("sha256"):
             image_valid = False
-    result["artifacts"]["images"] = {"valid": image_valid and len(manifest.get("image_artifacts", [])) == 7,
-                                      "reason": "seven hashes matched" if image_valid else "image hash mismatch"}
+    exactly_seven = len(image_items) == config.scene_count
+    result["artifacts"]["images"] = {
+        "valid": image_valid and exactly_seven,
+        "reason": (
+            legacy_reason if legacy_images and image_valid and exactly_seven
+            else ("seven hashes matched" if image_valid and exactly_seven else "image hash mismatch")
+        ),
+    }
     if result["artifacts"]["images"]["valid"]:
         result["estimated_image_requests"] = 0
+        result["reusable_image_count"] = len(image_items)
     else:
         for key in ("silent_video", "final_video"):
             if key in result["artifacts"]:
@@ -583,6 +1149,17 @@ def evaluate_resume(
         final["valid"] = False
         final["reason"] = "audio and video QC passes are required"
     result["render_required"] = not bool(final.get("valid") and qc_valid)
+    accounting = _persisted_accounting(job_dir)
+    result["persisted_submission_counts"] = accounting["submissions"]
+    result["persisted_transport_attempt_counts"] = accounting[
+        "transport_attempts"
+    ]
+    result["persisted_provider_result_counts"] = accounting["results"]
+    result["legacy_image_integrity"] = (
+        "full_sha256_attestation" if legacy_plan_valid else (
+            "prefix_only_not_reusable" if legacy_images else "not_applicable"
+        )
+    )
     return result
 
 
@@ -592,12 +1169,20 @@ def dry_run_envelope(
     *,
     resume: bool,
     script_identity: dict[str, Any] | None = None,
+    resume_attestation_path: Path | None = None,
 ) -> dict[str, Any]:
-    decision = evaluate_resume(job_dir, config, script_identity) if resume else {
+    decision = evaluate_resume(
+        job_dir, config, script_identity, resume_attestation_path
+    ) if resume else {
         "compatible": False, "artifacts": {}, "resume_stage": "initialized",
         "reasons": ["fresh job"], "estimated_gemini_requests": 1,
         "estimated_image_requests": config.max_image_requests, "render_required": True,
     }
+    cumulative = decision.get("persisted_submission_counts", _zero_submissions())
+    cumulative_transport = decision.get(
+        "persisted_transport_attempt_counts", _zero_transport_attempts()
+    )
+    invocation_limits = _invocation_limits(config)
     return {
         "recipe_id": config.recipe_id, "recipe_version": config.recipe_version,
         "production_schema_version": config.schema_version,
@@ -606,8 +1191,19 @@ def dry_run_envelope(
         "model": config.model, "voice": config.voice, "style": config.style,
         "effective_voice_rate": normalize_voice_rate(config.voice_rate),
         "maximum_gemini_requests": config.max_tts_requests,
+        "maximum_gemini_sdk_attempts": config.tts_attempts,
         "maximum_image_requests": config.max_image_requests,
-        "retry_policy": "no retries", "fallback_policy": "no provider or model fallback",
+        "cumulative_submission_counts": cumulative,
+        "cumulative_transport_attempt_counts": cumulative_transport,
+        "current_invocation_submission_counts": _zero_submissions(),
+        "current_invocation_transport_attempt_counts": _zero_transport_attempts(),
+        "current_invocation_request_limits": invocation_limits,
+        "current_invocation_remaining_budget": invocation_limits,
+        "retry_policy": "no retries",
+        "fallback_policy": "no provider, model, stock, or local placeholder fallback",
+        "edge_fallback": 0, "model_fallback": 0,
+        "stock_fallback": 0, "local_placeholder_fallback": 0,
+        "asr_calls": 0, "music_provider_calls": 0,
         "alignment_mode": config.alignment_mode, "music_track": config.music_track,
         "music_profile": config.music_profile, "expected_output_directory": str(job_dir),
         "canonical_script_identity": dict(script_identity or {}),
@@ -667,7 +1263,9 @@ __all__ = [
     "CALLIRRHOE_PRODUCTION_CONFIG", "CALLIRRHOE_RECIPE_ID", "PRODUCTION_SCHEMA_VERSION",
     "LocalTTSCache", "ProductionConfig", "ProductionRun", "ProductionStage",
     "ProductionSummaryStatus", "classify_error",
-    "apply_sentence_alignment", "dry_run_envelope", "evaluate_resume", "file_sha256", "get_production_config",
+    "apply_sentence_alignment", "build_legacy_image_resume_attestation",
+    "dry_run_envelope", "evaluate_resume", "file_sha256", "get_production_config",
+    "image_request_accounting",
     "production_fingerprint", "record_unhandled_production_failure", "stable_hash", "tts_cache_key",
-    "validate_production_voice_configuration",
+    "source_inventory_sha256", "validate_production_voice_configuration",
 ]

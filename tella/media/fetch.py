@@ -32,6 +32,7 @@ from pathlib import Path
 
 from tella.media import ai_image, sprite_composer, stock_photo, stock_video
 from tella.media.image_provider import get_image_provider
+from tella.atomic_write import atomic_write_bytes, atomic_write_json
 from tella.media.reference_pipeline import (
     generate_character_references,
     selected_reference_paths,
@@ -90,11 +91,18 @@ def _provider_prompt_hash(prompt: str) -> str:
 
 
 class _CloudflareRequestBudget:
-    def __init__(self, plan: TellaScenePlan, scenes: list, maximum: int | None) -> None:
+    def __init__(
+        self,
+        plan: TellaScenePlan,
+        scenes: list,
+        maximum: int | None,
+        job_dir: Path | None = None,
+    ) -> None:
         self.plan = plan
         self.scenes = scenes
         self.maximum = maximum
         self.used = 0
+        self.plan_path = Path(job_dir) / "plan.json" if job_dir is not None else None
         self._lock = asyncio.Lock()
         budget_max = maximum or 0
         plan.image_request_budget_max = budget_max
@@ -123,6 +131,12 @@ class _CloudflareRequestBudget:
                 )
             elif scene.content_policy_attempt_count == 0:
                 scene.content_policy_attempt_count = 1
+            # Persist acquisition before the transport starts. A hard failure
+            # after provider submission must not erase the request history.
+            if self.plan_path is not None:
+                atomic_write_json(
+                    self.plan_path, self.plan.model_dump(mode="json")
+                )
             denominator = str(self.maximum) if self.maximum is not None else "unlimited"
             logger.info(
                 "cloudflare image request %d/%s scene=%02d stage=%s "
@@ -1843,7 +1857,7 @@ async def _fetch_minimalist_reference_assets(
         if best_qc:
             save_qc_result(best_qc, job_dir, final=True)
         if best_out != final_out:
-            final_out.write_bytes(best_out.read_bytes())
+            atomic_write_bytes(final_out, best_out.read_bytes())
 
         final_hash = image_hash(final_out)
         previous_hashes.append(final_hash)
@@ -1938,7 +1952,9 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
     max_ai_images = _env_int_optional("TELLA_MAX_AI_IMAGES")
     reuse_index = _load_reuse_index(job_dir)
     loose_reuse_index = _load_loose_reuse_index(job_dir) if plan.reuse_mode == "loose_debug" else {}
-    request_budget = _CloudflareRequestBudget(plan, body_scenes, max_ai_images)
+    request_budget = _CloudflareRequestBudget(
+        plan, body_scenes, max_ai_images, job_dir
+    )
     required_reuse_indices = _required_reuse_scene_indices()
     reuse_source_job_id = (
         _source_job_id(job_dir) if _reuse_assets_enabled() else ""
@@ -2207,7 +2223,7 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         if selected_qc is not None:
             save_qc_result(selected_qc, job_dir, final=True)
         if selected_out is not None and selected_out != final_out:
-            final_out.write_bytes(selected_out.read_bytes())
+            atomic_write_bytes(final_out, selected_out.read_bytes())
         if selected_qc is not None and selected_out is not None:
             try:
                 selected_attempt_path = str(selected_out.relative_to(job_dir))

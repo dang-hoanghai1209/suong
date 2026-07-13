@@ -40,7 +40,19 @@ try:
     from dotenv import load_dotenv
 
     _REPO_ROOT = Path(__file__).resolve().parent.parent
-    load_dotenv(_REPO_ROOT / ".env")
+    _process_gemini_names = tuple(
+        name
+        for name in ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+        if (os.environ.get(name) or "").strip()
+    )
+    load_dotenv(_REPO_ROOT / ".env", override=False)
+    if _process_gemini_names:
+        # Store only the selected variable name, never its secret value. This
+        # preserves shell-over-dotenv precedence even across the two accepted
+        # credential aliases.
+        os.environ["TELLA_GEMINI_PROCESS_CREDENTIAL_NAME"] = (
+            _process_gemini_names[0]
+        )
 except ImportError:
     pass
 
@@ -692,6 +704,7 @@ async def _run_pipeline_unlocked(
     voice_resolution: VoiceResolution | None = None,
     script_identity: dict | None = None,
     resume: bool = False,
+    resume_attestation_path: Path | None = None,
 ) -> Path:
     """Execute the full Tella pipeline. Returns the path to the final MP4.
 
@@ -720,7 +733,9 @@ async def _run_pipeline_unlocked(
     job_dir.mkdir(parents=True, exist_ok=True)
     production_config = get_production_config(recipe.recipe_id) if recipe else None
     resume_decision = (
-        evaluate_resume(job_dir, production_config, script_identity)
+        evaluate_resume(
+            job_dir, production_config, script_identity, resume_attestation_path
+        )
         if production_config and resume else None
     )
     if resume and production_config and not resume_decision["compatible"]:
@@ -731,6 +746,12 @@ async def _run_pipeline_unlocked(
     if resume_decision and resume_decision["artifacts"].get("images", {}).get("valid"):
         reuse_assets = True
         images_from_job = str(job_dir)
+        required_resume_image_indices = ",".join(
+            str(index)
+            for index in range(1, int(production_config.scene_count) + 1)
+        )
+    else:
+        required_resume_image_indices = ""
     if resume_decision and resume_decision["artifacts"].get("raw_narration", {}).get("valid"):
         os.environ["TELLA_TTS_RESUME_RAW"] = str(job_dir / "assets" / "narration_raw.wav")
     production_run = (
@@ -765,6 +786,7 @@ async def _run_pipeline_unlocked(
         "TELLA_REUSE_PLAN_PATH": os.environ.get("TELLA_REUSE_PLAN_PATH"),
         "TELLA_REUSE_ASSETS_MODE": os.environ.get("TELLA_REUSE_ASSETS_MODE"),
         "TELLA_ALLOW_MISMATCHED_REUSED_ASSETS": os.environ.get("TELLA_ALLOW_MISMATCHED_REUSED_ASSETS"),
+        "TELLA_REQUIRE_REUSED_SCENE_INDICES": os.environ.get("TELLA_REQUIRE_REUSED_SCENE_INDICES"),
         "TELLA_TTS_CONTINUOUS": os.environ.get("TELLA_TTS_CONTINUOUS"),
         "TELLA_TTS_MAX_PAUSE_MS": os.environ.get("TELLA_TTS_MAX_PAUSE_MS"),
         "TELLA_TTS_STYLE": os.environ.get("TELLA_TTS_STYLE"),
@@ -781,6 +803,8 @@ async def _run_pipeline_unlocked(
         os.environ["TELLA_SKIP_IMAGE_GENERATION"] = "1"
     if images_from_job:
         os.environ["TELLA_IMAGES_FROM_JOB"] = images_from_job
+    if required_resume_image_indices:
+        os.environ["TELLA_REQUIRE_REUSED_SCENE_INDICES"] = required_resume_image_indices
     if reuse_assets_mode:
         os.environ["TELLA_REUSE_ASSETS_MODE"] = reuse_assets_mode
     if allow_mismatched_reused_assets:
@@ -908,7 +932,7 @@ async def _run_pipeline_unlocked(
     plan.channel_avatar = "" if _demo else _ch_avatar
 
     plan_json = job_dir / "plan.json"
-    if reuse_assets and not images_from_job and plan_json.is_file():
+    if reuse_assets and plan_json.is_file():
         reuse_plan = job_dir / ".reuse_plan.json"
         shutil.copyfile(plan_json, reuse_plan)
         os.environ["TELLA_REUSE_PLAN_PATH"] = str(reuse_plan)
@@ -1004,18 +1028,18 @@ async def _run_pipeline_unlocked(
     try:
         if production_run:
             await fetch_assets(plan, job_dir)
+            atomic_write_json(plan_json, plan.model_dump(mode="json"))
+            production_run.record_image_stage(plan, plan_json)
             production_run.advance(ProductionStage.images_ready)
             failed_stage = ProductionStage.narration_ready.value
-            production_run.counts["gemini"] = 1
+            production_run.record_submission("gemini", transport_attempts=1)
             await synthesize_all(
                 plan,
                 job_dir,
                 google_tts_api_key=google_tts_api_key,
                 google_tts_voice=google_tts_voice,
             )
-            production_run.counts["gemini"] = int(
-                plan.tts_metadata.get("request_attempt_count", 1)
-            )
+            production_run.record_provider_result("gemini", successful=True)
             production_run.advance(ProductionStage.narration_ready, {
                 "raw_narration": job_dir / "assets" / "narration_raw.wav",
                 "normalized_narration": job_dir / "assets" / "narration.wav",
@@ -1078,6 +1102,10 @@ async def _run_pipeline_unlocked(
         )
         _restore_fetch_env()
         if production_run:
+            atomic_write_json(plan_json, plan.model_dump(mode="json"))
+            production_run.record_image_stage(plan, plan_json)
+            if failed_stage == ProductionStage.narration_ready.value:
+                production_run.record_provider_result("gemini", successful=False)
             production_run.fail(failed_stage, exc)
         raise
 
@@ -1215,6 +1243,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--resume",
         action="store_true",
         help="Resume the same production job after validating recipe metadata and artifact hashes.",
+    )
+    p.add_argument(
+        "--resume-attestation",
+        type=Path,
+        default=None,
+        help=(
+            "Explicit versioned full-SHA256 attestation for a legacy resume; "
+            "never auto-discovered."
+        ),
     )
     p.add_argument(
         "--recover-stale-lock",
@@ -1518,6 +1555,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.resume and (production_config is None or not args.job_id):
         parser.error("--resume requires a production recipe and explicit --job-id")
+    if args.resume_attestation is not None and not args.resume:
+        parser.error("--resume-attestation requires --resume")
     if args.max_tts_requests is not None and args.max_tts_requests < 0:
         parser.error("--max-tts-requests must be non-negative")
 
@@ -1601,6 +1640,7 @@ def main(argv: list[str] | None = None) -> int:
                     job_dir,
                     resume=args.resume,
                     script_identity=script_identity,
+                    resume_attestation_path=args.resume_attestation,
                 )
                 envelope_path = job_dir / "request_envelope.json"
                 atomic_write_json(envelope_path, envelope)
@@ -1807,6 +1847,7 @@ def main(argv: list[str] | None = None) -> int:
                 voice_resolution=voice_resolution,
                 script_identity=script_identity,
                 resume=args.resume,
+                resume_attestation_path=args.resume_attestation,
                 recover_stale_lock=args.recover_stale_lock,
             )
         )

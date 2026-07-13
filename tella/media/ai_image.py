@@ -36,6 +36,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 
 import httpx
+from tella.atomic_write import atomic_write_bytes
 
 logger = logging.getLogger("tella.media.ai_image")
 
@@ -259,9 +260,9 @@ async def generate_image(
                                 f"CF AI 200 JSON missing image: keys={list(result)}"
                             )
                         img_bytes = base64.b64decode(b64)
-                        out_path.write_bytes(img_bytes)
+                        atomic_write_bytes(out_path, img_bytes)
                     elif resp.content:
-                        out_path.write_bytes(resp.content)
+                        atomic_write_bytes(out_path, resp.content)
                     else:
                         raise RuntimeError("CF AI 200 with empty body")
 

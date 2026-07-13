@@ -46,6 +46,33 @@ def atomic_write_text(path: Path | str, text: str, encoding: str = "utf-8") -> P
     return destination
 
 
+def atomic_write_bytes(path: Path | str, content: bytes) -> Path:
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+        _fsync_parent_best_effort(destination.parent)
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return destination
+
+
 def atomic_write_json(
     path: Path | str,
     payload: Any,
@@ -58,4 +85,4 @@ def atomic_write_json(
     return atomic_write_text(path, serialized, encoding=encoding)
 
 
-__all__ = ["atomic_write_json", "atomic_write_text"]
+__all__ = ["atomic_write_bytes", "atomic_write_json", "atomic_write_text"]

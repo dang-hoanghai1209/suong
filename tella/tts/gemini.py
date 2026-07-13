@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import wave
 from pathlib import Path
 from typing import Any, Callable
@@ -32,19 +33,42 @@ def serialize_provider_input(text: str, instruction: str) -> str:
     )
 
 
+def _clean_api_key(value: str | None) -> str:
+    cleaned = (value or "").strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
+        cleaned = cleaned[1:-1].strip()
+    return cleaned
+
+
+def resolve_api_key_from_environment() -> tuple[str, str]:
+    """Resolve one key deterministically without exposing credential material."""
+    preferred = os.environ.get("TELLA_GEMINI_PROCESS_CREDENTIAL_NAME", "")
+    order = ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+    if preferred in order:
+        order.remove(preferred)
+        order.insert(0, preferred)
+    for name in order:
+        value = _clean_api_key(os.environ.get(name))
+        if value:
+            return name, value
+    return "", ""
+
+
 def credential_environment_name() -> str:
-    import os
-    if os.environ.get("GOOGLE_API_KEY"):
-        return "GOOGLE_API_KEY"
-    if os.environ.get("GEMINI_API_KEY"):
-        return "GEMINI_API_KEY"
+    name, _ = resolve_api_key_from_environment()
+    if name:
+        return name
     return "GOOGLE_API_KEY or GEMINI_API_KEY"
 
 
 def _official_client() -> Any:
     from google import genai
     from google.genai import types
+    _, api_key = resolve_api_key_from_environment()
+    if not api_key:
+        raise RuntimeError("Gemini TTS credential is not configured")
     return genai.Client(
+        api_key=api_key,
         http_options=types.HttpOptions(
             retry_options=types.HttpRetryOptions(attempts=1),
         )
@@ -139,5 +163,5 @@ async def synthesize(
 
 __all__ = [
     "REQUEST_FORMAT_VERSION", "credential_environment_name", "serialize_provider_input",
-    "sha256_text", "synthesize",
+    "resolve_api_key_from_environment", "sha256_text", "synthesize",
 ]

@@ -287,6 +287,13 @@ def test_release_preflight_fails_closed_for_script_change(tmp_path, mode):
 def test_canonical_production_dry_run_records_identity_and_no_media(
     tmp_path, monkeypatch
 ):
+    reserved = (
+        ROOT / "out/acceptance/practical_life_steps_visual_v1/phone_focus_dryrun_02",
+        ROOT / "out/acceptance/practical_life_steps_visual_v1/phone_focus_source_02",
+        ROOT / "out/acceptance/practical_life_steps_visual_v1/reviews/phone_focus_source_02_review_v1.json",
+    )
+    reserved_presence = {path: path.exists() for path in reserved}
+
     class LegacyConsole:
         encoding = "cp1252"
 
@@ -330,9 +337,4 @@ def test_canonical_production_dry_run_records_identity_and_no_media(
     assert envelope["maximum_image_requests"] == 7
     assert envelope["external_calls_performed"] == 0
     assert envelope["render_operations_performed"] == 0
-    for reserved in (
-        ROOT / "out/acceptance/practical_life_steps_visual_v1/phone_focus_dryrun_02",
-        ROOT / "out/acceptance/practical_life_steps_visual_v1/phone_focus_source_02",
-        ROOT / "out/acceptance/practical_life_steps_visual_v1/reviews/phone_focus_source_02_review_v1.json",
-    ):
-        assert not reserved.exists()
+    assert {path: path.exists() for path in reserved} == reserved_presence
