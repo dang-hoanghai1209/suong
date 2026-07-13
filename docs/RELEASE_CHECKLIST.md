@@ -10,6 +10,8 @@
 - Record the full test count and confirm tests made zero production-provider calls.
 - Run the production recipe dry-run and review its request envelope.
 - Manually review an accepted local production video, subtitle/scene timing, and narration.
+- Require a completed visual-acceptance report with no unreviewed required scenes and passing thresholds.
+- Review every regenerated scene again and retain source/derived lineage metadata.
 - Review the selected music license, attribution, and Content ID status.
 - Confirm production outputs are ignored and no API key or credential file is tracked.
 - Confirm the intended merge target.

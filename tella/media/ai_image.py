@@ -193,6 +193,8 @@ async def generate_image(
     width: int = DEFAULT_WIDTH,
     height: int = DEFAULT_HEIGHT,
     seed: int | None = None,
+    max_accounts: int | None = None,
+    max_attempts_per_account: int | None = None,
 ) -> Path:
     """Generate one image and save to ``out_path``. Returns ``out_path`` on success.
 
@@ -208,11 +210,18 @@ async def generate_image(
         raise RuntimeError(
             "CF AI: no credentials (set CF_ACCOUNTS or CF_ACCOUNT_ID + CF_AI_TOKEN)"
         )
-    account_limit = _positive_env_int("TELLA_CF_MAX_ACCOUNTS", len(creds))
+    account_limit = (
+        max(1, int(max_accounts)) if max_accounts is not None
+        else _positive_env_int("TELLA_CF_MAX_ACCOUNTS", len(creds))
+    )
     creds = creds[:account_limit]
-    attempt_limit = _positive_env_int(
-        "TELLA_CF_MAX_RETRIES_PER_ACCOUNT",
-        MAX_RETRIES_PER_ACCOUNT,
+    attempt_limit = (
+        max(1, int(max_attempts_per_account))
+        if max_attempts_per_account is not None
+        else _positive_env_int(
+            "TELLA_CF_MAX_RETRIES_PER_ACCOUNT",
+            MAX_RETRIES_PER_ACCOUNT,
+        )
     )
 
     payload: dict = {

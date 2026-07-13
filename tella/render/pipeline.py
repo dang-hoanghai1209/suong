@@ -515,7 +515,7 @@ async def _concat_scenes_xfade(
 
 
 async def _mux_audio(
-    silent_video: Path, audio: Path, out_path: Path,
+    silent_video: Path, audio: Path, out_path: Path, *, copy_audio: bool = False,
 ) -> Path:
     """Mix the continuous narration onto the concatenated silent video.
 
@@ -524,6 +524,9 @@ async def _mux_audio(
     without a trailing silent frame. Audio is encoded to AAC 96k mono —
     Edge/Google TTS output is mono speech.
     """
+    audio_codec_args = ["-c:a", "copy"] if copy_audio else [
+        "-c:a", "aac", "-b:a", "96k", "-ar", "44100", "-ac", "1",
+    ]
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
         "-i", str(silent_video),
@@ -531,10 +534,7 @@ async def _mux_audio(
         "-map", "0:v",
         "-map", "1:a",
         "-c:v", "copy",
-        "-c:a", "aac",
-        "-b:a", "96k",
-        "-ar", "44100",
-        "-ac", "1",
+        *audio_codec_args,
         "-shortest",
         "-movflags", "+faststart",
         str(out_path),
@@ -551,7 +551,13 @@ async def _mux_audio(
     return out_path
 
 
-async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
+async def render(
+    plan: TellaScenePlan,
+    job_dir: Path,
+    *,
+    preserve_timing: bool = False,
+    existing_mixed_audio: Path | None = None,
+) -> Path:
     """Render the final video MP4. Returns the path to ``<job_dir>/video.mp4``.
 
     Pre-requirements (in order):
@@ -571,7 +577,8 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
     sz = safe_zone_for(plan.aspect_ratio)
     font_file = _resolve_font_file()
 
-    compose_timing(plan)
+    if not preserve_timing:
+        compose_timing(plan)
 
     # Pre-compute the caption/title char budget once.
     title_cpl = chars_per_line(sz.width, TITLE_FONT_SIZE)
@@ -837,7 +844,12 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
 
     prepared_music = None
     loop_status = "not_applicable"
-    if plan.music_enabled:
+    if existing_mixed_audio is not None:
+        accepted_audio = Path(existing_mixed_audio)
+        if not accepted_audio.is_file():
+            raise RuntimeError(f"missing accepted mixed audio: {accepted_audio}")
+        await _mux_audio(silent_video, accepted_audio, final_path, copy_audio=True)
+    elif plan.music_enabled:
         prepared_music, processing = await prepare_music(
             plan,
             job_dir,
@@ -875,7 +887,7 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
         expected_duration=plan.total_duration,
         loop_discontinuity_status=loop_status,
     )
-    if plan.music_enabled:
+    if plan.music_enabled and existing_mixed_audio is None:
         plan.music_metadata = {
             **plan.music_metadata,
             "output_duration": plan.audio_qc.get("output_duration"),

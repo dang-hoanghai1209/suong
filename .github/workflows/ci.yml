@@ -117,6 +117,8 @@ jobs:
           tests/test_gemini_tts.py
           tests/test_sentence_alignment.py
           tests/test_practical_callirrhoe_recipe.py
+          tests/test_scene_regeneration.py
+          tests/test_visual_acceptance.py
       - name: Validate CLI and worktree
         run: |
           uv run tella --help

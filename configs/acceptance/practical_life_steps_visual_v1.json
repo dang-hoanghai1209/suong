@@ -1,0 +1,28 @@
+{
+  "acceptance_policy_version": 1,
+  "cases": [
+    {"case_id":"start_without_phone","topic":"Bắt đầu một việc quan trọng mà không kiểm tra điện thoại","expected_recipe":"practical_life_steps_callirrhoe_v1","expected_scene_count":7,"intended_visual_challenge":"Show starting work while resisting a nearby distraction","important_object_states":["phone not in hand","work visibly started"],"high_risk_scenes":[1,4],"expected_request_budget":7,"manual_review_required":true},
+    {"case_id":"phone_out_of_reach","topic":"Đặt điện thoại ngoài tầm với khi tập trung làm việc","expected_recipe":"practical_life_steps_callirrhoe_v1","expected_scene_count":7,"intended_visual_challenge":"Distinguish placing from holding or viewing","important_object_states":["phone resting outside reach","hands focused on work"],"high_risk_scenes":[3,4],"expected_request_budget":7,"manual_review_required":true},
+    {"case_id":"prepare_documents","topic":"Chuẩn bị tài liệu trước khi bắt đầu công việc","expected_recipe":"practical_life_steps_callirrhoe_v1","expected_scene_count":7,"intended_visual_challenge":"Show ordered preparation rather than completed work","important_object_states":["documents arranged","workspace ready"],"high_risk_scenes":[3,5],"expected_request_budget":7,"manual_review_required":true},
+    {"case_id":"write_one_goal","topic":"Viết một mục tiêu rõ ràng ra giấy","expected_recipe":"practical_life_steps_callirrhoe_v1","expected_scene_count":7,"intended_visual_challenge":"Show writing without readable generated words","important_object_states":["pen touches paper","paper has no readable text"],"high_risk_scenes":[4],"expected_request_budget":7,"manual_review_required":true},
+    {"case_id":"one_small_step","topic":"Chia một việc lớn thành bước đầu tiên thật nhỏ","expected_recipe":"practical_life_steps_callirrhoe_v1","expected_scene_count":7,"intended_visual_challenge":"Make an abstract decomposition action visually concrete","important_object_states":["one small item selected","remaining items organized"],"high_risk_scenes":[3,5],"expected_request_budget":7,"manual_review_required":true},
+    {"case_id":"clean_desk_ten_minutes","topic":"Dọn bàn làm việc trong mười phút","expected_recipe":"practical_life_steps_callirrhoe_v1","expected_scene_count":7,"intended_visual_challenge":"Show active clearing and a visibly cleaner result","important_object_states":["objects being put away","desk surface clear"],"high_risk_scenes":[4,7],"expected_request_budget":7,"manual_review_required":true},
+    {"case_id":"prepare_night_before","topic":"Chuẩn bị quần áo và vật dụng từ tối hôm trước","expected_recipe":"practical_life_steps_callirrhoe_v1","expected_scene_count":7,"intended_visual_challenge":"Keep materials prepared rather than worn or used","important_object_states":["clothes laid out","materials grouped"],"high_risk_scenes":[3,4],"expected_request_budget":7,"manual_review_required":true},
+    {"case_id":"pause_before_reacting","topic":"Tạm dừng một chút trước khi phản ứng theo cảm xúc","expected_recipe":"practical_life_steps_callirrhoe_v1","expected_scene_count":7,"intended_visual_challenge":"Communicate a calm pause without melodrama","important_object_states":["relaxed posture","interaction visibly paused"],"high_risk_scenes":[1,6],"expected_request_budget":7,"manual_review_required":true},
+    {"case_id":"finish_before_opening","topic":"Hoàn thành một việc trước khi mở việc khác","expected_recipe":"practical_life_steps_callirrhoe_v1","expected_scene_count":7,"intended_visual_challenge":"Show one completed item and unopened alternatives","important_object_states":["current task completed","other task remains closed"],"high_risk_scenes":[5,6],"expected_request_budget":7,"manual_review_required":true},
+    {"case_id":"review_tomorrow_priorities","topic":"Xem lại các ưu tiên cho ngày mai","expected_recipe":"practical_life_steps_callirrhoe_v1","expected_scene_count":7,"intended_visual_challenge":"Show review and prioritization without readable text","important_object_states":["planning materials visible","no readable labels"],"high_risk_scenes":[4,7],"expected_request_budget":7,"manual_review_required":true}
+  ],
+  "schema_version": 1,
+  "suite_id": "practical_life_steps_visual_v1",
+  "thresholds": {
+    "all_scenes_reviewed_required": true,
+    "hard_action_mismatch_rejects": true,
+    "maximum_action_hard_fail_rate": 0.0,
+    "maximum_average_regeneration_count": 1.0,
+    "maximum_character_consistency_fail_rate": 0.0,
+    "maximum_unwanted_text_rate": 0.0,
+    "minimum_technical_job_completion_rate": 1.0,
+    "soft_fail_is_conditional": true,
+    "unwanted_text_rejects": true
+  }
+}
