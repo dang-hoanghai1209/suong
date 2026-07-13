@@ -90,6 +90,8 @@ from tella.production import (
     evaluate_resume,
     get_production_config,
 )
+from tella.production_lock import JobLockConflict, ProductionJobLock
+from tella.atomic_write import atomic_write_json
 
 logger = logging.getLogger("tella.cli")
 
@@ -104,9 +106,9 @@ def _write_recipe_manifest(
     voice_resolution: VoiceResolution | None = None,
 ) -> Path:
     out = job_dir / "recipe.json"
-    out.write_text(
-        json.dumps(
-            recipe_manifest(
+    atomic_write_json(
+        out,
+        recipe_manifest(
                 recipe,
                 validation_status=validation_status,
                 validation_errors=validation_errors,
@@ -115,10 +117,6 @@ def _write_recipe_manifest(
                     voice_resolution.model_dump() if voice_resolution else None
                 ),
             ),
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
     )
     return out
 
@@ -618,7 +616,7 @@ def _setup_logging(verbose: bool) -> None:
     )
 
 
-async def run_pipeline(
+async def _run_pipeline_unlocked(
     *,
     topic: str,
     target_lang: str,
@@ -1091,6 +1089,29 @@ async def run_pipeline(
     return final
 
 
+async def run_pipeline(**kwargs) -> Path:
+    """Run the pipeline, locking explicit production jobs before any mutation."""
+    recover_stale_lock = bool(kwargs.pop("recover_stale_lock", False))
+    recipe = kwargs.get("recipe")
+    production_config = get_production_config(recipe.recipe_id) if recipe else None
+    if production_config is None:
+        return await _run_pipeline_unlocked(**kwargs)
+    job_id = kwargs.get("job_id")
+    if not job_id:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        slug_seed = kwargs.get("topic") or (kwargs.get("user_script") or "script")[:40]
+        job_id = f"{ts}_{_slugify(slug_seed)}"
+        kwargs["job_id"] = job_id
+    job_dir = Path(kwargs["out_root"]) / job_id
+    with ProductionJobLock(
+        job_dir,
+        recipe_id=production_config.recipe_id,
+        operation="production-resume" if kwargs.get("resume") else "production-run",
+        recover_stale=recover_stale_lock,
+    ):
+        return await _run_pipeline_unlocked(**kwargs)
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="tella",
@@ -1131,6 +1152,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--resume",
         action="store_true",
         help="Resume the same production job after validating recipe metadata and artifact hashes.",
+    )
+    p.add_argument(
+        "--recover-stale-lock",
+        action="store_true",
+        help=(
+            "Recover only a confirmed stale same-host lock; malformed locks are refused. "
+            "After independently confirming no owner exists, manually remove .tella-job.lock; "
+            "never remove an active lock."
+        ),
     )
     p.add_argument(
         "--max-tts-requests",
@@ -1469,20 +1499,27 @@ def main(argv: list[str] | None = None) -> int:
         out_root = Path(args.out_root or os.environ.get("TELLA_OUTPUT_DIR") or "./out")
         job_id = args.job_id or f"production_dry_{selected_recipe.recipe_id}"
         job_dir = out_root / job_id
-        run = ProductionRun(job_dir, production_config, resume=args.resume)
-        recipe_path = _write_recipe_manifest(
-            job_dir, selected_recipe,
-            validation_status="definition_validated",
-            voice_resolution=voice_resolution,
-        )
-        envelope = dry_run_envelope(production_config, job_dir, resume=args.resume)
-        envelope_path = job_dir / "request_envelope.json"
-        envelope_path.write_text(
-            json.dumps(envelope, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        run.advance(ProductionStage.recipe_resolved, {
-            "recipe": recipe_path, "request_envelope": envelope_path,
-        })
+        try:
+            with ProductionJobLock(
+                job_dir, recipe_id=production_config.recipe_id,
+                operation="production-dry-run",
+                recover_stale=args.recover_stale_lock,
+            ):
+                run = ProductionRun(job_dir, production_config, resume=args.resume)
+                recipe_path = _write_recipe_manifest(
+                    job_dir, selected_recipe,
+                    validation_status="definition_validated",
+                    voice_resolution=voice_resolution,
+                )
+                envelope = dry_run_envelope(production_config, job_dir, resume=args.resume)
+                envelope_path = job_dir / "request_envelope.json"
+                atomic_write_json(envelope_path, envelope)
+                run.advance(ProductionStage.recipe_resolved, {
+                    "recipe": recipe_path, "request_envelope": envelope_path,
+                })
+        except JobLockConflict as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
         print(json.dumps(envelope, ensure_ascii=False, indent=2))
         print(f"\n[OK] Production dry-run: {job_dir}")
         return 0
@@ -1676,6 +1713,7 @@ def main(argv: list[str] | None = None) -> int:
                 recipe=selected_recipe,
                 voice_resolution=voice_resolution,
                 resume=args.resume,
+                recover_stale_lock=args.recover_stale_lock,
             )
         )
     except KeyboardInterrupt:

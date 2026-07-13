@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+from tella.atomic_write import atomic_write_json
 
 PRODUCTION_SCHEMA_VERSION = 1
 CALLIRRHOE_RECIPE_ID = "practical_life_steps_callirrhoe_v1"
@@ -261,7 +262,7 @@ class ProductionRun:
             "resume_requested": self.resume,
             **(extra or {}),
         }
-        self.manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_json(self.manifest_path, payload)
 
     def record_artifact_hashes(
         self,
@@ -287,9 +288,7 @@ class ProductionRun:
         ]
         if qc_results is not None:
             current["qc_results"] = dict(qc_results)
-        self.manifest_path.write_text(
-            json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        atomic_write_json(self.manifest_path, current)
 
     def advance(self, stage: ProductionStage, artifacts: dict[str, Path | str] | None = None) -> None:
         self.stage = stage
@@ -334,7 +333,7 @@ class ProductionRun:
             "resumable": resumable,
             "recommended_resume_action": recommended,
         }
-        self.summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_json(self.summary_path, payload)
 
     def fail(self, failed_stage: str, exc: BaseException) -> None:
         status, category = classify_error(exc)

@@ -31,6 +31,7 @@ from tella.subtitles import subtitle_text_for_style
 from tella.themes.loader import load_theme
 from tella.tts import edge
 from tella.tts import duration_fit
+from tella.music.library import load_library
 
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -886,6 +887,7 @@ def test_local_rerender_strictly_reuses_all_seven_images_without_providers(
 def test_zero_network_full_prototype_simulation(
     monkeypatch,
     tmp_path,
+    synthetic_practical_music_library,
 ):
     _clear_fetch_env(monkeypatch)
     recipe = get_recipe("practical_life_steps_v1")
@@ -1018,6 +1020,29 @@ def test_zero_network_full_prototype_simulation(
     )
 
 
+def test_zero_network_practical_simulation_does_not_require_production_music_asset(
+    synthetic_practical_music_library,
+    monkeypatch,
+):
+    root = synthetic_practical_music_library
+    production_track = (_ROOT / "music" / "tracks" / "practical_calm_01.mp3").resolve()
+    original_is_file = Path.is_file
+
+    def guarded_is_file(path):
+        if Path(path).resolve() == production_track:
+            raise AssertionError("production music asset was probed by zero-network test")
+        return original_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", guarded_is_file)
+    assert root.is_relative_to(root.parent)
+    assert not (root / "tracks" / "practical_calm_01.mp3").exists()
+    tracks = load_library(root)
+    track = tracks["synthetic_practical_tone"]
+    assert track.file_path.is_relative_to(root)
+    assert track.file_path.suffix == ".wav"
+    assert track.source == "runtime generated"
+
+
 def test_sequential_partial_generation_stops_on_first_provider_failure(
     monkeypatch,
     tmp_path,
@@ -1122,7 +1147,9 @@ def test_required_practical_reuse_mismatch_aborts_before_provider(
     assert plan.scenes[0].reuse_mismatch_reason == "visual action does not match"
 
 
-def test_preview_indices_select_after_full_recipe_validation(monkeypatch, tmp_path):
+def test_preview_indices_select_after_full_recipe_validation(
+    monkeypatch, tmp_path, synthetic_practical_music_library
+):
     selected: list[int] = []
 
     async def fake_fetch(plan, job_dir):
@@ -1228,6 +1255,7 @@ def test_normal_cli_render_route_is_active_with_external_pipeline_mocked(
 def test_direct_full_route_validates_seven_scenes_before_mocked_boundaries(
     monkeypatch,
     tmp_path,
+    synthetic_practical_music_library,
 ):
     selected: list[int] = []
 
