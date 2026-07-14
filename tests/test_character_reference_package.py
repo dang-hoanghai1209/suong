@@ -12,10 +12,14 @@ from pydantic import ValidationError
 
 from tella.media.character_reference_package import (
     ALL_ASSET_ROLES,
+    ATOMIC_DIMENSIONS,
     ATOMIC_VIEW_ORDER,
     CHARACTER_ID,
     PACKAGE_ID,
+    MASTER_SHEET_ASSEMBLY,
+    MASTER_SHEET_DIMENSIONS,
     CharacterReferencePackageManifest,
+    build_master_sheet,
     calculate_character_fingerprint,
     load_and_validate_reference_package,
     load_canonical_character_specification,
@@ -56,11 +60,10 @@ def _package(tmp_path: Path) -> tuple[Path, Path, dict]:
     specification = load_canonical_character_specification(SPEC_PATH)
     root = tmp_path / "repository"
     roles = {
-        "master_sheet": ((1536, 1024), "#eef0e7"),
-        "front_portrait": ((768, 1024), "#5b7f76"),
-        "three_quarter_portrait": ((768, 1024), "#5f8178"),
-        "side_profile": ((768, 1024), "#26332f"),
-        "full_body_neutral": ((768, 1024), "#607f76"),
+        "front_portrait": (ATOMIC_DIMENSIONS, "#5b7f76"),
+        "three_quarter_portrait": (ATOMIC_DIMENSIONS, "#5f8178"),
+        "side_profile": (ATOMIC_DIMENSIONS, "#26332f"),
+        "full_body_neutral": (ATOMIC_DIMENSIONS, "#607f76"),
     }
     records = {}
     for role, (dimensions, color) in roles.items():
@@ -73,7 +76,28 @@ def _package(tmp_path: Path) -> tuple[Path, Path, dict]:
             "width": dimensions[0],
             "height": dimensions[1],
             "sha256": digest,
+            "origin": "provider_generated",
+            "source_sha256": [],
         }
+
+    master_relative = Path("reference_package/master_sheet.png")
+    master_result = build_master_sheet(
+        tuple(
+            (role, root / records[role]["path"])
+            for role in ATOMIC_VIEW_ORDER
+        ),
+        root / master_relative,
+    )
+    records["master_sheet"] = {
+        "asset_role": "master_sheet",
+        "path": master_relative.as_posix(),
+        "mime_type": "image/png",
+        "width": master_result.width,
+        "height": master_result.height,
+        "sha256": master_result.sha256,
+        "origin": "deterministic_local_derivative",
+        "source_sha256": list(master_result.source_sha256),
+    }
 
     timestamp = datetime(2026, 7, 15, 10, 0, tzinfo=UTC)
     approval = {
@@ -113,7 +137,8 @@ def _package(tmp_path: Path) -> tuple[Path, Path, dict]:
         "canonical_spec_version": 1,
         "master_sheet": records["master_sheet"],
         "atomic_views": [records[role] for role in ATOMIC_VIEW_ORDER],
-        "generation_provenance": "zero-network synthetic test fixture",
+        "atomic_generation_provenance": "zero-network synthetic test fixture",
+        "master_assembly_provenance": MASTER_SHEET_ASSEMBLY,
         "generation_provider": "fake_provider",
         "generation_model": "fake_model",
         "prompt_sha256": "a" * 64,
@@ -153,6 +178,24 @@ def test_all_five_assets_validate_and_provider_order_excludes_master(tmp_path):
     )
     assert tuple(asset.asset_role for asset in provider_assets) == ATOMIC_VIEW_ORDER
     assert "master_sheet" not in {asset.asset_role for asset in provider_assets}
+    assert (manifest.master_sheet.width, manifest.master_sheet.height) == (
+        MASTER_SHEET_DIMENSIONS
+    )
+    assert manifest.master_sheet.source_sha256 == tuple(
+        asset.sha256 for asset in manifest.atomic_views
+    )
+
+
+def test_old_master_sheet_geometry_and_provider_origin_are_rejected(tmp_path):
+    _, _, manifest = _package(tmp_path)
+    manifest["master_sheet"]["height"] = 1024
+    with pytest.raises(ValidationError, match="1536x2048"):
+        CharacterReferencePackageManifest.model_validate(manifest)
+
+    _, _, manifest = _package(tmp_path / "provider")
+    manifest["master_sheet"]["origin"] = "provider_generated"
+    with pytest.raises(ValidationError, match="deterministic local derivative"):
+        CharacterReferencePackageManifest.model_validate(manifest)
 
 
 @pytest.mark.parametrize("missing_role", ATOMIC_VIEW_ORDER)
@@ -183,7 +226,7 @@ def test_hash_mismatch_and_post_approval_asset_change_fail(tmp_path):
     root, manifest_path, manifest = _package(tmp_path)
     manifest["atomic_views"][0]["sha256"] = "b" * 64
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    with pytest.raises(ValueError, match="SHA256 mismatch"):
+    with pytest.raises(ValueError, match="source hashes do not match"):
         load_and_validate_reference_package(manifest_path, SPEC_PATH, repository_root=root)
 
     root, manifest_path, manifest = _package(tmp_path / "changed")
@@ -206,6 +249,7 @@ def test_decoded_mime_and_dimensions_must_match_manifest(tmp_path, failure):
         expected = "dimensions mismatch"
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     asset["sha256"] = digest
+    manifest["master_sheet"]["source_sha256"][0] = digest
     approval_path = root / "reference_package" / "approval.json"
     approval = json.loads(approval_path.read_text(encoding="utf-8"))
     approval["asset_sha256"][asset["asset_role"]] = digest

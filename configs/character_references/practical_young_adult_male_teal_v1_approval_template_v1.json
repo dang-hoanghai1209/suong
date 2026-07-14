@@ -13,6 +13,21 @@
     "side_profile": null,
     "full_body_neutral": null
   },
+  "master_derivation": {
+    "assembly": "deterministic_local_exact_2x2_v1",
+    "atomic_source_sha256": {
+      "front_portrait": null,
+      "three_quarter_portrait": null,
+      "side_profile": null,
+      "full_body_neutral": null
+    },
+    "source_view_order": [
+      "front_portrait",
+      "three_quarter_portrait",
+      "side_profile",
+      "full_body_neutral"
+    ]
+  },
   "checklist": {
     "same_face_across_views": false,
     "same_age_appearance": false,

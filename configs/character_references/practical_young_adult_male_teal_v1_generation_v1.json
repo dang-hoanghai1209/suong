@@ -4,8 +4,8 @@
   "character_id": "practical_young_adult_male_teal_v1",
   "character_fingerprint": "4bb86c902dfedba848ad8ae43ef6dbd0bb41059be7fa1af816ecd85cc28fba5f",
   "provider_selection": "not_selected",
-  "generation_prompt": "Create a coherent five-asset character reference package for one and only one recurring young adult male, visually age 24 to 28. Preserve exactly the same identity across every view: softly angular face, stable jawline, small dark eyes with stable spacing, simple stable eyebrow shape, short straight nose, short dark rounded side-swept hair, fixed warm medium-light skin tone, slim average adult build, stable shoulder, torso, arm, and leg proportions, approximately 2.4 shoulder widths per head width. Lock the outfit to a muted teal long-sleeve top with a round collar and narrow cuffs, charcoal straight trousers, and simple low-profile charcoal shoes without a logo; add no accessory. Use a minimalist wordless hand-drawn flat editorial illustration style with clean uniform charcoal outlines, flat color, and a plain pale sage-gray background. Produce one 1536 by 1024 landscape master sheet in a clean unlabeled 2 by 2 layout plus four separate 768 by 1024 atomic PNG assets in this exact order: chest-up direct front portrait; chest-up approximately 45-degree three-quarter portrait; chest-up clean side profile; complete standing full-body neutral pose in front or slight three-quarter orientation. Portraits use a neutral calm expression, show the complete hair silhouette without cropping through the head, and contain no prop. The full-body view keeps both arms relaxed and separated from the torso, both anatomically plausible simplified hands visible, both legs and both shoes visible, and the complete body inside the frame. Each atomic asset contains exactly one depiction of the same character. Represent or imply five digits correctly on each fully visible hand without obvious extra or missing digits; individual finger separation is optional when the minimalist style does not support it. Prioritize cross-view identity consistency, correct anatomy, complete full-body framing, fixed outfit and character palette, clean neutral reference presentation, simple background, and no text or labels.",
-  "prompt_sha256": "31afe84f32cb6fec91a3bda6002929279d561e28f41fe5ed0c72393e0236a0bb",
+  "generation_prompt": "Create four separate 768 by 1024 atomic PNG character reference assets for one and only one recurring young adult male, visually age 24 to 28, in this exact order: chest-up direct front portrait; chest-up approximately 45-degree three-quarter portrait; chest-up clean side profile; complete standing full-body neutral pose in front or slight three-quarter orientation. Preserve exactly the same identity across every view: softly angular face, stable jawline, small dark eyes with stable spacing, simple stable eyebrow shape, short straight nose, short dark rounded side-swept hair, fixed warm medium-light skin tone, slim average adult build, stable shoulder, torso, arm, and leg proportions, approximately 2.4 shoulder widths per head width. Lock the outfit to a muted teal long-sleeve top with a round collar and narrow cuffs, charcoal straight trousers, and simple low-profile charcoal shoes without a logo; add no accessory. Use a minimalist wordless hand-drawn flat editorial illustration style with clean uniform charcoal outlines, flat color, and a plain pale sage-gray background. Portraits use a neutral calm expression, show the complete hair silhouette without cropping through the head, and contain no prop. The full-body view keeps both arms relaxed and separated from the torso, both anatomically plausible simplified hands visible, both legs and both shoes visible, and the complete body inside the frame. Each atomic asset contains exactly one depiction of the same character. Represent or imply five digits correctly on each fully visible hand without obvious extra or missing digits; individual finger separation is optional when the minimalist style does not support it. Prioritize cross-view identity consistency, correct anatomy, complete full-body framing, fixed outfit and character palette, clean neutral reference presentation, simple background, and no text or labels. Do not generate a master sheet; the 1536 by 2048 master is assembled locally as an exact unlabeled 2 by 2 derivative of the four approved atomic assets.",
+  "prompt_sha256": "1617e025096483d39a6f1708263b478ced8f5c21f8294426b0e83fa8d6a00c8c",
   "negative_constraints": [
     "no text, labels, letters, numbers, logo, signature, or watermark",
     "no extra person and no duplicate character in an atomic asset",
@@ -32,10 +32,20 @@
     "intended_path": "character_references/practical_young_adult_male_teal_v1/master_sheet.png",
     "mime_type": "image/png",
     "width": 1536,
-    "height": 1024,
-    "layout": "2x2_unlabeled",
-    "purpose": "human_review_and_archival_integrity",
-    "provider_facing": false
+    "height": 2048,
+    "aspect_ratio": "3:4",
+    "orientation": "portrait",
+    "layout": "exact_2x2_unlabeled",
+    "purpose": "human_review_archival_integrity_and_contact_sheet_inspection",
+    "provider_facing": false,
+    "origin": "deterministic_local_derivative",
+    "assembly": "deterministic_local_exact_2x2_v1",
+    "cell_order": [
+      "front_portrait",
+      "three_quarter_portrait",
+      "side_profile",
+      "full_body_neutral"
+    ]
   },
   "atomic_views": [
     {

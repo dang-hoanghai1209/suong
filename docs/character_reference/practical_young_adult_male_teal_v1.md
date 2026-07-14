@@ -9,9 +9,11 @@ The package ID is `practical_young_adult_male_teal_v1_package_v1`, anchored to
 the canonical specification and fingerprint in
 `configs/character_references/practical_young_adult_male_teal_v1.json`.
 
-The package contains one 1536x1024 archival master sheet and four separate
-768x1024 PNG atomic views. The master sheet is for human review and archival
-integrity only. Provider requests must use all four atomic views, in this order:
+The package contains one locally assembled 1536x2048 portrait archival master
+sheet and four separate 768x1024 PNG atomic views. The master is an exact 3:4,
+unlabeled 2x2 derivative for human review, archival integrity, and contact-sheet
+inspection. It is never generated independently by a provider. Provider
+requests must use all four atomic views, in this order:
 
 1. front portrait;
 2. three-quarter portrait;
@@ -27,14 +29,19 @@ manifest fail closed.
 1. Review the provider-independent prompt and negative constraints in the
    generation specification.
 2. Separately authorize a bounded provider operation.
-3. Generate the master sheet and all four atomic PNG assets.
-4. Calculate full SHA256 values and construct the typed immutable manifest.
-5. Run anatomy, style, and cross-view identity QC.
-6. Complete every human-approval checklist item and record all five asset
+3. Generate only the four atomic PNG assets.
+4. Validate their order, MIME, 768x1024 dimensions, and hashes, then assemble
+   the master locally without cropping, stretching, resampling, labels, borders,
+   watermarks, or inherited path metadata.
+5. Calculate the derived 1536x2048 master SHA256 and construct the typed
+   immutable manifest with all four ordered source hashes.
+6. Run anatomy, style, and cross-view identity QC.
+7. Complete every human-approval checklist item and record all five asset
    hashes, approval timestamp, and approver role.
-7. Serialize the approval record, calculate its immutable SHA256, and store
+8. Serialize the approval record, calculate its immutable SHA256, and store
    that hash in the package manifest.
-8. Revalidate every file immediately before any provider-facing request.
+9. Revalidate every file and deterministically reassemble the master before
+   any provider-facing request.
 
 The unapproved template is intentionally invalid as a final approval record.
 No asset may enter a production reference-conditioned request until the final
