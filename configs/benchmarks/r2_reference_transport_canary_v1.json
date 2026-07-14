@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "status": "blocked_pending_prerequisites_and_explicit_live_authorization",
+  "mode": "r2_reference_transport_only",
+  "temporary_reference_store": "cloudflare_r2_private",
+  "test_image": {
+    "width": 64,
+    "height": 64,
+    "mime_type": "image/png",
+    "pattern": "tella_r2_canary_geometry_v1",
+    "maximum_bytes": 65536
+  },
+  "transport_policy": {
+    "presigned_get_ttl_seconds": 300,
+    "private_bucket_status_confirmed": false,
+    "conditional_write_test_confirmed": false,
+    "https_presigned_get_required": true
+  },
+  "request_budget": {
+    "immutable_upload_attempts_max": 3,
+    "verification_downloads_max": 1,
+    "presign_operations_max": 1,
+    "cleanup_attempts_max": 2,
+    "automatic_retries": 0,
+    "fallbacks": 0,
+    "bfl_calls": 0,
+    "cloudflare_workers_ai_calls": 0,
+    "gemini_calls": 0,
+    "render_operations": 0
+  },
+  "cleanup_required_on": [
+    "upload_ambiguity",
+    "presign_failure",
+    "verification_download_failure",
+    "hash_mismatch",
+    "mime_or_decoding_failure",
+    "conditional_write_test_failure",
+    "cancellation",
+    "normal_success"
+  ],
+  "persistent_metadata_allowlist": [
+    "source_sha256",
+    "byte_size",
+    "mime_type",
+    "dimensions",
+    "bucket_identifier_sha256",
+    "object_key_sha256",
+    "url_scheme",
+    "url_host",
+    "ttl_seconds",
+    "roundtrip_sha256",
+    "conditional_write_observed_result",
+    "cleanup_outcome",
+    "accounting"
+  ],
+  "blocking_prerequisites": [
+    "all four R2 credential variables are present",
+    "operator confirms the bucket is private",
+    "operator confirms IfNoneMatch testing is authorized",
+    "exact live authorization token is supplied",
+    "separately reviewed live R2 executor is installed"
+  ]
+}
