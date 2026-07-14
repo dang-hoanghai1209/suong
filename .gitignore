@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .venv/
+.venv-r2-canary/
 venv/
 env/
 *.egg-info/
