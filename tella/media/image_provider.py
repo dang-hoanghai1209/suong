@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from tella.media import ai_image
+from tella.media.image_provider_contract import ImageProviderCapabilities
 
 logger = logging.getLogger("tella.media.image_provider")
 
@@ -32,6 +33,22 @@ class ImageProvider:
     def supports_seed(self) -> bool:
         return False
 
+    def capabilities(self) -> ImageProviderCapabilities:
+        return ImageProviderCapabilities(
+            provider_id=self.provider_name,
+            supports_text_to_image=False,
+            supports_reference_conditioning=False,
+            supports_image_to_image=False,
+            supports_structural_conditioning=False,
+            supports_seed=False,
+            supports_negative_prompt=False,
+            max_prompt_utf8_bytes=2000,
+            max_reference_images=0,
+            accepted_reference_mime_types=(),
+            supports_character_identity_anchor=False,
+            provider_retry_control="uncontrolled",
+        )
+
     def is_configured(self) -> bool:
         return True
 
@@ -56,10 +73,12 @@ class ImageProvider:
         out_path: Path,
         metadata: dict[str, Any] | None = None,
     ) -> ImageResult:
-        if references and not self.supports_reference_conditioning():
-            logger.warning(
-                "Reference image conditioning is not available for provider=%s; using text lock only.",
-                self.provider_name,
+        if not references:
+            raise ValueError("reference-conditioned generation requires a reference image")
+        if not self.supports_reference_conditioning():
+            raise RuntimeError(
+                f"provider {self.provider_name} does not support reference conditioning; "
+                "text-only downgrade is forbidden"
             )
         return await self.generate_text_image(
             prompt=prompt,
@@ -84,6 +103,22 @@ class CloudflareImageProvider(ImageProvider):
     def supports_seed(self) -> bool:
         return True
 
+    def capabilities(self) -> ImageProviderCapabilities:
+        return ImageProviderCapabilities(
+            provider_id=self.provider_name,
+            supports_text_to_image=True,
+            supports_reference_conditioning=False,
+            supports_image_to_image=False,
+            supports_structural_conditioning=False,
+            supports_seed=True,
+            supports_negative_prompt=False,
+            max_prompt_utf8_bytes=2000,
+            max_reference_images=0,
+            accepted_reference_mime_types=(),
+            supports_character_identity_anchor=False,
+            provider_retry_control="provider_managed",
+        )
+
     def is_configured(self) -> bool:
         return bool(ai_image.resolve_all_credentials())
 
@@ -98,6 +133,8 @@ class CloudflareImageProvider(ImageProvider):
     ) -> ImageResult:
         width, height = _dims_for_aspect(aspect)
         prompt_used = _merge_negative_prompt(prompt, negative_prompt)
+        if len(prompt_used.encode("utf-8")) > self.capabilities().max_prompt_utf8_bytes:
+            raise ValueError("Cloudflare prompt exceeds validated UTF-8 byte limit")
         try:
             await ai_image.generate_image(
                 prompt_used,
