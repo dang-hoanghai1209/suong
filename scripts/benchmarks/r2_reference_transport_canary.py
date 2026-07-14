@@ -1,13 +1,13 @@
 """R2-only reference-transport canary validation and live-executor gate.
 
-Validate-only mode performs no client construction or network activity.  Live
-mode validates every prerequisite, builds a redacted deterministic plan, and
-then stops until a separately reviewed R2 executor is injected.  This module
-does not import an image-generation provider.
+Validate-only mode performs no client construction or network activity. Live
+mode validates every prerequisite before lazily importing the separately
+reviewed concrete R2 transport. This module imports no image-generation provider.
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
 import binascii
 import hashlib
 import json
@@ -220,19 +220,35 @@ def main(argv: list[str] | None = None) -> int:
             "live_execution_blocked": True,
         }, sort_keys=True))
         return 0
-    prerequisites = validate_live_prerequisites(
+    validate_live_prerequisites(
         config, authorization_token=args.authorization_token
     )
-    print(json.dumps({
-        "status": "live_prerequisites_validated",
-        "prerequisites": prerequisites,
-        "plan": proposed_live_operation(config),
-        "clients_constructed": 0,
-        "external_calls": 0,
-    }, sort_keys=True))
-    raise SystemExit(
-        "live R2 executor is intentionally not installed; no client was constructed"
+    from scripts.benchmarks.r2_reference_transport_live_executor import (
+        R2CanaryExecutionError,
+        execute_r2_transport_canary,
     )
+    from tella.media.r2_canary_transport import (
+        BoundedR2HTTPSFetcher,
+        create_r2_s3_client,
+    )
+
+    try:
+        result = asyncio.run(execute_r2_transport_canary(
+            config,
+            mode="live-r2",
+            authorization_token=args.authorization_token,
+            client_factory=create_r2_s3_client,
+            url_fetcher_factory=BoundedR2HTTPSFetcher,
+        ))
+    except R2CanaryExecutionError as exc:
+        print(json.dumps({
+            "status": "failed",
+            "error_category": exc.category,
+            "diagnostic": exc.diagnostic,
+        }, sort_keys=True))
+        return 2
+    print(json.dumps(result, sort_keys=True))
+    return 0
 
 
 if __name__ == "__main__":

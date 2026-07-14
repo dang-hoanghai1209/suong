@@ -129,7 +129,9 @@ def test_cleanup_policy_covers_every_terminal_branch_once():
     assert len(config.cleanup_required_on) == len(REQUIRED_CLEANUP_BRANCHES)
 
 
-def test_live_executor_remains_separately_gated(tmp_path, monkeypatch, capsys):
+def test_live_executor_requires_optional_sdk_after_every_gate(
+    tmp_path, monkeypatch, capsys
+):
     config_path = tmp_path / "confirmed.json"
     payload = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     payload["transport_policy"]["private_bucket_status_confirmed"] = True
@@ -139,12 +141,12 @@ def test_live_executor_remains_separately_gated(tmp_path, monkeypatch, capsys):
         "R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME"
     ):
         monkeypatch.setenv(name, "present-test-value")
-    with pytest.raises(SystemExit, match="executor is intentionally not installed"):
-        main([
-            "--config", str(config_path),
-            "--mode", "live-r2",
-            "--authorization-token", AUTHORIZATION_TOKEN,
-        ])
+    assert main([
+        "--config", str(config_path),
+        "--mode", "live-r2",
+        "--authorization-token", AUTHORIZATION_TOKEN,
+    ]) == 2
     output = json.loads(capsys.readouterr().out)
-    assert output["clients_constructed"] == 0
-    assert output["external_calls"] == 0
+    assert output["status"] == "failed"
+    assert output["error_category"] == "optional_s3_sdk_unavailable"
+    assert output["diagnostic"]["accounting"]["r2_client_constructions"] == 0

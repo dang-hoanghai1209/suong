@@ -1,8 +1,8 @@
-"""Typed, injected live executor for the R2-only reference transport canary.
+"""Typed live executor for the R2-only reference transport canary.
 
-There is deliberately no concrete SDK or HTTP-client construction here.  A future
-authorized caller must inject one synchronous S3-compatible client and one bounded
-HTTPS fetcher.  Importing this module performs no credential or network access.
+All client and fetcher construction remains injected so tests stay fully local.
+The CLI supplies concrete live-only factories after every authorization gate.
+Importing this module performs no credential or network access.
 """
 from __future__ import annotations
 
@@ -89,9 +89,10 @@ async def execute_r2_transport_canary(
     }
     try:
         client = client_factory(store_config)
-    except Exception:
+    except Exception as exc:
         raise R2CanaryExecutionError(
-            "client_construction_failed", construction_diagnostic
+            getattr(exc, "safe_category", "client_construction_failed"),
+            construction_diagnostic,
         ) from None
     construction_diagnostic["accounting"]["r2_client_constructions"] = 1
     try:
