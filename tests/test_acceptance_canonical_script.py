@@ -177,12 +177,14 @@ def test_script_text_is_data_not_executed_configuration(monkeypatch):
     assert "CANONICAL_SCRIPT_EXECUTED" not in os.environ
 
 
-def test_suite_links_only_phone_case_and_preserves_unique_cases():
+def test_suite_links_registered_canonical_cases_and_preserves_unique_cases():
     suite = load_suite(SUITE_PATH)
-    assert len(suite.cases) == len({case.case_id for case in suite.cases}) == 10
+    assert len(suite.cases) == len({case.case_id for case in suite.cases}) == 11
     linked = [case for case in suite.cases if case.canonical_script is not None]
-    assert [case.case_id for case in linked] == ["phone_out_of_reach"]
-    case = linked[0]
+    assert [case.case_id for case in linked] == [
+        "phone_out_of_reach", "prepare_tomorrow_night_before",
+    ]
+    case = next(item for item in linked if item.case_id == "phone_out_of_reach")
     assert case.expected_recipe == "practical_life_steps_callirrhoe_v1"
     assert case.expected_scene_count == 7
     assert case.canonical_script.canonical_script_sha256 == SCRIPT_HASH

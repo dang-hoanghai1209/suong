@@ -18,6 +18,10 @@ from tella.acceptance_script import (
 )
 from tella.atomic_write import atomic_write_text
 from tella.planner.models import TellaScenePlan
+from tella.planner.practical_visual_profiles import (
+    PracticalVisualProfile,
+    load_practical_visual_profile,
+)
 from tella.production import file_sha256, stable_hash
 from tella.scene_regeneration import SceneCorrection
 
@@ -28,6 +32,10 @@ DEFAULT_ACCEPTANCE_SUITE_PATH = Path(
 )
 EXPECTED_SCRIPT_ROLE_IDENTITIES = (
     "hook", "context", "step_1", "step_2", "step_3",
+    "common_mistake", "today_action",
+)
+EXPECTED_PLANNER_SCENE_ROLES = (
+    "hook", "context", "practical_step", "practical_step", "practical_step",
     "common_mistake", "today_action",
 )
 _UNSAFE_NOTES = re.compile(
@@ -168,6 +176,21 @@ class AcceptanceThresholds(BaseModel):
     soft_fail_is_conditional: bool = True
 
 
+class VisualProfileReference(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    profile_id: str = Field(pattern=r"^[a-z][a-z0-9_]{2,79}$")
+    profile_path: str = Field(min_length=1)
+    profile_version: int = Field(ge=1)
+
+    @field_validator("profile_path")
+    @classmethod
+    def safe_profile_path(cls, value: str) -> str:
+        path = Path(value)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("visual profile path must be repository-relative")
+        return path.as_posix()
+
+
 class AcceptanceCase(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     case_id: str
@@ -180,6 +203,7 @@ class AcceptanceCase(BaseModel):
     expected_request_budget: int = 7
     manual_review_required: bool = True
     canonical_script: CanonicalScriptReference | None = None
+    visual_profile: VisualProfileReference | None = None
 
 
 class AcceptanceSuite(BaseModel):
@@ -235,7 +259,39 @@ def load_suite(path: Path, *, repository_root: Path | None = None) -> Acceptance
                 root,
                 expected_scene_count=case.expected_scene_count,
             )
+        if case.visual_profile is not None:
+            visual_profile_for_case(suite, case.case_id, root)
     return suite
+
+
+def visual_profile_for_case(
+    suite: AcceptanceSuite,
+    case_id: str,
+    repository_root: Path,
+) -> PracticalVisualProfile:
+    matches = [case for case in suite.cases if case.case_id == case_id]
+    if len(matches) != 1 or matches[0].visual_profile is None:
+        raise ValueError(f"acceptance case {case_id!r} has no visual profile")
+    reference = matches[0].visual_profile
+    root = Path(repository_root).resolve()
+    path = root.joinpath(*Path(reference.profile_path).parts).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("visual profile resolves outside repository root") from exc
+    profile = load_practical_visual_profile(
+        path,
+        expected_profile_id=reference.profile_id,
+        expected_scene_roles=EXPECTED_PLANNER_SCENE_ROLES,
+    )
+    if profile.schema_version != reference.profile_version:
+        raise ValueError(
+            f"visual profile version mismatch: expected {reference.profile_version}, "
+            f"received {profile.schema_version}"
+        )
+    if len(profile.scenes) != matches[0].expected_scene_count:
+        raise ValueError("visual profile scene count does not match acceptance case")
+    return profile
 
 
 def canonical_script_for_case(
@@ -627,4 +683,5 @@ __all__ = [
     "aggregate_job", "corrections_from_review", "initialize_review",
     "canonical_script_for_case", "canonical_script_for_input", "load_review",
     "load_suite", "report_acceptance", "validate_job_script_identity", "validate_review",
+    "VisualProfileReference", "visual_profile_for_case",
 ]

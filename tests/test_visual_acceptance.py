@@ -66,8 +66,8 @@ def _write_review(root, case_id, review):
 
 def test_versioned_suite_has_unique_safe_production_cases():
     suite = load_suite(SUITE_PATH)
-    assert len(suite.cases) == 10
-    assert len({case.case_id for case in suite.cases}) == 10
+    assert len(suite.cases) == 11
+    assert len({case.case_id for case in suite.cases}) == 11
     assert all(case.expected_recipe == "practical_life_steps_callirrhoe_v1" for case in suite.cases)
     assert all(case.expected_scene_count == 7 and case.manual_review_required for case in suite.cases)
 
