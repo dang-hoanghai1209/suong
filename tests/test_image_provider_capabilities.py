@@ -36,6 +36,7 @@ def _capabilities() -> ImageProviderCapabilities:
         max_reference_images=1,
         accepted_reference_mime_types=("image/png",),
         supports_character_identity_anchor=True,
+        identity_anchor_verification="provider_static",
         provider_retry_control="caller_bounded",
     )
 

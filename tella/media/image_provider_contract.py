@@ -29,6 +29,9 @@ class ImageProviderCapabilities(BaseModel):
     max_reference_images: int = Field(ge=0)
     accepted_reference_mime_types: tuple[str, ...] = ()
     supports_character_identity_anchor: bool
+    identity_anchor_verification: Literal[
+        "unsupported", "provider_static", "per_request_verified"
+    ] = "unsupported"
     provider_retry_control: Literal[
         "caller_bounded", "provider_managed", "uncontrolled"
     ]
@@ -40,6 +43,13 @@ class ImageProviderCapabilities(BaseModel):
                 raise ValueError("text-only provider cannot declare reference inputs")
             if self.supports_character_identity_anchor:
                 raise ValueError("identity anchor requires reference conditioning")
+            if self.identity_anchor_verification != "unsupported":
+                raise ValueError("identity verification requires reference conditioning")
+        if self.supports_character_identity_anchor:
+            if self.identity_anchor_verification == "unsupported":
+                raise ValueError("identity anchor requires a verification mode")
+        elif self.identity_anchor_verification == "provider_static":
+            raise ValueError("static identity anchor must be declared as supported")
         return self
 
 
@@ -122,7 +132,10 @@ def validate_reference_request(
         raise RuntimeError(
             f"provider {capabilities.provider_id} does not support reference conditioning"
         )
-    if not capabilities.supports_character_identity_anchor:
+    if (
+        not capabilities.supports_character_identity_anchor
+        and capabilities.identity_anchor_verification != "per_request_verified"
+    ):
         raise RuntimeError("provider lacks a proven character identity anchor")
     if capabilities.max_reference_images < 1:
         raise RuntimeError("provider accepts no reference images")
@@ -156,7 +169,10 @@ def validate_identity_mode(
         return selected
     if not capabilities.supports_reference_conditioning:
         raise RuntimeError("reference-conditioned identity is unsupported by this provider")
-    if not capabilities.supports_character_identity_anchor:
+    if (
+        not capabilities.supports_character_identity_anchor
+        and capabilities.identity_anchor_verification != "per_request_verified"
+    ):
         raise RuntimeError("provider has no proven character identity anchor")
     if reference_sheet is None or not reference_sheet.human_approved:
         raise RuntimeError("reference-conditioned identity requires an approved reference sheet")
