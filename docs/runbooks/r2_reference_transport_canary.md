@@ -186,14 +186,8 @@ if (Test-Path -LiteralPath $liveConfig) {
 $config = Get-Content -Raw -LiteralPath $baseConfig | ConvertFrom-Json
 $config.transport_policy.private_bucket_status_confirmed = $true
 $config.transport_policy.conditional_write_test_confirmed = $true
-$config | ConvertTo-Json -Depth 20 |
-    Set-Content -LiteralPath $liveConfig -Encoding utf8 -NoNewline
-```
-
-Delete only this temporary non-secret confirmation file after the canary:
-
-```powershell
-Remove-Item -LiteralPath $liveConfig
+$json = $config | ConvertTo-Json -Depth 20
+$utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
 ```
 
 ## Future live command
@@ -203,14 +197,61 @@ new explicit authorization checkpoint:
 
 ```powershell
 $canaryPython = Join-Path $PWD ".venv-r2-canary/Scripts/python.exe"
+$liveConfigCreated = $false
 
-& $canaryPython -m scripts.benchmarks.r2_reference_transport_canary `
-    --config $liveConfig `
-    --mode live-r2 `
-    --authorization-token AUTHORIZE_R2_REFERENCE_TRANSPORT_CANARY_01
+try {
+    [System.IO.File]::WriteAllText(
+        $liveConfig,
+        $json,
+        $utf8WithoutBom
+    )
+    $liveConfigCreated = $true
+
+    $configBytes = [System.IO.File]::ReadAllBytes($liveConfig)
+    if (
+        $configBytes.Length -ge 3 -and
+        $configBytes[0] -eq 0xEF -and
+        $configBytes[1] -eq 0xBB -and
+        $configBytes[2] -eq 0xBF
+    ) {
+        throw "Refusing a temporary canary configuration with a UTF-8 BOM."
+    }
+
+    & $canaryPython -m scripts.benchmarks.r2_reference_transport_canary `
+        --config $liveConfig `
+        --mode live-r2 `
+        --authorization-token AUTHORIZE_R2_REFERENCE_TRANSPORT_CANARY_01
+    if ($LASTEXITCODE -ne 0) {
+        throw "The R2 reference-transport canary failed."
+    }
+}
+finally {
+    if ($liveConfigCreated -and (Test-Path -LiteralPath $liveConfig)) {
+        Remove-Item -LiteralPath $liveConfig
+    }
+}
 ```
 
 The command does not require `BFL_API_KEY` and cannot construct BFL.
+
+## Reviewed real-canary observation
+
+The separately authorized R2-only transport canary completed with these
+redacted observations:
+
+- Status: passed.
+- Source and roundtrip SHA256 matched
+  `99ac29d0e49ebcb6a8ed06859beb8d6d59c1c926198c2d66b1a940ac97db2ceb`.
+- The payload was a 414-byte, 64x64 `image/png`.
+- The identical conditional write returned 412.
+- The conflicting conditional write returned 412.
+- The borrowed-object policy was verified.
+- Cleanup deleted the owned object.
+- Post-cleanup absence was confirmed.
+- `cleanup_required` was false.
+
+No endpoint, hostname, account identifier, signed URL, credential, production
+image, user photo, or character reference is part of this record.
 
 ## Fixed operation budget
 

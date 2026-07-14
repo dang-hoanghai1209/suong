@@ -22,6 +22,7 @@ from tella.media import r2_canary_transport as r2_transport
 
 
 CONFIG_PATH = Path("configs/benchmarks/r2_reference_transport_canary_v1.json")
+RUNBOOK_PATH = Path("docs/runbooks/r2_reference_transport_canary.md")
 
 
 @pytest.fixture(autouse=True)
@@ -135,6 +136,18 @@ def test_cleanup_policy_covers_every_terminal_branch_once():
     config = load_canary_config(CONFIG_PATH)
     assert set(config.cleanup_required_on) == REQUIRED_CLEANUP_BRANCHES
     assert len(config.cleanup_required_on) == len(REQUIRED_CLEANUP_BRANCHES)
+
+
+def test_runbook_writes_bomless_temporary_config_and_always_removes_it():
+    runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
+    assert "System.Text.UTF8Encoding($false)" in runbook
+    assert "[System.IO.File]::WriteAllText(" in runbook
+    assert "$configBytes[0] -eq 0xEF" in runbook
+    assert "$configBytes[1] -eq 0xBB" in runbook
+    assert "$configBytes[2] -eq 0xBF" in runbook
+    assert "finally {" in runbook
+    assert "if ($liveConfigCreated -and" in runbook
+    assert "Remove-Item -LiteralPath $liveConfig" in runbook
 
 
 def test_live_executor_reaches_injected_missing_sdk_only_after_every_gate(
