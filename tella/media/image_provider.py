@@ -170,13 +170,24 @@ class CloudflareImageProvider(ImageProvider):
         )
 
 
-def get_image_provider(name: str = "cloudflare") -> ImageProvider:
+def get_image_provider(name: str = "cloudflare", **provider_options: Any) -> ImageProvider:
     normalized = (name or "cloudflare").strip().lower()
-    if normalized != "cloudflare":
-        raise RuntimeError(
-            f"Unsupported TELLA_IMAGE_PROVIDER={name!r}; only 'cloudflare' is available."
-        )
-    return CloudflareImageProvider()
+    if normalized == "cloudflare":
+        if provider_options:
+            raise ValueError("Cloudflare image provider accepts no reference-provider options")
+        return CloudflareImageProvider()
+    if normalized == "bfl_flux2_reference":
+        if not provider_options:
+            raise RuntimeError(
+                "bfl_flux2_reference is not exposed through the normal CLI; "
+                "use the controlled typed canary harness"
+            )
+        from tella.media.bfl_flux2_provider import BFLFlux2ReferenceProvider
+        return BFLFlux2ReferenceProvider(**provider_options)
+    raise RuntimeError(
+        f"Unsupported TELLA_IMAGE_PROVIDER={name!r}; expected 'cloudflare' or "
+        "'bfl_flux2_reference'."
+    )
 
 
 def _dims_for_aspect(aspect: str) -> tuple[int, int]:
