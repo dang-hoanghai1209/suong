@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "character_id": "practical_young_adult_male_teal_v1",
+  "canonical_spec_version": 1,
+  "character_fingerprint": "4bb86c902dfedba848ad8ae43ef6dbd0bb41059be7fa1af816ecd85cc28fba5f",
+  "visual_age_min": 24,
+  "visual_age_max": 28,
+  "presentation": "young adult male",
+  "face_shape": "softly angular",
+  "eyes": "small dark eyes",
+  "nose": "short straight nose",
+  "stable_facial_traits": [
+    "stable softly angular jawline",
+    "stable eye spacing",
+    "stable simple eyebrow shape"
+  ],
+  "hair": "short dark rounded side-swept hair",
+  "skin_tone": "fixed warm medium-light skin tone",
+  "body_build": "slim average adult build",
+  "proportion_locks": [
+    "approximately 2.4 shoulder widths per head width",
+    "stable torso length",
+    "stable arm and leg proportions"
+  ],
+  "top": "muted teal long-sleeve round-collar top with narrow cuffs",
+  "trousers": "charcoal straight trousers",
+  "footwear": "simple low-profile charcoal shoes with no logo",
+  "accessories": [],
+  "palette": {
+    "muted_teal": "#5b7f76",
+    "charcoal": "#26332f",
+    "skin_tone": "fixed warm medium-light skin tone",
+    "reference_background": "#eef0e7",
+    "scene_only_accent": "#df8668",
+    "locked_clothing_colors": ["#5b7f76", "#26332f"]
+  },
+  "style": [
+    "minimalist wordless hand-drawn flat editorial illustration",
+    "clean uniform charcoal outlines",
+    "simple neutral reference presentation"
+  ],
+  "forbidden_styles": [
+    "realistic rendering",
+    "3D",
+    "anime exaggeration",
+    "complex lighting",
+    "complex background",
+    "text",
+    "watermark"
+  ]
+}
