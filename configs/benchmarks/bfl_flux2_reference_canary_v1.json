@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "status": "blocked_pending_prerequisites_and_explicit_paid_authorization",
+  "provider": "bfl_flux2_reference",
+  "endpoint": "flux-2-pro",
+  "preview_opt_in": false,
+  "temporary_reference_store": "cloudflare_r2_private",
+  "transport_policy": {
+    "private_bucket_status_confirmed": false,
+    "r2_conditional_write_support_confirmed": false,
+    "reference_url_ttl_seconds": 600,
+    "reference_url_safety_margin_seconds": 60,
+    "automatic_retries": 0,
+    "fallbacks": 0
+  },
+  "reference_sheet": {
+    "required": true,
+    "human_approved": false,
+    "immutable_sha256_required": true,
+    "same_approved_bytes_for_every_scene": true
+  },
+  "scenes": [
+    {"scene_index": 1, "composition_family": "seated_desk_action"},
+    {"scene_index": 2, "composition_family": "standing_clothes_preparation"},
+    {"scene_index": 3, "composition_family": "doorway_departure"}
+  ],
+  "request_budget": {
+    "initial_candidates_per_scene": 1,
+    "targeted_candidates_per_failed_scene_max": 1,
+    "bfl_submissions_max": 6,
+    "create_transport_attempts_per_submission": 1,
+    "automatic_retries": 0,
+    "fallbacks": 0,
+    "cloudflare_workers_ai": 0,
+    "gemini": 0,
+    "render_operations": 0
+  },
+  "blocking_prerequisites": [
+    "R2 credentials supplied by user",
+    "BFL credentials supplied by user",
+    "human-approved reference sheet exists",
+    "approval SHA256 matches exact reference bytes",
+    "explicit paid-canary authorization"
+  ]
+}
