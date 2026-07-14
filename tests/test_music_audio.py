@@ -12,6 +12,7 @@ import pytest
 from tella.music import audio
 from tella.music.library import (
     MusicLibraryError,
+    default_library_root,
     load_library,
     select_track,
 )
@@ -189,6 +190,53 @@ def test_recipe_compatibility_and_profile_routing_are_unchanged(tmp_path):
     assert profile_for_recipe("emotional_symbolic_v1").profile_id == "emotional_soft"
     assert profile_for_recipe("life_insight_symbolic_v1").profile_id == "life_insight_steady"
     assert profile_for_recipe("practical_life_steps_v1").profile_id == "practical_calm_rhythm"
+
+
+def test_callirrhoe_recipe_resolves_supported_production_track_without_provider(
+    monkeypatch, synthetic_practical_music_library,
+):
+    def forbidden_socket(*args, **kwargs):
+        pytest.fail("production music catalogue resolution attempted network access")
+
+    monkeypatch.setattr(socket, "create_connection", forbidden_socket)
+    monkeypatch.setattr(socket.socket, "connect", forbidden_socket)
+    tracks = load_library(default_library_root())
+    profile = profile_for_recipe(
+        "practical_life_steps_callirrhoe_v1", "practical_calm_rhythm"
+    )
+
+    selection = select_track(
+        tracks,
+        recipe_id="practical_life_steps_callirrhoe_v1",
+        content_moods={"calm", "encouraging", "light_rhythm"},
+        narration_duration=34.84,
+        profile=profile,
+        seed="zero-network-callirrhoe-production",
+        explicit_track_id="synthetic_practical_tone",
+    )
+
+    assert selection.track.track_id == "synthetic_practical_tone"
+    assert "practical_life_steps_callirrhoe_v1" in selection.track.supported_recipes
+    assert selection.profile.profile_id == "practical_calm_rhythm"
+    assert {"calm", "encouraging", "light_rhythm"}.issubset(
+        selection.track.moods
+    )
+
+
+def test_production_track_allowlist_still_rejects_unrelated_recipe(
+    synthetic_practical_music_library,
+):
+    tracks = load_library(default_library_root())
+    with pytest.raises(MusicLibraryError, match="does not support"):
+        select_track(
+            tracks,
+            recipe_id="emotional_symbolic_v1",
+            content_moods=set(),
+            narration_duration=34.84,
+            profile=profile_for_recipe("emotional_symbolic_v1"),
+            seed="still-fail-closed",
+            explicit_track_id="synthetic_practical_tone",
+        )
 
 
 def test_no_music_mode_never_selects_or_reads_track(monkeypatch, tmp_path):

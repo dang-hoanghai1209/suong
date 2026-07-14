@@ -51,11 +51,24 @@ def _nonnegative_counts(value: Any, keys: tuple[str, ...]) -> dict[str, int]:
     return result
 
 
-def _invocation_limits(config: "ProductionConfig") -> dict[str, int]:
+def _invocation_limits(
+    config: "ProductionConfig",
+    *,
+    max_tts_requests: int | None = None,
+    max_image_requests: int | None = None,
+) -> dict[str, int]:
     return {
-        "gemini": config.max_tts_requests,
+        "gemini": (
+            config.max_tts_requests
+            if max_tts_requests is None
+            else max(0, int(max_tts_requests))
+        ),
         "edge": 0,
-        "image_provider": config.max_image_requests,
+        "image_provider": (
+            config.max_image_requests
+            if max_image_requests is None
+            else max(0, int(max_image_requests))
+        ),
         "retries": 0,
         "fallbacks": 0,
     }
@@ -489,6 +502,8 @@ class ProductionRun:
         *,
         resume: bool = False,
         script_identity: dict[str, Any] | None = None,
+        max_tts_requests: int | None = None,
+        max_image_requests: int | None = None,
     ):
         self.job_dir = Path(job_dir)
         self.job_dir.mkdir(parents=True, exist_ok=True)
@@ -517,7 +532,11 @@ class ProductionRun:
         self.invocation_counts = _zero_submissions()
         self.invocation_transport_attempts = _zero_transport_attempts()
         self.invocation_provider_results = _zero_provider_results()
-        self.invocation_limits = _invocation_limits(config)
+        self.invocation_limits = _invocation_limits(
+            config,
+            max_tts_requests=max_tts_requests,
+            max_image_requests=max_image_requests,
+        )
         self.artifacts: dict[str, str] = {}
         self.artifact_issues: dict[str, dict[str, str]] = {}
         if resume and self.summary_path.is_file():
@@ -724,7 +743,8 @@ class ProductionRun:
 
     def write_summary(self, status: str, *, resumable: bool, recommended: str,
                       failed_stage: str = "", error_category: str = "",
-                      safe_error_message: str = "") -> None:
+                      safe_error_message: str = "",
+                      persist_manifest: bool = True) -> None:
         resolved_status = ProductionSummaryStatus(status)
         preserved = {
             key: value for key, value in self.artifacts.items() if Path(value).is_file()
@@ -753,9 +773,83 @@ class ProductionRun:
             "invalid_or_missing_artifact_paths": {**auto_missing, **self.artifact_issues},
             "resumable": resumable,
             "recommended_resume_action": recommended,
+            "resume_requested": self.resume,
+            "completed_from_resume": (
+                self.resume
+                and resolved_status == ProductionSummaryStatus.completed
+            ),
         }
-        self._persist_accounting_manifest()
+        if persist_manifest:
+            self._persist_accounting_manifest()
         atomic_write_json(self.summary_path, payload)
+
+    def finalize_completed(
+        self,
+        *,
+        plan_path: Path,
+        plan_data: dict[str, Any],
+        artifacts: dict[str, Path],
+        image_artifacts: list[Path],
+        qc_results: dict[str, str],
+    ) -> None:
+        """Persist stable plan, manifest, then completed summary in that order."""
+        atomic_write_json(plan_path, plan_data)
+        stable_artifacts = {"plan": Path(plan_path), **artifacts}
+        missing = [key for key, path in stable_artifacts.items() if not path.is_file()]
+        if missing:
+            raise RuntimeError(
+                "completed production artifacts are missing: " + ", ".join(missing)
+            )
+        if len(image_artifacts) != self.config.scene_count or any(
+            not path.is_file() for path in image_artifacts
+        ):
+            raise RuntimeError("completed production requires seven image artifacts")
+
+        current = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        current.update({
+            "created_or_updated": datetime.now(timezone.utc).isoformat(),
+            "resume_requested": self.resume,
+            "completed_from_resume": self.resume,
+            "completion_state": ProductionSummaryStatus.completed.value,
+            "external_submission_counts": dict(self.counts),
+            "external_transport_attempt_counts": dict(self.transport_attempts),
+            "provider_result_counts": {
+                key: dict(value) for key, value in self.provider_results.items()
+            },
+            "current_invocation_submission_counts": dict(self.invocation_counts),
+            "current_invocation_transport_attempt_counts": dict(
+                self.invocation_transport_attempts
+            ),
+            "current_invocation_provider_result_counts": {
+                key: dict(value)
+                for key, value in self.invocation_provider_results.items()
+            },
+            "current_invocation_request_limits": dict(self.invocation_limits),
+            "current_invocation_remaining_budget": self.remaining_invocation_budget(),
+            "artifact_hashes": {
+                key: file_sha256(path) for key, path in stable_artifacts.items()
+            },
+            "image_artifacts": [
+                {
+                    "path": str(path.relative_to(self.job_dir)),
+                    "sha256": file_sha256(path),
+                }
+                for path in image_artifacts
+            ],
+            "qc_results": dict(qc_results),
+        })
+        atomic_write_json(self.manifest_path, current)
+
+        self.stage = ProductionStage.completed
+        self.last_successful_stage = ProductionStage.completed.value
+        for key, path in stable_artifacts.items():
+            self.artifacts[key] = str(path)
+        self.write_summary(
+            ProductionSummaryStatus.completed.value,
+            resumable=False,
+            recommended="none",
+            persist_manifest=False,
+        )
 
     def fail(self, failed_stage: str, exc: BaseException) -> None:
         status, category = classify_error(exc)
@@ -769,6 +863,192 @@ class ProductionRun:
                            ),
                            failed_stage=failed_stage, error_category=category,
                            safe_error_message=_safe_message(exc))
+
+
+def _completed_artifact_paths(job_dir: Path) -> dict[str, Path]:
+    job_dir = Path(job_dir)
+    return {
+        "plan": job_dir / "plan.json",
+        "raw_narration": job_dir / "assets" / "narration_raw.wav",
+        "normalized_narration": job_dir / "assets" / "narration.wav",
+        "alignment": job_dir / "alignment_metadata.json",
+        "alignment_boundaries": job_dir / "alignment_boundaries.json",
+        "tts_metadata": job_dir / "tts_metadata.json",
+        "recipe": job_dir / "recipe.json",
+        "music_metadata": job_dir / "music_metadata.json",
+        "audio_qc": job_dir / "audio_qc.json",
+        "prepared_music": job_dir / "_render" / "music_prepared.wav",
+        "silent_video": job_dir / "_render" / "silent_video.mp4",
+        "final_video": job_dir / "video.mp4",
+        "video_qc": job_dir / "video_qc.json",
+    }
+
+
+def validate_completed_job_integrity(
+    job_dir: Path,
+    config: ProductionConfig,
+) -> dict[str, Any]:
+    """Validate completed metadata and every locally retained final artifact."""
+    job_dir = Path(job_dir)
+    manifest = json.loads(
+        (job_dir / "production_manifest.json").read_text(encoding="utf-8")
+    )
+    summary = json.loads(
+        (job_dir / "production_summary.json").read_text(encoding="utf-8")
+    )
+    errors: list[str] = []
+    if manifest.get("recipe_fingerprint") != production_fingerprint(config):
+        errors.append("recipe fingerprint mismatch")
+    if manifest.get("completion_state") != ProductionSummaryStatus.completed.value:
+        errors.append("manifest completion state mismatch")
+    if summary.get("status") != ProductionSummaryStatus.completed.value:
+        errors.append("summary status mismatch")
+    if summary.get("current_stage") != ProductionStage.completed.value:
+        errors.append("summary current stage mismatch")
+    if summary.get("last_successful_stage") != ProductionStage.completed.value:
+        errors.append("summary last successful stage mismatch")
+    if manifest.get("resume_requested") != summary.get("resume_requested"):
+        errors.append("manifest and summary resume state mismatch")
+    if manifest.get("completed_from_resume") != summary.get("completed_from_resume"):
+        errors.append("manifest and summary completion origin mismatch")
+
+    artifacts = _completed_artifact_paths(job_dir)
+    recorded = manifest.get("artifact_hashes") or {}
+    for key, path in artifacts.items():
+        if not path.is_file():
+            errors.append(f"completed artifact missing: {key}")
+        elif recorded.get(key) != file_sha256(path):
+            errors.append(f"completed artifact hash mismatch: {key}")
+    images = manifest.get("image_artifacts") or []
+    if len(images) != config.scene_count:
+        errors.append("completed image count mismatch")
+    else:
+        for item in images:
+            path = job_dir / str(item.get("path") or "")
+            if not path.is_file() or item.get("sha256") != file_sha256(path):
+                errors.append(f"completed image hash mismatch: {item.get('path')}")
+    for qc_name in ("audio_qc.json", "video_qc.json"):
+        path = job_dir / qc_name
+        if path.is_file():
+            qc = json.loads(path.read_text(encoding="utf-8"))
+            if qc.get("status") != "passed":
+                errors.append(f"{qc_name} did not pass")
+    return {
+        "valid": not errors,
+        "errors": errors,
+        "resume_requested": manifest.get("resume_requested"),
+        "completed_from_resume": manifest.get("completed_from_resume"),
+        "artifact_hashes": {
+            key: file_sha256(path) for key, path in artifacts.items() if path.is_file()
+        },
+    }
+
+
+def repair_completed_job_metadata(
+    job_dir: Path,
+    config: ProductionConfig,
+    *,
+    completed_from_resume: bool,
+) -> dict[str, Any]:
+    """Repair metadata only after validating every retained local artifact."""
+    job_dir = Path(job_dir)
+    manifest_path = job_dir / "production_manifest.json"
+    summary_path = job_dir / "production_summary.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    if manifest.get("recipe_fingerprint") != production_fingerprint(config):
+        raise RuntimeError("metadata repair refused: recipe fingerprint mismatch")
+    if (
+        summary.get("status") != ProductionSummaryStatus.completed.value
+        or summary.get("current_stage") != ProductionStage.completed.value
+        or summary.get("last_successful_stage") != ProductionStage.completed.value
+    ):
+        raise RuntimeError("metadata repair refused: job is not completed")
+    if (manifest.get("qc_results") or {}) != {"audio": "passed", "video": "passed"}:
+        raise RuntimeError("metadata repair refused: manifest QC did not pass")
+
+    artifacts = _completed_artifact_paths(job_dir)
+    missing = [key for key, path in artifacts.items() if not path.is_file()]
+    if missing:
+        raise RuntimeError(
+            "metadata repair refused: completed artifacts missing: "
+            + ", ".join(missing)
+        )
+    old_hashes = manifest.get("artifact_hashes") or {}
+    for key, digest in old_hashes.items():
+        if key == "plan":
+            continue
+        path = artifacts.get(key)
+        if path is None or not path.is_file() or file_sha256(path) != digest:
+            raise RuntimeError(
+                f"metadata repair refused: existing artifact binding failed: {key}"
+            )
+    images = manifest.get("image_artifacts") or []
+    if len(images) != config.scene_count:
+        raise RuntimeError("metadata repair refused: seven image hashes are required")
+    for item in images:
+        path = job_dir / str(item.get("path") or "")
+        if not path.is_file() or file_sha256(path) != item.get("sha256"):
+            raise RuntimeError("metadata repair refused: image hash mismatch")
+
+    audio_qc = json.loads((job_dir / "audio_qc.json").read_text(encoding="utf-8"))
+    video_qc = json.loads((job_dir / "video_qc.json").read_text(encoding="utf-8"))
+    alignment = json.loads(
+        (job_dir / "alignment_metadata.json").read_text(encoding="utf-8")
+    )
+    music = json.loads((job_dir / "music_metadata.json").read_text(encoding="utf-8"))
+    if audio_qc.get("status") != "passed" or video_qc.get("status") != "passed":
+        raise RuntimeError("metadata repair refused: local QC did not pass")
+    if alignment.get("wav_sha256") != file_sha256(artifacts["normalized_narration"]):
+        raise RuntimeError("metadata repair refused: alignment WAV binding mismatch")
+    if (
+        music.get("selected_track") != config.music_track
+        or music.get("music_profile_id") != config.music_profile
+        or music.get("qc_result") != "passed"
+    ):
+        raise RuntimeError("metadata repair refused: music identity mismatch")
+
+    accounting_before = _persisted_accounting(job_dir)
+    artifact_hashes = {
+        key: file_sha256(path) for key, path in artifacts.items()
+    }
+    manifest.update({
+        "created_or_updated": datetime.now(timezone.utc).isoformat(),
+        "resume_requested": bool(completed_from_resume),
+        "completed_from_resume": bool(completed_from_resume),
+        "completion_state": ProductionSummaryStatus.completed.value,
+        "artifact_hashes": artifact_hashes,
+    })
+    summary.update({
+        "status": ProductionSummaryStatus.completed.value,
+        "current_stage": ProductionStage.completed.value,
+        "last_successful_stage": ProductionStage.completed.value,
+        "failed_stage": "",
+        "error_category": "",
+        "safe_error_message": "",
+        "resumable": False,
+        "recommended_resume_action": "none",
+        "resume_requested": bool(completed_from_resume),
+        "completed_from_resume": bool(completed_from_resume),
+    })
+    generated = dict(summary.get("generated_artifact_paths") or {})
+    generated.update({key: str(path) for key, path in artifacts.items()})
+    summary["generated_artifact_paths"] = generated
+    summary["preserved_artifact_paths"] = dict(generated)
+    summary["invalid_or_missing_artifact_paths"] = {}
+    atomic_write_json(manifest_path, manifest)
+    atomic_write_json(summary_path, summary)
+
+    accounting_after = _persisted_accounting(job_dir)
+    if accounting_after != accounting_before:
+        raise RuntimeError("metadata repair changed persisted request accounting")
+    result = validate_completed_job_integrity(job_dir, config)
+    if not result["valid"]:
+        raise RuntimeError(
+            "metadata repair did not produce a valid completed job: "
+            + "; ".join(result["errors"])
+        )
+    return result
 
 
 def record_unhandled_production_failure(
@@ -878,6 +1158,200 @@ def build_legacy_image_resume_attestation(
         "source_inventory_sha256": source_inventory_sha256(job_dir),
         "images": images,
     }
+
+
+_OPERATIONAL_ATTESTATION_TYPE = "production_resume_full_sha256"
+_RESUME_IMPLEMENTATION_PATHS = (
+    "tella/production.py",
+    "tella/cli.py",
+    "tella/tts/synth_all.py",
+    "music/library.json",
+)
+
+
+def _artifact_binding(job_dir: Path, relative: str) -> dict[str, Any]:
+    path = Path(job_dir) / relative
+    if not path.is_file():
+        raise ValueError(f"required resume artifact is missing: {relative}")
+    return {
+        "path": Path(relative).as_posix(),
+        "size": path.stat().st_size,
+        "sha256": file_sha256(path),
+    }
+
+
+def _resume_implementation_bindings() -> dict[str, str]:
+    root = Path(__file__).resolve().parents[1]
+    return {
+        relative: file_sha256(root / relative)
+        for relative in _RESUME_IMPLEMENTATION_PATHS
+    }
+
+
+def build_production_resume_attestation(
+    job_dir: Path,
+    config: ProductionConfig,
+) -> dict[str, Any]:
+    """Build a complete, credential-free resume attestation without mutation."""
+    job_dir = Path(job_dir)
+    manifest = json.loads(
+        (job_dir / "production_manifest.json").read_text(encoding="utf-8")
+    )
+    summary = json.loads(
+        (job_dir / "production_summary.json").read_text(encoding="utf-8")
+    )
+    tts_metadata = json.loads(
+        (job_dir / "tts_metadata.json").read_text(encoding="utf-8")
+    )
+    identity = manifest.get("canonical_script_identity") or {}
+    provider_metadata = tts_metadata.get("provider_metadata") or {}
+    expected_voice = {
+        "provider": config.provider,
+        "model": config.model,
+        "voice": config.voice,
+        "style": config.style,
+        "language": config.tts_language,
+    }
+    actual_voice = {
+        "provider": provider_metadata.get("provider"),
+        "model": provider_metadata.get("model"),
+        "voice": provider_metadata.get("voice"),
+        "style": provider_metadata.get("style"),
+        "language": provider_metadata.get("language"),
+    }
+    if actual_voice != expected_voice:
+        raise ValueError("TTS metadata identity does not match production recipe")
+    canonical_sentences = identity.get("canonical_script_sentences") or []
+    canonical_narration = " ".join(str(item) for item in canonical_sentences)
+    expected_narration_hash = hashlib.sha256(
+        canonical_narration.encode("utf-8")
+    ).hexdigest()
+    if (
+        not canonical_sentences
+        or provider_metadata.get("source_narration_text_hash")
+        != expected_narration_hash
+        or provider_metadata.get("fallback_used") is not False
+    ):
+        raise ValueError("TTS metadata narration identity is not reusable")
+
+    normalized_binding = _artifact_binding(job_dir, "assets/narration.wav")
+    alignment_metadata = json.loads(
+        (job_dir / "alignment_metadata.json").read_text(encoding="utf-8")
+    )
+    alignment_boundaries = json.loads(
+        (job_dir / "alignment_boundaries.json").read_text(encoding="utf-8")
+    )
+    if (
+        alignment_metadata.get("wav_sha256") != normalized_binding["sha256"]
+        or alignment_metadata.get("boundaries")
+        != alignment_boundaries.get("boundaries")
+    ):
+        raise ValueError("alignment metadata is not bound to normalized narration")
+    stage_order = [stage.value for stage in ProductionStage]
+    last_successful_stage = str(summary.get("last_successful_stage") or "")
+    if (
+        last_successful_stage not in stage_order
+        or stage_order.index(last_successful_stage)
+        < stage_order.index(ProductionStage.aligned.value)
+    ):
+        raise ValueError("production stage metadata does not permit aligned reuse")
+
+    catalogue_path = Path(__file__).resolve().parents[1] / "music" / "library.json"
+    catalogue = json.loads(catalogue_path.read_text(encoding="utf-8"))
+    tracks = {
+        str(item.get("track_id") or ""): item
+        for item in catalogue.get("tracks", [])
+        if isinstance(item, dict)
+    }
+    track = tracks.get(config.music_track)
+    if not track or config.recipe_id not in track.get("supported_recipes", []):
+        raise ValueError("selected production music track is not recipe-compatible")
+
+    image_items = manifest.get("image_artifacts") or []
+    if len(image_items) != config.scene_count:
+        raise ValueError("production manifest must bind exactly seven images")
+    images: list[dict[str, Any]] = []
+    for index, item in enumerate(image_items, start=1):
+        binding = _artifact_binding(job_dir, str(item.get("path") or ""))
+        if binding["sha256"] != item.get("sha256"):
+            raise ValueError(f"manifest image hash mismatch for scene {index}")
+        images.append({"scene_index": index, "provider": "cloudflare", **binding})
+
+    accounting = _persisted_accounting(job_dir)
+    reuse_plan = _artifact_binding(job_dir, ".reuse_plan.json")
+    return {
+        "schema_version": 1,
+        "attestation_type": _OPERATIONAL_ATTESTATION_TYPE,
+        "attestation_revision": 1,
+        "job_id": job_dir.name,
+        "recipe_id": config.recipe_id,
+        "recipe_version": config.recipe_version,
+        "recipe_fingerprint": production_fingerprint(config),
+        "resume_implementation": _resume_implementation_bindings(),
+        "canonical_script_identity": identity,
+        "source_inventory_sha256": source_inventory_sha256(job_dir),
+        "plan": _artifact_binding(job_dir, "plan.json"),
+        "reuse_plan": reuse_plan,
+        "recipe": _artifact_binding(job_dir, "recipe.json"),
+        "images": images,
+        "narration": {
+            "raw": _artifact_binding(job_dir, "assets/narration_raw.wav"),
+            "normalized": normalized_binding,
+            "metadata": _artifact_binding(job_dir, "tts_metadata.json"),
+            "identity": expected_voice,
+        },
+        "alignment": {
+            "metadata": _artifact_binding(job_dir, "alignment_metadata.json"),
+            "boundaries": _artifact_binding(job_dir, "alignment_boundaries.json"),
+        },
+        "stage_identity": {
+            "status": summary.get("status"),
+            "last_successful_stage": summary.get("last_successful_stage"),
+            "failed_stage": summary.get("failed_stage"),
+        },
+        "music": {
+            "track_id": config.music_track,
+            "mix_profile": config.music_profile,
+            "catalogue_sha256": file_sha256(catalogue_path),
+            "supported_recipe": config.recipe_id,
+        },
+        "request_accounting": accounting,
+    }
+
+
+def validate_production_resume_attestation(
+    job_dir: Path,
+    config: ProductionConfig,
+    attestation_path: Path | None,
+) -> tuple[bool, str, dict[str, Any]]:
+    """Validate an explicit operational attestation against current local state."""
+    if attestation_path is None:
+        return False, "operational resume attestation is required", {}
+    root = Path(job_dir).resolve()
+    path = Path(attestation_path)
+    is_junction = getattr(path, "is_junction", lambda: False)
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        return False, "operational resume attestation is missing", {}
+    if (
+        path.is_symlink()
+        or bool(is_junction())
+        or not resolved.is_file()
+        or resolved == root
+        or root in resolved.parents
+    ):
+        return False, "operational resume attestation must be outside the job", {}
+    try:
+        data = json.loads(resolved.read_text(encoding="utf-8"))
+        if data.get("attestation_type") != _OPERATIONAL_ATTESTATION_TYPE:
+            return False, "operational resume attestation type mismatch", {}
+        expected = build_production_resume_attestation(root, config)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return False, f"operational resume attestation invalid: {exc}", {}
+    if data != expected:
+        return False, "operational resume attestation does not match current state", {}
+    return True, "operational full-SHA256 attestation matched", data
 
 
 def _validate_legacy_attestation(
@@ -1054,6 +1528,8 @@ def evaluate_resume(
               "reasons": [], "estimated_gemini_requests": 1, "estimated_image_requests": 7,
               "render_required": True, "fingerprint_compatibility": "not_evaluated",
               "reusable_image_count": 0,
+              "operational_attestation_accepted": False,
+              "operational_attestation_reason": "not evaluated",
               "maximum_gemini_sdk_attempts": config.tts_attempts,
               "application_retries": 0, "fallbacks": 0}
     manifest_path = job_dir / "production_manifest.json"
@@ -1077,6 +1553,24 @@ def evaluate_resume(
             result["reasons"].append("canonical script identity mismatch")
             return result
     result["compatible"] = True
+    operational_valid, operational_reason, operational_data = (
+        validate_production_resume_attestation(
+            job_dir, config, resume_attestation_path
+        )
+    )
+    result["operational_attestation_accepted"] = operational_valid
+    result["operational_attestation_reason"] = operational_reason
+    attestation_hashes: dict[str, str] = {}
+    if operational_valid:
+        attestation_hashes = {
+            "plan": operational_data["plan"]["sha256"],
+            "recipe": operational_data["recipe"]["sha256"],
+            "tts_metadata": operational_data["narration"]["metadata"]["sha256"],
+            "raw_narration": operational_data["narration"]["raw"]["sha256"],
+            "normalized_narration": operational_data["narration"]["normalized"]["sha256"],
+            "alignment": operational_data["alignment"]["metadata"]["sha256"],
+            "alignment_boundaries": operational_data["alignment"]["boundaries"]["sha256"],
+        }
     legacy_images: list[dict[str, str]] = []
     legacy_plan_valid = False
     legacy_reason = ""
@@ -1085,24 +1579,25 @@ def evaluate_resume(
             job_dir, manifest, config, resume_attestation_path
         )
     checks = (
-        ("plan", "plan.json", "planned"),
-        ("raw_narration", "assets/narration_raw.wav", "narration_ready"),
-        ("normalized_narration", "assets/narration.wav", "narration_ready"),
-        ("alignment", "alignment_metadata.json", "aligned"),
-        ("mixed_audio", "assets/final_mixed_audio.m4a", "music_ready"),
-        ("silent_video", "_render/silent_video.mp4", "rendered"),
-        ("final_video", "video.mp4", "completed"),
+        ("plan", "plan.json", "planned", True),
+        ("raw_narration", "assets/narration_raw.wav", "narration_ready", True),
+        ("normalized_narration", "assets/narration.wav", "narration_ready", True),
+        ("alignment", "alignment_metadata.json", "narration_ready", True),
+        ("alignment_boundaries", "alignment_boundaries.json", "aligned", True),
+        ("mixed_audio", "assets/final_mixed_audio.m4a", "music_ready", False),
+        ("silent_video", "_render/silent_video.mp4", "rendered", True),
+        ("final_video", "video.mp4", "completed", True),
     )
     metadata_hashes = manifest.get("artifact_hashes", {})
     upstream_valid = True
-    for key, relative, stage in checks:
+    for key, relative, stage, required_for_downstream in checks:
         path = job_dir / relative
-        expected = metadata_hashes.get(key, "")
+        expected = metadata_hashes.get(key, "") or attestation_hashes.get(key, "")
         own_hash_valid = path.is_file() and bool(expected) and file_sha256(path) == expected
         if key == "plan" and not expected and legacy_plan_valid:
             own_hash_valid = True
         valid = own_hash_valid and upstream_valid
-        if key in {"alignment", "mixed_audio", "silent_video", "final_video"} and not upstream_valid:
+        if key in {"alignment", "alignment_boundaries", "mixed_audio", "silent_video", "final_video"} and not upstream_valid:
             reason = "upstream artifact invalid"
         else:
             reason = (
@@ -1114,7 +1609,7 @@ def evaluate_resume(
                                     "reason": reason}
         if valid:
             result["resume_stage"] = stage
-        if key in {"plan", "raw_narration", "normalized_narration", "alignment", "mixed_audio", "silent_video"}:
+        if required_for_downstream:
             upstream_valid = upstream_valid and valid
     image_items = manifest.get("image_artifacts", []) or (
         legacy_images if legacy_plan_valid else []
@@ -1142,6 +1637,7 @@ def evaluate_resume(
                 result["artifacts"][key]["reason"] = "image stage invalid"
     if result["artifacts"].get("raw_narration", {}).get("valid"):
         result["estimated_gemini_requests"] = 0
+        result["maximum_gemini_sdk_attempts"] = 0
     qc = manifest.get("qc_results", {})
     final = result["artifacts"].get("final_video", {})
     qc_valid = qc.get("audio") == "passed" and qc.get("video") == "passed"
@@ -1160,7 +1656,44 @@ def evaluate_resume(
             "prefix_only_not_reusable" if legacy_images else "not_applicable"
         )
     )
+    next_stages = {
+        ProductionStage.planned.value: ProductionStage.images_ready.value,
+        ProductionStage.images_ready.value: ProductionStage.narration_ready.value,
+        ProductionStage.narration_ready.value: ProductionStage.aligned.value,
+        ProductionStage.aligned.value: ProductionStage.music_ready.value,
+        ProductionStage.music_ready.value: ProductionStage.rendered.value,
+        ProductionStage.rendered.value: ProductionStage.qc_passed.value,
+        ProductionStage.qc_passed.value: ProductionStage.completed.value,
+    }
+    result["next_required_stage"] = next_stages.get(
+        result["resume_stage"], result["resume_stage"]
+    )
     return result
+
+
+def require_reusable_narration(decision: dict[str, Any]) -> None:
+    """Fail closed unless an operational attestation trusts through alignment."""
+    if not decision.get("operational_attestation_accepted"):
+        raise RuntimeError(
+            "required narration reuse failed: "
+            + str(decision.get("operational_attestation_reason") or "attestation rejected")
+        )
+    required = (
+        "raw_narration",
+        "normalized_narration",
+        "alignment",
+        "alignment_boundaries",
+    )
+    invalid = [
+        key
+        for key in required
+        if not decision.get("artifacts", {}).get(key, {}).get("valid")
+    ]
+    if invalid or decision.get("resume_stage") != ProductionStage.aligned.value:
+        detail = ", ".join(invalid) or str(decision.get("resume_stage"))
+        raise RuntimeError(
+            "required narration reuse failed before provider access: " + detail
+        )
 
 
 def dry_run_envelope(
@@ -1170,6 +1703,8 @@ def dry_run_envelope(
     resume: bool,
     script_identity: dict[str, Any] | None = None,
     resume_attestation_path: Path | None = None,
+    max_tts_requests: int | None = None,
+    max_image_requests: int | None = None,
 ) -> dict[str, Any]:
     decision = evaluate_resume(
         job_dir, config, script_identity, resume_attestation_path
@@ -1182,7 +1717,11 @@ def dry_run_envelope(
     cumulative_transport = decision.get(
         "persisted_transport_attempt_counts", _zero_transport_attempts()
     )
-    invocation_limits = _invocation_limits(config)
+    invocation_limits = _invocation_limits(
+        config,
+        max_tts_requests=max_tts_requests,
+        max_image_requests=max_image_requests,
+    )
     return {
         "recipe_id": config.recipe_id, "recipe_version": config.recipe_version,
         "production_schema_version": config.schema_version,
@@ -1190,9 +1729,11 @@ def dry_run_envelope(
         "voice_profile": config.voice_profile, "provider": config.provider,
         "model": config.model, "voice": config.voice, "style": config.style,
         "effective_voice_rate": normalize_voice_rate(config.voice_rate),
-        "maximum_gemini_requests": config.max_tts_requests,
-        "maximum_gemini_sdk_attempts": config.tts_attempts,
-        "maximum_image_requests": config.max_image_requests,
+        "maximum_gemini_requests": invocation_limits["gemini"],
+        "maximum_gemini_sdk_attempts": (
+            0 if invocation_limits["gemini"] == 0 else config.tts_attempts
+        ),
+        "maximum_image_requests": invocation_limits["image_provider"],
         "cumulative_submission_counts": cumulative,
         "cumulative_transport_attempt_counts": cumulative_transport,
         "current_invocation_submission_counts": _zero_submissions(),
@@ -1264,8 +1805,12 @@ __all__ = [
     "LocalTTSCache", "ProductionConfig", "ProductionRun", "ProductionStage",
     "ProductionSummaryStatus", "classify_error",
     "apply_sentence_alignment", "build_legacy_image_resume_attestation",
+    "build_production_resume_attestation",
     "dry_run_envelope", "evaluate_resume", "file_sha256", "get_production_config",
     "image_request_accounting",
     "production_fingerprint", "record_unhandled_production_failure", "stable_hash", "tts_cache_key",
-    "source_inventory_sha256", "validate_production_voice_configuration",
+    "repair_completed_job_metadata", "validate_completed_job_integrity",
+    "require_reusable_narration", "source_inventory_sha256",
+    "validate_production_resume_attestation",
+    "validate_production_voice_configuration",
 ]

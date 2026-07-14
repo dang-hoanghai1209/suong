@@ -10,7 +10,10 @@
       "source_sha256": "7E1C5715443C6FB2E4AF66AF3316ADCE4638F2F8C53680D70665AEED41D74CF5",
       "source_duration": 147.226094,
       "moods": ["calm", "encouraging", "practical", "focus"],
-      "supported_recipes": ["practical_life_steps_v1"],
+      "supported_recipes": [
+        "practical_life_steps_v1",
+        "practical_life_steps_callirrhoe_v1"
+      ],
       "energy": "medium_low",
       "intro_safe_seconds": 8.0,
       "loop_safe": false,

@@ -102,6 +102,7 @@ def _completed_legacy_neutral_job(job: Path) -> tuple[dict[str, Path], list[Path
         "raw_narration": job / "assets" / "narration_raw.wav",
         "normalized_narration": job / "assets" / "narration.wav",
         "alignment": job / "alignment_metadata.json",
+        "alignment_boundaries": job / "alignment_boundaries.json",
         "mixed_audio": job / "assets" / "final_mixed_audio.m4a",
         "silent_video": job / "_render" / "silent_video.mp4",
         "final_video": job / "video.mp4",
@@ -203,6 +204,39 @@ def test_valid_seven_images_need_zero_image_requests(tmp_path):
     assert decision["estimated_image_requests"] == 0
 
 
+def test_aligned_job_reuses_narration_alignment_and_images_without_providers(
+    tmp_path,
+):
+    run = ProductionRun(tmp_path, CALLIRRHOE_PRODUCTION_CONFIG)
+    paths = {
+        "plan": tmp_path / "plan.json",
+        "raw_narration": tmp_path / "assets" / "narration_raw.wav",
+        "normalized_narration": tmp_path / "assets" / "narration.wav",
+        "alignment": tmp_path / "alignment_metadata.json",
+        "alignment_boundaries": tmp_path / "alignment_boundaries.json",
+    }
+    for index, path in enumerate(paths.values()):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"aligned-artifact-{index}".encode())
+    images = []
+    for index in range(7):
+        path = tmp_path / "assets" / f"scene_{index + 1}.jpg"
+        path.write_bytes(f"aligned-image-{index}".encode())
+        images.append(path)
+    run.record_artifact_hashes(paths, image_artifacts=images)
+
+    decision = evaluate_resume(tmp_path, CALLIRRHOE_PRODUCTION_CONFIG)
+
+    assert decision["artifacts"]["raw_narration"]["valid"] is True
+    assert decision["artifacts"]["normalized_narration"]["valid"] is True
+    assert decision["artifacts"]["alignment"]["valid"] is True
+    assert decision["artifacts"]["alignment_boundaries"]["valid"] is True
+    assert decision["artifacts"]["images"]["valid"] is True
+    assert decision["resume_stage"] == "aligned"
+    assert decision["estimated_gemini_requests"] == 0
+    assert decision["estimated_image_requests"] == 0
+
+
 def test_completed_job_reuse_requires_hashes_and_both_qc_passes(tmp_path):
     run = ProductionRun(tmp_path, CALLIRRHOE_PRODUCTION_CONFIG)
     paths = {
@@ -210,6 +244,7 @@ def test_completed_job_reuse_requires_hashes_and_both_qc_passes(tmp_path):
         "raw_narration": tmp_path / "assets" / "narration_raw.wav",
         "normalized_narration": tmp_path / "assets" / "narration.wav",
         "alignment": tmp_path / "alignment_metadata.json",
+        "alignment_boundaries": tmp_path / "alignment_boundaries.json",
         "mixed_audio": tmp_path / "assets" / "final_mixed_audio.m4a",
         "silent_video": tmp_path / "_render" / "silent_video.mp4",
         "final_video": tmp_path / "video.mp4",

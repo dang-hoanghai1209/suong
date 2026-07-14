@@ -86,12 +86,15 @@ class SceneCorrection(BaseModel):
     requested_action: str = ""
     character_lock_notes: str = ""
     composition_notes: str = ""
+    completed_result_state: str = ""
+    interaction_avoidance: str = ""
     reviewer_notes: str = ""
     source_image_sha256: str = ""
 
     @field_validator(
         "reason", "object_state", "requested_action", "character_lock_notes",
-        "composition_notes", "reviewer_notes", mode="before",
+        "composition_notes", "completed_result_state", "interaction_avoidance",
+        "reviewer_notes", mode="before",
     )
     @classmethod
     def validate_text(cls, value: Any) -> str:
@@ -134,7 +137,50 @@ def load_corrections(path: Path | None) -> dict[int, SceneCorrection]:
 
 def build_corrected_provider_prompt(scene: Any, correction: SceneCorrection) -> str:
     base = build_practical_provider_prompt(scene)
+    if correction.completed_result_state:
+        base = (
+            "Minimalist hand-drawn flat editorial illustration showing one clear "
+            "completed result state. Vertical 9:16 composition on a white or very "
+            "light neutral background. Muted teal and slate-green forms with warm "
+            "orange accents, clean continuous charcoal rounded outlines, simple "
+            "friendly adult figure, controlled negative space, calm practical mood, "
+            "wordless unbranded artwork."
+        )
+        result_parts = [
+            base,
+            "Completed result state is a full semantic match; show no transitional "
+            "phone interaction: " + correction.completed_result_state + ".",
+        ]
+        if correction.requested_action:
+            result_parts.append("Scene: " + correction.requested_action + ".")
+        if correction.object_state:
+            result_parts.append("Phone state: " + correction.object_state + ".")
+        if correction.interaction_avoidance:
+            result_parts.append("Hard interaction exclusion: " + correction.interaction_avoidance + ".")
+        if correction.must_show:
+            result_parts.append("Required: " + "; ".join(correction.must_show) + ".")
+        if correction.must_not_show:
+            result_parts.append("Hard failures: " + "; ".join(correction.must_not_show) + ".")
+        if correction.character_lock_notes:
+            result_parts.append("Identity: " + correction.character_lock_notes + ".")
+        if correction.composition_notes:
+            result_parts.append("Layout: " + correction.composition_notes + ".")
+        if correction.forbidden_text:
+            result_parts.append("No readable text, labels, logos, signatures, or watermarks.")
+        return " ".join(result_parts)
     additions = ["Scene-specific corrective constraints:"]
+    if correction.completed_result_state:
+        additions.append(
+            "Temporal composition rule: depict the clearly completed result state, not "
+            "the transitional interaction implied by the base action. The completed state "
+            "is a full semantic match. Required completed result: "
+            + correction.completed_result_state
+            + "."
+        )
+    if correction.interaction_avoidance:
+        additions.append(
+            "Interaction exclusion: " + correction.interaction_avoidance + "."
+        )
     if correction.requested_action:
         additions.append(f"Requested visible action: {correction.requested_action}.")
     if correction.object_state:
