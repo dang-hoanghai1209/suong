@@ -113,13 +113,20 @@ def test_unrelated_image_provider_credential_is_ignored(monkeypatch, capsys):
 
 
 def test_signed_url_is_redacted_without_query_persistence():
+    host = "private-account.r2.cloudflarestorage.com"
     url = urlunsplit((
-        "https", "private.r2.example", "/reference.png",
+        "https", host, "/reference.png",
         urlencode({"signature": "DO-NOT-PERSIST"}), "",
     ))
     redacted = redact_presigned_url(url)
     serialized = json.dumps(redacted)
-    assert redacted == {"url_scheme": "https", "url_host": "private.r2.example"}
+    assert redacted == {
+        "url_scheme": "https",
+        "url_provider": "cloudflare_r2",
+        "url_host_sha256": hashlib.sha256(host.encode("utf-8")).hexdigest(),
+    }
+    assert host not in serialized
+    assert "r2.cloudflarestorage.com" not in serialized
     assert "DO-NOT-PERSIST" not in serialized
     assert "signature" not in serialized
 

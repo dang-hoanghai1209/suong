@@ -22,6 +22,7 @@ from tella.media.temporary_reference_store import URLFetchResult, content_addres
 
 
 CONFIG_PATH = Path("configs/benchmarks/r2_reference_transport_canary_v1.json")
+TEST_R2_HOST = "private-account.r2.cloudflarestorage.com"
 
 
 class NotFound(Exception):
@@ -108,7 +109,7 @@ class FakeClient:
         if self.presign_failure:
             raise RuntimeError("presign failed with query material that must stay private")
         return urlunsplit((
-            "https", "private.r2.example", "/" + Params["Key"],
+            "https", TEST_R2_HOST, "/" + Params["Key"],
             urlencode({"signature": "RUNTIME-ONLY-SECRET"}), "",
         ))
 
@@ -204,6 +205,11 @@ async def test_exact_bytes_conditional_contract_roundtrip_and_cleanup(tmp_path):
     assert result["cleanup_outcome"] == "deleted"
     assert result["post_cleanup_absence_confirmed"] is True
     assert result["cleanup_required"] is False
+    assert result["url_scheme"] == "https"
+    assert result["url_provider"] == "cloudflare_r2"
+    assert result["url_host_sha256"] == hashlib.sha256(
+        TEST_R2_HOST.encode("utf-8")
+    ).hexdigest()
     assert len(client.put_calls) == 3
     first = client.put_calls[0]
     assert first["Body"] == expected
@@ -222,6 +228,8 @@ async def test_exact_bytes_conditional_contract_roundtrip_and_cleanup(tmp_path):
     assert accounting["conditional_write_attempts"] == 2
     assert accounting["temporary_store_verification_downloads"] == 1
     serialized = json.dumps(result)
+    assert TEST_R2_HOST not in serialized
+    assert "r2.cloudflarestorage.com" not in serialized
     assert "RUNTIME-ONLY-SECRET" not in serialized
     assert "signature" not in serialized
 
@@ -340,6 +348,12 @@ async def test_delete_failure_sets_cleanup_required_and_preserves_safe_diagnosti
     assert caught.value.diagnostic["cleanup_required"] is True
     assert caught.value.diagnostic["cleanup_outcome"] == "delete_failed"
     serialized = json.dumps(caught.value.diagnostic)
+    assert caught.value.diagnostic["url_provider"] == "cloudflare_r2"
+    assert caught.value.diagnostic["url_host_sha256"] == hashlib.sha256(
+        TEST_R2_HOST.encode("utf-8")
+    ).hexdigest()
+    assert TEST_R2_HOST not in serialized
+    assert "r2.cloudflarestorage.com" not in serialized
     assert "RUNTIME-ONLY-SECRET" not in serialized
     assert "signature" not in serialized
 

@@ -155,7 +155,13 @@ def redact_presigned_url(url: str) -> dict[str, str]:
     parsed = urlsplit(url)
     if parsed.scheme != "https" or not parsed.hostname:
         raise RuntimeError("R2 canary presigned URL must use HTTPS")
-    return {"url_scheme": parsed.scheme, "url_host": parsed.hostname}
+    return {
+        "url_scheme": parsed.scheme,
+        "url_provider": "cloudflare_r2",
+        "url_host_sha256": hashlib.sha256(
+            parsed.hostname.encode("utf-8")
+        ).hexdigest(),
+    }
 
 
 def validate_live_prerequisites(

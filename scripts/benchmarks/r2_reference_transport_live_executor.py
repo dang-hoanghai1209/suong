@@ -16,6 +16,7 @@ from pydantic import SecretStr
 from scripts.benchmarks.r2_reference_transport_canary import (
     R2ReferenceTransportCanaryConfig,
     deterministic_test_png,
+    redact_presigned_url,
     validate_live_prerequisites,
 )
 from tella.media.r2_reference_store import (
@@ -145,8 +146,7 @@ async def execute_r2_transport_canary(
             safe_object = owned.diagnostic()
             diagnostic.update({
                 "object_key_sha256": safe_object["object_key_sha256"],
-                "url_scheme": safe_object["read_url"]["scheme"],
-                "url_host": safe_object["read_url"]["host"],
+                **redact_presigned_url(owned.read_url.get_secret_value()),
                 "expires_at": safe_object["expires_at"],
                 "roundtrip_sha256": owned.roundtrip_sha256,
             })
