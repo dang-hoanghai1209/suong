@@ -10,6 +10,7 @@ from typing import Any
 from tella._voice_pace import VoicePace, normalize_voice_rate
 from tella.planner.models import Scene, TellaScenePlan
 from tella.planner.practical_life_steps_visuals import apply_practical_life_steps_visuals
+from tella.planner.practical_visual_profiles import PracticalVisualProfile
 from tella.planner.voices import edge_voice_for
 
 
@@ -83,6 +84,7 @@ _ACTIONS = (
     ActionDefinition("đặt", ("đặt",), "environment_control"),
     ActionDefinition("di chuyển", ("di chuyển", "dời"), "environment_control"),
     ActionDefinition("chuẩn bị", ("chuẩn bị",), "preparation"),
+    ActionDefinition("xếp", ("xếp",), "preparation"),
     ActionDefinition("chọn", ("chọn",), "focused_execution"),
     ActionDefinition("thực hiện", ("thực hiện", "làm"), "focused_execution"),
     ActionDefinition("dành", ("dành",), "time_blocking"),
@@ -168,6 +170,7 @@ _PREDICATE_TERMS = {
     "nằm",
     "bắt đầu",
     "thay đổi",
+    "trở nên",
     "bỏ cuộc",
     *(alias for action in _ACTIONS for alias in action.aliases),
 }
@@ -188,6 +191,7 @@ _VISUAL_ACTION_PHRASES = {
     "đặt": "placing",
     "di chuyển": "moving",
     "chuẩn bị": "arranging",
+    "xếp": "packing",
     "chọn": "selecting",
     "thực hiện": "working with",
     "dành": "setting aside",
@@ -215,6 +219,7 @@ def plan_practical_life_steps_from_script(
     voice_gender: str | None = None,
     preserve_narration: bool = False,
     seed: int = 0,
+    visual_profile: PracticalVisualProfile | None = None,
 ) -> TellaScenePlan:
     del seed
     if target_lang != "vi":
@@ -262,7 +267,7 @@ def plan_practical_life_steps_from_script(
     enforce_practical_life_steps_plan(
         plan, roles=roles, preserve_narration=preserve_narration
     )
-    return apply_practical_life_steps_visuals(plan)
+    return apply_practical_life_steps_visuals(plan, visual_profile=visual_profile)
 
 
 def plan_practical_life_steps_from_topic(*, topic: str, target_lang: str, **kwargs: Any):

@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from tella.planner.models import TellaScenePlan
+from tella.planner.practical_prompt_policy import build_priority_prompt
+from tella.planner.practical_visual_profiles import PracticalVisualProfile
+from tella.render.subtitle_layout import PRACTICAL_DYNAMIC_SUBTITLE_POLICY
 
 
 _ROLE_VARIANTS = {
@@ -31,7 +34,6 @@ _STEP_COMPOSITIONS = {
     3: "organized desk composition with a centered practical action",
 }
 
-
 def build_practical_provider_prompt(scene) -> str:
     """Build one compact positive prompt from validated planner metadata."""
     composition = scene.composition_pattern or "centered practical composition"
@@ -49,7 +51,98 @@ def build_practical_provider_prompt(scene) -> str:
     )
 
 
-def apply_practical_life_steps_visuals(plan: TellaScenePlan) -> TellaScenePlan:
+def _apply_explicit_visual_profile(
+    plan: TellaScenePlan, profile: PracticalVisualProfile
+) -> TellaScenePlan:
+    scenes = [scene for scene in plan.scenes if scene.kind == "scene"]
+    if len(scenes) != len(profile.scenes):
+        raise ValueError(
+            f"visual profile scene count mismatch: expected {len(scenes)}, "
+            f"received {len(profile.scenes)}"
+        )
+    actual_roles = tuple(scene.scene_role for scene in scenes)
+    profile_roles = tuple(item.scene_role for item in profile.scenes)
+    if actual_roles != profile_roles:
+        raise ValueError(
+            f"visual profile scene-role order mismatch: expected {actual_roles}, "
+            f"received {profile_roles}"
+        )
+
+    plan.character_fingerprint = profile.character_fingerprint
+    plan.canonical_character_spec = dict(profile.canonical_character_spec)
+    plan.identity_continuity_strategy = profile.identity_continuity_strategy
+    plan.identity_acceptance_standard = profile.identity_acceptance_standard
+    plan.identity_mode = profile.identity_mode
+    plan.subtitle_layout_policy_id = profile.subtitle_layout_policy_id
+    plan.cast_archetype_set = [profile.cast_archetype]
+
+    global_negatives = " ".join(profile.global_hard_negatives)
+    for scene, spec in zip(scenes, profile.scenes):
+        scene.scene_setting = spec.setting
+        scene.scene_action = spec.primary_action
+        scene.body_pose = spec.body_pose
+        scene.pose_family = spec.body_pose[:60]
+        scene.camera_framing = spec.camera_framing
+        scene.framing = spec.camera_framing
+        scene.character_placement = spec.character_placement
+        scene.primary_prop = spec.primary_prop
+        scene.primary_object = spec.primary_prop
+        scene.secondary_props = list(spec.secondary_props)
+        scene.secondary_object = ", ".join(spec.secondary_props)
+        scene.emotional_state = spec.emotional_state
+        scene.emotion_tag = spec.emotional_state[:60]
+        scene.composition_family = spec.composition_family
+        scene.composition_pattern = spec.composition_family
+        scene.composition_hint = f"{spec.camera_framing}; {spec.character_placement}"
+        scene.character_count = 1
+        scene.character_fingerprint = profile.character_fingerprint
+        scene.character_required_view = spec.camera_framing
+        scene.permitted_pose_variation = spec.body_pose
+        scene.identity_invariants = list(profile.identity_invariants)
+        scene.forbidden_identity_changes = list(profile.forbidden_identity_changes)
+        scene.subtitle_safe_lower_fraction = spec.subtitle_safe_lower_fraction
+        scene.subtitle_layout_policy_id = profile.subtitle_layout_policy_id
+        scene.planning_overlay_strategy = spec.planning_overlay_strategy
+        scene.cast_archetype = profile.cast_archetype
+        scene.character_archetype = profile.cast_archetype
+        scene.visual_variant_id = f"{profile.profile_id}_scene_{scene.scene_index}"
+        scene.visual_action = spec.primary_action
+        scene.visual_environment = spec.setting
+        scene.symbolic_qc_expectations = list(spec.symbolic_qc_expectations)
+        scene.frame_safety_hint = (
+            "full head and required hands, props, and action inside frame; "
+            "subtitle layout is renderer-owned"
+        )
+        hard_negatives = " ".join((global_negatives, *spec.semantic_hard_negatives))
+        sections = {
+            "action_setting": (
+                f"Required action and setting: {spec.setting}; {spec.primary_action}. "
+                f"Emotional state: {spec.emotional_state}."
+            ),
+            "required_props": (
+                f"Required primary prop: {spec.primary_prop}. Required secondary props: "
+                f"{', '.join(spec.secondary_props)}."
+            ),
+            "character_identity": profile.character_identity_prompt,
+            "composition": (
+                f"Composition: {spec.body_pose}; {spec.camera_framing}; "
+                f"{spec.character_placement}. Keep the head, required hands, action, "
+                "and props fully visible."
+            ),
+            "style": profile.style_instruction,
+            "hard_negatives": hard_negatives,
+        }
+        prompt = build_priority_prompt(sections)
+        scene.provider_prompt_variant = prompt
+        scene.image_prompt = prompt
+    return plan
+
+
+def apply_practical_life_steps_visuals(
+    plan: TellaScenePlan,
+    *,
+    visual_profile: PracticalVisualProfile | None = None,
+) -> TellaScenePlan:
     if plan.theme != "practical_life_steps":
         return plan
 
@@ -104,7 +197,7 @@ def apply_practical_life_steps_visuals(plan: TellaScenePlan) -> TellaScenePlan:
         else:
             scene.subtitle_highlight_words = list(scene.subtitle_highlight_words[:2])
         previous_composition = composition
-    return plan
+    return _apply_explicit_visual_profile(plan, visual_profile) if visual_profile else plan
 
 
 __all__ = [

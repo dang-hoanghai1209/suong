@@ -201,6 +201,8 @@ def _draw_reel_caption(
     wrap_w: int,
     highlight_words: list[str],
     subtitle_style: str = "reel_minimal",
+    caption_center_y_ratio: float | None = None,
+    translucent_panel: bool = False,
 ) -> None:
     caption = subtitle_text_for_style(caption, subtitle_style).text
     highlight_words = sanitize_highlight_words(highlight_words, subtitle_style)
@@ -221,7 +223,17 @@ def _draw_reel_caption(
         block_h=block_h,
         safe_top=safe_top,
         safe_bottom=safe_bottom,
+        center_y_ratio=caption_center_y_ratio,
     )
+
+    if translucent_panel:
+        panel_top = max(safe_top, cur_y - TEXT_BOX_PADDING)
+        panel_bottom = min(safe_bottom, cur_y + block_h + TEXT_BOX_PADDING)
+        draw.rounded_rectangle(
+            (int(canvas_w * 0.06), panel_top, int(canvas_w * 0.94), panel_bottom),
+            radius=18,
+            fill=(15, 20, 24, 150),
+        )
 
     for line, line_h in zip(lines, line_heights, strict=True):
         tokens = re.findall(r"\S+|\s+", line)
@@ -296,8 +308,12 @@ def _reel_minimal_caption_top_y(
     block_h: int,
     safe_top: int,
     safe_bottom: int,
+    center_y_ratio: float | None = None,
 ) -> int:
-    preferred_center = canvas_h * _REEL_MINIMAL_CAPTION_CENTER_Y_RATIO
+    preferred_center = canvas_h * (
+        _REEL_MINIMAL_CAPTION_CENTER_Y_RATIO
+        if center_y_ratio is None else center_y_ratio
+    )
     region_top = max(safe_top, int(canvas_h * _REEL_MINIMAL_CAPTION_SAFE_TOP_RATIO))
     region_bottom = min(
         safe_bottom,
@@ -482,6 +498,7 @@ def render_overlay_png(
     channel_name: str | None = None,
     channel_avatar: str | None = None,
     step_number: int = 0,
+    subtitle_layout: dict[str, object] | None = None,
 ) -> Path | None:
     """Render an RGBA PNG with an optional channel brand row at the very top,
     the scene title below it, and the caption at the bottom (all inside the
@@ -560,6 +577,14 @@ def render_overlay_png(
                 wrap_w=wrap_w,
                 highlight_words=highlight_words or [],
                 subtitle_style=subtitle_style,
+                caption_center_y_ratio=(
+                    float(subtitle_layout["caption_center_y_ratio"])
+                    if subtitle_layout and "caption_center_y_ratio" in subtitle_layout
+                    else None
+                ),
+                translucent_panel=bool(
+                    subtitle_layout and subtitle_layout.get("translucent_panel", False)
+                ),
             )
             cap_lines = []
         else:

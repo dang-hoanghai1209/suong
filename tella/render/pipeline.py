@@ -47,6 +47,10 @@ from tella.composer.safe_zone import render_dims_for, safe_zone_for
 from tella.composer.text_wrap import chars_per_line, wrap
 from tella.planner.models import TellaScenePlan
 from tella.render.text_overlay import practical_step_badge_layout, render_overlay_png
+from tella.render.subtitle_layout import (
+    PRACTICAL_DYNAMIC_SUBTITLE_POLICY,
+    resolve_practical_subtitle_layout,
+)
 from tella.subtitles import sanitize_highlight_words, subtitle_text_for_style
 from tella.themes.loader import ImageGrade
 
@@ -164,6 +168,7 @@ def _build_bg_filter(
     ken_burns_max_scale: float,
     motion_profile: str = "",
     scene_index: int = 1,
+    image_translation_y_ratio: float = 0.0,
 ) -> str:
     """Background-only filter chain (scale+crop+Ken Burns / fps).
 
@@ -208,6 +213,13 @@ def _build_bg_filter(
             x_expr = "iw/2-(iw/zoom/2)"
             y_expr = "ih/2-(ih/zoom/2)"
             zoom_expr = f"min(zoom+{zoom_step:.6f},{ken_burns_max_scale})"
+        if image_translation_y_ratio:
+            minimum_zoom = 1.0 + abs(image_translation_y_ratio) + 0.01
+            zoom_expr = f"max(({zoom_expr}),{minimum_zoom:.4f})"
+            y_expr = (
+                f"clip(({y_expr})+({image_translation_y_ratio:.4f})*ih,"
+                "0,ih-ih/zoom)"
+            )
         chains.append(
             f"zoompan=z='{zoom_expr}':"
             f"x='{x_expr}':y='{y_expr}':"
@@ -324,6 +336,7 @@ async def _render_scene(
     channel_name: str | None = None,
     channel_avatar: str | None = None,
     step_number: int = 0,
+    subtitle_layout: dict[str, object] | None = None,
 ) -> Path:
     """Render one VIDEO-ONLY scene MP4. Audio is mixed in once at final-mux."""
     is_video = _is_video_asset(asset_path)
@@ -349,6 +362,7 @@ async def _render_scene(
             channel_name=channel_name,
             channel_avatar=channel_avatar,
             step_number=step_number,
+            subtitle_layout=subtitle_layout,
         )
 
     bg_filter = _build_bg_filter(
@@ -359,6 +373,9 @@ async def _render_scene(
         ken_burns_max_scale=ken_burns_max_scale,
         motion_profile=motion_profile,
         scene_index=scene_index,
+        image_translation_y_ratio=float(
+            (subtitle_layout or {}).get("image_translation_y_ratio", 0.0)
+        ),
     )
 
     cmd: list[str] = ["ffmpeg", "-y", "-loglevel", "error"]
@@ -772,6 +789,23 @@ async def render(
         else:
             scene.step_badge_rendered = False
             scene.step_badge_text = ""
+        subtitle_layout: dict[str, object] = {}
+        if (
+            plan.theme == "practical_life_steps"
+            and plan.subtitle_layout_policy_id == PRACTICAL_DYNAMIC_SUBTITLE_POLICY
+        ):
+            layout_decision = resolve_practical_subtitle_layout(
+                scene.subtitle_protected_regions,
+                busy_regions=scene.subtitle_busy_regions,
+                translation_safe=scene.subtitle_translation_safe,
+            )
+            subtitle_layout = layout_decision.metadata()
+            scene.subtitle_layout_decision = subtitle_layout
+            if layout_decision.status != "passed":
+                raise RuntimeError(
+                    f"scene {scene.scene_index} subtitle layout failed closed: "
+                    f"{layout_decision.reason}"
+                )
         logger.info(
             "scene motion scene=%02d role=%s profile=%s",
             scene.scene_index,
@@ -805,6 +839,7 @@ async def render(
             step_number=(
                 scene.step_number if scene.scene_role == "practical_step" else 0
             ),
+            subtitle_layout=subtitle_layout,
         )
         scene_mp4s.append(out_mp4)
         logger.info(
