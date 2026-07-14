@@ -71,8 +71,16 @@ def test_optional_sdk_is_lazy_and_missing_sdk_error_is_safe(monkeypatch):
     assert "secret-for-test" not in serialized
 
 
-def test_s3_factory_derives_endpoint_disables_retries_and_passes_timeouts(monkeypatch):
+def test_s3_factory_derives_endpoint_disables_retries_and_passes_timeouts(
+    monkeypatch, capsys
+):
     seen: dict = {}
+
+    class FakeS3Client:
+        def __getattr__(self, name):
+            raise AssertionError(f"unexpected fake S3 method access: {name}")
+
+    fake_client = FakeS3Client()
 
     class FakeSDKConfig:
         def __init__(self, **kwargs):
@@ -81,24 +89,33 @@ def test_s3_factory_derives_endpoint_disables_retries_and_passes_timeouts(monkey
     class FakeBoto3:
         @staticmethod
         def client(name, **kwargs):
+            seen["client_constructions"] = seen.get("client_constructions", 0) + 1
             seen["service"] = name
             seen["client"] = kwargs
-            return object()
+            return fake_client
 
     monkeypatch.setattr(transport, "_load_boto3", lambda: (FakeBoto3, FakeSDKConfig))
     result = transport.create_r2_s3_client(_store_config())
-    assert result is not None
+    assert result is fake_client
+    assert seen["client_constructions"] == 1
     assert seen["service"] == "s3"
     assert seen["client"]["endpoint_url"] == (
         "https://account-for-test.r2.cloudflarestorage.com"
     )
     assert seen["client"]["region_name"] == "auto"
+    assert seen["client"]["aws_access_key_id"] == "access-for-test"
+    assert seen["client"]["aws_secret_access_key"] == "secret-for-test"
     assert seen["sdk_config"]["connect_timeout"] == 5.0
     assert seen["sdk_config"]["read_timeout"] == 15.0
     assert seen["sdk_config"]["retries"] == {
         "mode": "standard", "total_max_attempts": 1
     }
     assert seen["sdk_config"]["signature_version"] == "s3v4"
+    assert "access-for-test" not in repr(_store_config())
+    assert "secret-for-test" not in repr(_store_config())
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 def test_s3_factory_redacts_nested_sdk_failure(monkeypatch):

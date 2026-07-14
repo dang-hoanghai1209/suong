@@ -18,6 +18,7 @@ from scripts.benchmarks.r2_reference_transport_canary import (
     redact_presigned_url,
     validate_live_prerequisites,
 )
+from tella.media import r2_canary_transport as r2_transport
 
 
 CONFIG_PATH = Path("configs/benchmarks/r2_reference_transport_canary_v1.json")
@@ -129,23 +130,78 @@ def test_cleanup_policy_covers_every_terminal_branch_once():
     assert len(config.cleanup_required_on) == len(REQUIRED_CLEANUP_BRANCHES)
 
 
-def test_live_executor_requires_optional_sdk_after_every_gate(
+def test_live_executor_reaches_injected_missing_sdk_only_after_every_gate(
     tmp_path, monkeypatch, capsys
 ):
-    config_path = tmp_path / "confirmed.json"
-    payload = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    payload["transport_policy"]["private_bucket_status_confirmed"] = True
-    payload["transport_policy"]["conditional_write_test_confirmed"] = True
-    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    def config_path(name, *, private, conditional):
+        path = tmp_path / name
+        payload = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        payload["transport_policy"]["private_bucket_status_confirmed"] = private
+        payload["transport_policy"]["conditional_write_test_confirmed"] = conditional
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    confirmed = config_path("confirmed.json", private=True, conditional=True)
+    private_missing = config_path(
+        "private-missing.json", private=False, conditional=True
+    )
+    conditional_missing = config_path(
+        "conditional-missing.json", private=True, conditional=False
+    )
     for name in (
         "R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME"
     ):
         monkeypatch.setenv(name, "present-test-value")
+
+    loader_calls = 0
+
+    def missing_sdk():
+        nonlocal loader_calls
+        loader_calls += 1
+        raise r2_transport.R2ClientFactoryError("optional_s3_sdk_unavailable")
+
+    monkeypatch.setattr(r2_transport, "_load_boto3", missing_sdk)
+
+    with pytest.raises(RuntimeError, match="authorization"):
+        main([
+            "--config", str(confirmed),
+            "--mode", "live-r2",
+            "--authorization-token", "wrong",
+        ])
+    assert loader_calls == 0
+
+    with pytest.raises(RuntimeError, match="private-bucket"):
+        main([
+            "--config", str(private_missing),
+            "--mode", "live-r2",
+            "--authorization-token", AUTHORIZATION_TOKEN,
+        ])
+    assert loader_calls == 0
+
+    with pytest.raises(RuntimeError, match="IfNoneMatch"):
+        main([
+            "--config", str(conditional_missing),
+            "--mode", "live-r2",
+            "--authorization-token", AUTHORIZATION_TOKEN,
+        ])
+    assert loader_calls == 0
+
+    monkeypatch.delenv("R2_SECRET_ACCESS_KEY")
+    with pytest.raises(RuntimeError, match="credentials are incomplete"):
+        main([
+            "--config", str(confirmed),
+            "--mode", "live-r2",
+            "--authorization-token", AUTHORIZATION_TOKEN,
+        ])
+    assert loader_calls == 0
+    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "present-test-value")
+
     assert main([
-        "--config", str(config_path),
+        "--config", str(confirmed),
         "--mode", "live-r2",
         "--authorization-token", AUTHORIZATION_TOKEN,
     ]) == 2
+    assert loader_calls == 1
     output = json.loads(capsys.readouterr().out)
     assert output["status"] == "failed"
     assert output["error_category"] == "optional_s3_sdk_unavailable"
