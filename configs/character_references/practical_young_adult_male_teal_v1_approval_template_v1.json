@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "package_id": "practical_young_adult_male_teal_v1_package_v1",
+  "character_id": "practical_young_adult_male_teal_v1",
+  "character_fingerprint": "4bb86c902dfedba848ad8ae43ef6dbd0bb41059be7fa1af816ecd85cc28fba5f",
+  "human_approved": false,
+  "approval_timestamp": null,
+  "approver_role": null,
+  "asset_sha256": {
+    "master_sheet": null,
+    "front_portrait": null,
+    "three_quarter_portrait": null,
+    "side_profile": null,
+    "full_body_neutral": null
+  },
+  "checklist": {
+    "same_face_across_views": false,
+    "same_age_appearance": false,
+    "same_hair_silhouette": false,
+    "same_skin_tone": false,
+    "same_body_proportions": false,
+    "same_outfit_and_shoes": false,
+    "anatomy_correct": false,
+    "hands_correct": false,
+    "no_cropping": false,
+    "no_extra_person": false,
+    "no_text_or_watermark": false,
+    "master_and_atomic_views_match": false,
+    "all_hashes_verified": false
+  }
+}
