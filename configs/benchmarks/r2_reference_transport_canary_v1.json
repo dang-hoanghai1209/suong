@@ -48,6 +48,7 @@
     "url_scheme",
     "url_host",
     "ttl_seconds",
+    "expires_at",
     "roundtrip_sha256",
     "conditional_write_observed_result",
     "cleanup_outcome",
