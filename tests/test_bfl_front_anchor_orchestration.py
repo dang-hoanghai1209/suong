@@ -122,3 +122,24 @@ def test_failure_preserves_prior_candidate_and_stops_later(tmp_path):
     assert payload["candidates"][1]["status"] == "failed"
     assert payload["candidates"][2]["status"] == "not_attempted_due_to_fail_closed"
     assert payload["review_artifacts_created"] is False
+
+
+def test_success_review_finalizer_creates_local_derivatives_only(tmp_path):
+    (tmp_path / ".git").mkdir()
+    fake = FakeProvider()
+    from scripts.benchmarks.bfl_front_anchor_canary import _finalize_review
+
+    result = asyncio.run(execute_live_front(
+        plan=_plan("orchestration_review_01"), repository_root=tmp_path,
+        authorization_token="AUTHORIZE_BFL_FRONT_ANCHOR_CANARY_01",
+        credential_reader=lambda: SecretStr("fake"),
+        provider_factory=lambda key: ProviderBundle(provider=fake, close=lambda: None), state_reader=_state,
+        review_finalizer=_finalize_review,
+    ))
+    assert result.exit_code == 0
+    root = tmp_path / "out" / "character_reference_bootstrap" / "orchestration_review_01"
+    assert (root / "contact_sheet.png").is_file()
+    assert (root / "review_template.json").is_file()
+    review = __import__("json").loads((root / "review_template.json").read_text())
+    assert review["selected_candidate_id"] is None
+    assert review["human_approved"] is False

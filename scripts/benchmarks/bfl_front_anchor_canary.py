@@ -95,6 +95,63 @@ def _live_provider_factory(key):
     return ProviderBundle(provider=provider, close=transport.close)
 
 
+def _finalize_review(plan, session_manifest, output):
+    from tella.media.front_anchor_harness import build_front_plan
+    from tella.media.front_anchor_review import (
+        FrontVisualSignals, build_candidate_manifest, build_contact_sheet,
+        make_review_template, run_candidate_qc,
+        write_review_template,
+    )
+
+    # Semantic identity signals remain conservative until human review; no
+    # visual claim is fabricated by the orchestration layer.
+    signals = FrontVisualSignals()
+    qcs = tuple(
+        run_candidate_qc(
+            candidate_id=row.candidate_id,
+            candidate_number=index,
+            path=output / row.image_filename,
+            provider="bfl_flux_1_1_pro_front_anchor",
+            model="/v1/flux-pro-1.1",
+            request_id=row.request_id,
+            seed=row.seed,
+            signals=signals,
+        )
+        for index, row in enumerate(session_manifest.candidates, 1)
+    )
+    review_root = output
+    contact_path = review_root / "contact_sheet.png"
+    template_path = review_root / "review_template.json"
+    plan_for_review = build_front_plan(
+        session_id=plan.session_id,
+        character_fingerprint=plan.character_fingerprint,
+        prompt=plan.prompt,
+        prompt_sha256=plan.prompt_sha256,
+        generation_spec_version=plan.generation_spec_version,
+        repository_root=Path.cwd(),
+    ).model_copy(update={"provider_id": "bfl_flux_1_1_pro_front_anchor"})
+    absolute_qcs = tuple(
+        qc.model_copy(update={"output_path": (output / f"candidate_{index:02d}.png").resolve()})
+        for index, qc in enumerate(qcs, 1)
+    )
+    absolute_manifest = build_candidate_manifest(
+        plan=plan_for_review, qcs=absolute_qcs,
+        contact_sheet_path=contact_path.resolve(), review_template_path=template_path.resolve(),
+    )
+    build_contact_sheet(manifest=absolute_manifest, output_path=contact_path)
+    relative_qcs = tuple(
+        qc.model_copy(update={"output_path": plan.output_root / f"candidate_{index:02d}.png"})
+        for index, qc in enumerate(qcs, 1)
+    )
+    persisted = build_candidate_manifest(
+        plan=plan_for_review, qcs=relative_qcs,
+        contact_sheet_path=plan.output_root / "contact_sheet.png",
+        review_template_path=plan.output_root / "review_template.json",
+    )
+    template = make_review_template(persisted)
+    write_review_template(template, template_path)
+
+
 async def execute_live_mode(args) -> Any:
     from pydantic import SecretStr
     from tella.media.bfl_front_anchor_orchestration import execute_live_front
@@ -111,6 +168,7 @@ async def execute_live_mode(args) -> Any:
             SecretStr(os.environ["BFL_API_KEY"]) if "BFL_API_KEY" in os.environ else None
         ),
         provider_factory=_live_provider_factory,
+        review_finalizer=_finalize_review,
     )
 
 

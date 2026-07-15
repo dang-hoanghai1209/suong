@@ -128,7 +128,7 @@ class FrontCandidateManifest(BaseModel):
     schema_version: Literal[1]
     session_id: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_.-]+$")
     character_fingerprint: str
-    provider: Literal["cloudflare"]
+    provider: Literal["cloudflare", "bfl_flux_1_1_pro_front_anchor"]
     model: str = Field(min_length=1, max_length=160)
     candidates: tuple[FrontCandidateArtifact, ...]
     qc_results: tuple[FrontCandidateQC, ...]

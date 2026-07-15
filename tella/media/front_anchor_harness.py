@@ -24,7 +24,7 @@ class FrontHarnessPlan(BaseModel):
 
     schema_version: Literal[1]
     session_id: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_.-]+$")
-    provider_id: Literal["cloudflare"]
+    provider_id: Literal["cloudflare", "bfl_flux_1_1_pro_front_anchor"]
     model: str = Field(min_length=1, max_length=160)
     character_id: Literal["practical_young_adult_male_teal_v1"]
     character_fingerprint: str
