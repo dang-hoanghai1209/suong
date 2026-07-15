@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 from scripts.benchmarks.character_reference_bootstrap import load_and_validate_plan
 from tella.media.bfl_front_anchor_provider import (
@@ -52,6 +53,19 @@ def validate_only(*, config_path: Path, repository_root: Path, session_id: str) 
         "external_calls": 0,
         "generated_artifacts": 0,
     }
+
+
+def build_live_transport(*, authorization_token: str) -> Any:
+    """Build the concrete HTTP transport only at the explicitly gated live boundary."""
+    if authorization_token != AUTHORIZATION_TOKEN:
+        raise RuntimeError("exact BFL front-anchor authorization is required")
+    key = os.environ.get("BFL_API_KEY")
+    if not key:
+        raise RuntimeError("BFL credential is missing")
+    from pydantic import SecretStr
+    from tella.media.bfl_front_anchor_transport import build_bfl_front_anchor_http_transport
+
+    return build_bfl_front_anchor_http_transport(SecretStr(key))
 
 
 def _parser() -> argparse.ArgumentParser:
