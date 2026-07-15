@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "workflow_id": "practical_young_adult_male_teal_v1_bootstrap_v1",
+  "package_id": "practical_young_adult_male_teal_v1_package_v1",
+  "character_id": "practical_young_adult_male_teal_v1",
+  "character_fingerprint": "4bb86c902dfedba848ad8ae43ef6dbd0bb41059be7fa1af816ecd85cc28fba5f",
+  "canonical_spec_path": "configs/character_references/practical_young_adult_male_teal_v1.json",
+  "generation_spec_version": 1,
+  "request_budget": {
+    "front_portrait": {"initial_max": 3, "targeted_additional_max": 2, "total_max": 5},
+    "three_quarter_portrait": {"initial_max": 1, "targeted_additional_max": 1, "total_max": 2},
+    "side_profile": {"initial_max": 1, "targeted_additional_max": 1, "total_max": 2},
+    "full_body_neutral": {"initial_max": 1, "targeted_additional_max": 2, "total_max": 3},
+    "global_image_submissions_max": 12,
+    "transport_attempts_per_submission_max": 1,
+    "automatic_retries": 0,
+    "fallbacks": 0
+  },
+  "shared_anatomy_constraints": [
+    "exactly one head",
+    "exactly two naturally connected arms and two anatomically plausible hands",
+    "exactly two naturally connected legs and two feet",
+    "no duplicated, missing, merged, disconnected, or malformed body part",
+    "five digits correctly represented or implied on each visible hand without obvious extra or missing digits"
+  ],
+  "shared_negative_constraints": [
+    "no text, labels, letters, numbers, logo, signature, or watermark",
+    "no extra person or duplicate character",
+    "no crop through the head and no cropped full-body limb or shoe",
+    "no accessory and no prop unless the view explicitly requires one",
+    "no coral or orange locked clothing component",
+    "no realistic rendering, 3D, anime exaggeration, complex lighting, or complex background"
+  ],
+  "request_specs": [
+    {
+      "asset_role": "front_portrait",
+      "stage": "bootstrap_front",
+      "prompt": "Create exactly one chest-up direct-front identity portrait of the canonical practical young adult male, visually age 24 to 28. Use a neutral calm expression, softly angular face, small dark eyes with stable spacing, stable eyebrow shape, short straight nose, stable jawline, short dark rounded side-swept hair, fixed warm medium-light skin tone, and the complete hair silhouette with no crop through the head. Preserve the locked muted teal long-sleeve round-collar top with narrow cuffs and add no accessory or prop. Use minimalist wordless hand-drawn flat editorial illustration, clean uniform charcoal outlines, flat color, and a plain pale sage-gray background. Show coherent connected anatomy, exactly one person, no text, no label, no logo, and no watermark. This is only a bootstrap front-anchor candidate and is not final package approval.",
+      "prompt_sha256": "282791e5fef32e7cf0cf7b0984c415266122243703aaebf3e32dcfe4e3b1e6f2",
+      "width": 768,
+      "height": 1024,
+      "output_mime_type": "image/png",
+      "anchor_binding": "none",
+      "constraints_profile": "approved_practical_character_anatomy_and_negative_v1"
+    },
+    {
+      "asset_role": "three_quarter_portrait",
+      "stage": "reference_conditioned",
+      "prompt": "Using the exact immutable selected front anchor as the identity reference, create exactly one chest-up portrait at approximately 45 degrees. Preserve the same face, apparent age 24 to 28, eye spacing, eyebrow shape, nose, jawline, short dark rounded side-swept hair silhouette, fixed warm medium-light skin tone, body build, muted teal round-collar top, and narrow cuffs. Keep a neutral calm expression, complete hair silhouette, no prop, plain pale sage-gray background, minimalist wordless hand-drawn flat editorial style, clean uniform charcoal outlines, coherent connected anatomy, and exactly one person. Do not reinterpret or replace the anchor identity. Include no text, label, logo, or watermark.",
+      "prompt_sha256": "ad323e6d43cd9b330107405fe8919c5ad664862c92faae1f6352e05e40ca4e87",
+      "width": 768,
+      "height": 1024,
+      "output_mime_type": "image/png",
+      "anchor_binding": "selected_front_anchor_sha256_exact",
+      "constraints_profile": "approved_practical_character_anatomy_and_negative_v1"
+    },
+    {
+      "asset_role": "side_profile",
+      "stage": "reference_conditioned",
+      "prompt": "Using the exact immutable selected front anchor as the identity reference, create exactly one chest-up clean side-profile portrait. Preserve the same apparent age 24 to 28, stable nose and jaw profile, eye and eyebrow design, short dark rounded side-swept hair silhouette, fixed warm medium-light skin tone, slim average build, muted teal round-collar top, and narrow cuffs. Keep a neutral calm expression, complete hair silhouette, no prop, plain pale sage-gray background, minimalist wordless hand-drawn flat editorial style, clean uniform charcoal outlines, coherent connected anatomy, and exactly one person. Do not reinterpret or replace the anchor identity. Include no text, label, logo, or watermark.",
+      "prompt_sha256": "b2bbf1de63bb2dc5a4e60889a057f5b9e6acbde02e7ada616205f28c53dc4bc8",
+      "width": 768,
+      "height": 1024,
+      "output_mime_type": "image/png",
+      "anchor_binding": "selected_front_anchor_sha256_exact",
+      "constraints_profile": "approved_practical_character_anatomy_and_negative_v1"
+    },
+    {
+      "asset_role": "full_body_neutral",
+      "stage": "reference_conditioned",
+      "prompt": "Using the exact immutable selected front anchor as the identity reference, create exactly one complete full-body neutral standing view in a front or slight three-quarter orientation. Preserve the same face, apparent age 24 to 28, hair silhouette, skin tone, slim average adult build, stable shoulder, torso, arm, and leg proportions, muted teal long-sleeve round-collar top with narrow cuffs, charcoal straight trousers, and simple low-profile charcoal shoes without a logo. Keep both arms relaxed and slightly separated from the torso, both anatomically plausible hands visible, both legs and both shoes visible, and the complete body inside the frame with no cropped limb. Use a calm neutral identity pose, plain pale sage-gray background, minimalist wordless hand-drawn flat editorial style, clean uniform charcoal outlines, coherent connected anatomy, and exactly one person. Do not reinterpret or replace the anchor identity. Include no prop, accessory, text, label, logo, or watermark.",
+      "prompt_sha256": "2915a41f376a20872894a783885349c2d956ac5a742e3fff194713da3f80bd61",
+      "width": 768,
+      "height": 1024,
+      "output_mime_type": "image/png",
+      "anchor_binding": "selected_front_anchor_sha256_exact",
+      "constraints_profile": "approved_practical_character_anatomy_and_negative_v1"
+    }
+  ],
+  "provider_assessment": [
+    {
+      "provider_id": "cloudflare",
+      "eligible_stage": "bootstrap_front_candidate_only",
+      "text_to_image": true,
+      "reference_conditioning": false,
+      "identity_guarantee": false,
+      "requirements": ["explicit live authorization", "PNG postcondition", "768x1024 postcondition"],
+      "execution_authorized": false
+    },
+    {
+      "provider_id": "bfl_flux2_reference",
+      "eligible_stage": "remaining_reference_conditioned_views_only",
+      "text_to_image": false,
+      "reference_conditioning": true,
+      "identity_guarantee": false,
+      "requirements": ["immutable approved front anchor", "private reference transport", "BFL live authorization", "per-request anchor verification"],
+      "execution_authorized": false
+    }
+  ]
+}
