@@ -21,6 +21,7 @@ from tella.media.temporary_reference_store import URLFetchResult
 
 
 BASE_URL = "https://api.bfl.ai"
+POLL_HOSTS = frozenset({"api.bfl.ai", "api.eu.bfl.ai", "api.us.bfl.ai"})
 MAX_JSON_RESPONSE_BYTES = 1_000_000
 MAX_RESULT_BYTES = 20_000_000
 
@@ -51,7 +52,7 @@ def _https_locator(value: Any, *, policy: str) -> str:
             raise BFLFrontAnchorTransportError("invalid_locator", "provider locator is invalid")
     except ValueError:
         pass
-    if policy == "poll" and host != "api.bfl.ai":
+    if policy == "poll" and host not in POLL_HOSTS:
         raise BFLFrontAnchorTransportError("invalid_locator", "provider locator is invalid")
     if policy == "delivery" and not re.fullmatch(r"delivery\.[a-z0-9-]+\.bfl\.ai", host):
         raise BFLFrontAnchorTransportError("invalid_locator", "provider locator is invalid")
@@ -70,8 +71,9 @@ class BFLFrontAnchorHTTPTransport:
         if not api_key.get_secret_value():
             raise BFLFrontAnchorTransportError("configuration", "BFL credential is missing")
         self._api_key = api_key
-        self._client_factory = client_factory or httpx.AsyncClient
-        self._client: httpx.AsyncClient | None = None
+        self._client_factory = client_factory
+        self._api_client: httpx.AsyncClient | None = None
+        self._delivery_client: httpx.AsyncClient | None = None
         self._max_json = max_json_response_bytes
         self._max_result = max_result_bytes
 
@@ -129,9 +131,12 @@ class BFLFrontAnchorHTTPTransport:
         return response
 
     async def close(self) -> None:
-        if self._client is not None:
-            await self._client.aclose()
-            self._client = None
+        clients = (self._api_client, self._delivery_client)
+        self._api_client = None
+        self._delivery_client = None
+        for client in clients:
+            if client is not None:
+                await client.aclose()
 
     async def _json_request(
         self, method: str, url: str, *, headers: dict[str, str], json_body: dict[str, Any] | None,
@@ -152,7 +157,8 @@ class BFLFrontAnchorHTTPTransport:
         self, method: str, url: str, *, headers: dict[str, str], json_body: dict[str, Any] | None,
         connect_timeout_seconds: float, read_timeout_seconds: float, maximum_bytes: int,
     ) -> URLFetchResult:
-        client = await self._get_client(connect_timeout_seconds, read_timeout_seconds)
+        scope = "delivery" if headers == {"accept": "image/png"} else "api"
+        client = await self._get_client(scope, connect_timeout_seconds, read_timeout_seconds)
         try:
             async with client.stream(
                 method, url, headers=headers, json=json_body, follow_redirects=False,
@@ -179,15 +185,26 @@ class BFLFrontAnchorHTTPTransport:
         except Exception:
             raise BFLFrontAnchorTransportError("transport_failure", "BFL HTTP operation failed") from None
 
-    async def _get_client(self, connect: float, read: float) -> httpx.AsyncClient:
-        if self._client is None:
+    async def _get_client(self, scope: str, connect: float, read: float) -> httpx.AsyncClient:
+        current = self._delivery_client if scope == "delivery" else self._api_client
+        if current is None:
             timeout = httpx.Timeout(timeout=read, connect=connect)
-            self._client = self._client_factory(
-                timeout=timeout,
-                follow_redirects=False,
-                limits=httpx.Limits(max_connections=1, max_keepalive_connections=1),
-            )
-        return self._client
+            kwargs = {
+                "timeout": timeout,
+                "follow_redirects": False,
+                "trust_env": False,
+                "limits": httpx.Limits(max_connections=1, max_keepalive_connections=1),
+            }
+            if self._client_factory is None:
+                created = httpx.AsyncClient(**kwargs)
+            else:
+                created = self._client_factory(scope=scope, **kwargs)
+            if scope == "delivery":
+                self._delivery_client = created
+            else:
+                self._api_client = created
+            current = created
+        return current
 
 
 def build_bfl_front_anchor_http_transport(api_key: SecretStr) -> BFLFrontAnchorHTTPTransport:

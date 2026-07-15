@@ -14,6 +14,7 @@ from tella.media.bfl_front_anchor_transport import (
 
 def _transport(handler, **kwargs):
     def factory(**client_kwargs):
+        client_kwargs.pop("scope", None)
         return httpx.AsyncClient(transport=httpx.MockTransport(handler), **client_kwargs)
 
     return BFLFrontAnchorHTTPTransport(api_key=SecretStr("secret-key"), client_factory=factory, **kwargs)
@@ -154,3 +155,48 @@ def test_key_is_not_in_transport_repr_or_configuration_error():
     assert "secret-key" not in repr(transport)
     with pytest.raises(BFLFrontAnchorTransportError):
         BFLFrontAnchorHTTPTransport(api_key=SecretStr(""))
+
+
+def test_api_and_delivery_clients_are_distinct_and_cookie_isolated():
+    requests = []
+    scopes = []
+
+    async def handler(request: httpx.Request):
+        requests.append(request)
+        if request.url.path == "/v1/flux-pro-1.1":
+            return httpx.Response(
+                200, json={"id": "req", "polling_url": "https://api.eu.bfl.ai/poll"},
+                headers={"set-cookie": "api_cookie=api; Domain=.bfl.ai; Path=/"},
+            )
+        if request.url.path == "/poll":
+            return httpx.Response(
+                200, json={"status": "Pending"},
+                headers={"set-cookie": "api_refresh=api2; Domain=.bfl.ai; Path=/"},
+            )
+        return httpx.Response(
+            200, headers={"content-type": "image/png", "set-cookie": "delivery_cookie=bad; Domain=.bfl.ai; Path=/"}, content=b"image",
+        )
+
+    def factory(**kwargs):
+        scopes.append(kwargs["scope"])
+        kwargs.pop("scope")
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler), **kwargs)
+
+    transport = BFLFrontAnchorHTTPTransport(api_key=SecretStr("secret-key"), client_factory=factory)
+    asyncio.run(transport.create(
+        BASE_URL + "/v1/flux-pro-1.1", headers={"x-key": "secret-key"},
+        payload={"prompt": "front", "width": 768, "height": 1024, "output_format": "png", "prompt_upsampling": False, "seed": 1},
+        connect_timeout_seconds=1, read_timeout_seconds=1, maximum_response_bytes=1000,
+    ))
+    asyncio.run(transport.poll("https://api.eu.bfl.ai/poll", headers={"x-key": "secret-key"}, connect_timeout_seconds=1, read_timeout_seconds=1, maximum_response_bytes=1000))
+    asyncio.run(transport.download("https://delivery.eu.bfl.ai/result", connect_timeout_seconds=1, read_timeout_seconds=1, maximum_bytes=1000))
+    asyncio.run(transport.poll("https://api.eu.bfl.ai/poll", headers={"x-key": "secret-key"}, connect_timeout_seconds=1, read_timeout_seconds=1, maximum_response_bytes=1000))
+    asyncio.run(transport.close())
+
+    assert scopes == ["api", "delivery"]
+    delivery_headers = {key.lower(): value for key, value in dict(requests[2].headers).items()}
+    assert "cookie" not in delivery_headers
+    assert "x-key" not in delivery_headers
+    assert "authorization" not in delivery_headers
+    api_headers_after_delivery = {key.lower(): value for key, value in dict(requests[3].headers).items()}
+    assert "delivery_cookie" not in api_headers_after_delivery.get("cookie", "")
