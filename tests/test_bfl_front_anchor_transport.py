@@ -46,7 +46,7 @@ def test_create_rejects_extra_optional_fields_before_http():
     transport = _transport(lambda request: httpx.Response(200, json={}))
     with pytest.raises(BFLFrontAnchorTransportError, match="payload"):
         asyncio.run(transport.create(
-            BASE_URL + "/v1/flux-pro-1.1", headers={},
+            BASE_URL + "/v1/flux-pro-1.1", headers={"x-key": "secret-key"},
             payload={"prompt": "x", "width": 768, "height": 1024, "output_format": "png", "prompt_upsampling": False, "seed": 1, "webhook_url": "x"},
             connect_timeout_seconds=1, read_timeout_seconds=1, maximum_response_bytes=1000,
         ))
@@ -72,9 +72,9 @@ def test_poll_and_download_are_bounded_and_redirects_disabled():
         return httpx.Response(302, headers={"location": "https://other.example/result"}, content=b"redirect")
 
     transport = _transport(handler, max_result_bytes=20)
-    poll = asyncio.run(transport.poll("https://api.bfl.ai/poll", headers={}, connect_timeout_seconds=1, read_timeout_seconds=1, maximum_response_bytes=1000))
+    poll = asyncio.run(transport.poll("https://api.bfl.ai/poll", headers={"x-key": "secret-key"}, connect_timeout_seconds=1, read_timeout_seconds=1, maximum_response_bytes=1000))
     assert poll["status"] == "Pending"
-    result = asyncio.run(transport.download("https://api.bfl.ai/result", connect_timeout_seconds=1, read_timeout_seconds=1, maximum_bytes=20))
+    result = asyncio.run(transport.download("https://delivery.example.bfl.ai/result", connect_timeout_seconds=1, read_timeout_seconds=1, maximum_bytes=20))
     asyncio.run(transport.close())
     assert result.status_code == 302
     assert len(seen) == 2
@@ -86,10 +86,67 @@ def test_result_download_aborts_oversize_and_does_not_expose_url():
 
     transport = _transport(handler, max_result_bytes=4)
     with pytest.raises(BFLFrontAnchorTransportError, match="byte limit") as exc:
-        asyncio.run(transport.download("https://cdn.bfl.ai/signed?token=secret", connect_timeout_seconds=1, read_timeout_seconds=1, maximum_bytes=20))
+        asyncio.run(transport.download("https://delivery.example.bfl.ai/signed?token=secret", connect_timeout_seconds=1, read_timeout_seconds=1, maximum_bytes=20))
     assert "signed" not in str(exc.value)
     assert "secret" not in str(exc.value)
     asyncio.run(transport.close())
+
+
+@pytest.mark.parametrize("locator", [
+    "https://example.com/poll", "https://localhost/poll",
+    "https://127.0.0.1/poll", "https://[::1]/poll",
+    "https://api.bfl.ai:8443/poll", "https://user:pass@api.bfl.ai/poll",
+    "https://api.bfl.ai/poll#fragment",
+])
+def test_poll_policy_rejects_unapproved_hosts_before_dispatch(locator):
+    calls = []
+
+    async def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"status": "Ready"})
+
+    transport = _transport(handler)
+    with pytest.raises(BFLFrontAnchorTransportError, match="locator"):
+        asyncio.run(transport.poll(locator, headers={"x-key": "secret-key"}, connect_timeout_seconds=1, read_timeout_seconds=1, maximum_response_bytes=1000))
+    assert calls == []
+
+
+def test_approved_poll_host_gets_key_and_delivery_gets_no_key():
+    seen = []
+
+    async def handler(request):
+        seen.append((request.url.path, dict(request.headers)))
+        if request.url.path == "/poll":
+            return httpx.Response(200, json={"status": "Ready"})
+        return httpx.Response(200, headers={"content-type": "image/png"}, content=b"safe")
+
+    transport = _transport(handler)
+    asyncio.run(transport.poll("https://api.bfl.ai/poll", headers={"x-key": "secret-key"}, connect_timeout_seconds=1, read_timeout_seconds=1, maximum_response_bytes=1000))
+    with pytest.raises(BFLFrontAnchorTransportError, match="byte limit"):
+        asyncio.run(transport.download("https://delivery.assets.bfl.ai/result", connect_timeout_seconds=1, read_timeout_seconds=1, maximum_bytes=3))
+    asyncio.run(transport.close())
+    assert "x-key" in seen[0][1]
+    assert "x-key" not in seen[1][1]
+    assert "authorization" not in {key.lower() for key in seen[1][1]}
+
+
+@pytest.mark.parametrize("locator", [
+    "https://cdn.example.com/result", "https://localhost/result",
+    "https://127.0.0.1/result", "https://[::1]/result",
+    "https://delivery.assets.bfl.ai:8443/result", "https://user:pass@delivery.assets.bfl.ai/result",
+    "https://delivery.assets.bfl.ai/result#fragment",
+])
+def test_delivery_policy_rejects_unapproved_hosts_before_dispatch(locator):
+    calls = []
+
+    async def handler(request):
+        calls.append(request)
+        return httpx.Response(200, content=b"safe")
+
+    transport = _transport(handler)
+    with pytest.raises(BFLFrontAnchorTransportError, match="locator"):
+        asyncio.run(transport.download(locator, connect_timeout_seconds=1, read_timeout_seconds=1, maximum_bytes=1000))
+    assert calls == []
 
 
 def test_key_is_not_in_transport_repr_or_configuration_error():

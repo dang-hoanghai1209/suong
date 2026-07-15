@@ -7,7 +7,9 @@ credential gates have passed.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
+import re
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
@@ -30,11 +32,28 @@ class BFLFrontAnchorTransportError(RuntimeError):
         super().__init__(f"{category}: {safe_message}")
 
 
-def _https_locator(value: Any) -> str:
+def _https_locator(value: Any, *, policy: str) -> str:
     if not isinstance(value, str):
         raise BFLFrontAnchorTransportError("invalid_locator", "provider locator is invalid")
     parsed = urlsplit(value)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+    host = (parsed.hostname or "").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        raise BFLFrontAnchorTransportError("invalid_locator", "provider locator is invalid") from None
+    if (
+        parsed.scheme != "https" or not host or parsed.username or parsed.password
+        or parsed.fragment or port not in (None, 443)
+    ):
+        raise BFLFrontAnchorTransportError("invalid_locator", "provider locator is invalid")
+    try:
+        if ipaddress.ip_address(host):
+            raise BFLFrontAnchorTransportError("invalid_locator", "provider locator is invalid")
+    except ValueError:
+        pass
+    if policy == "poll" and host != "api.bfl.ai":
+        raise BFLFrontAnchorTransportError("invalid_locator", "provider locator is invalid")
+    if policy == "delivery" and not re.fullmatch(r"delivery\.[a-z0-9-]+\.bfl\.ai", host):
         raise BFLFrontAnchorTransportError("invalid_locator", "provider locator is invalid")
     return value
 
@@ -63,6 +82,8 @@ class BFLFrontAnchorHTTPTransport:
     ) -> dict[str, Any]:
         if endpoint_url != BASE_URL + ENDPOINT_PATH:
             raise BFLFrontAnchorTransportError("configuration", "BFL endpoint is not allowlisted")
+        if headers.get("x-key", "") == "" or "Authorization" in headers:
+            raise BFLFrontAnchorTransportError("configuration", "BFL create authorization is invalid")
         allowed = {"prompt", "width", "height", "output_format", "prompt_upsampling", "seed"}
         if set(payload) != allowed or payload.get("width") != 768 or payload.get("height") != 1024:
             raise BFLFrontAnchorTransportError("configuration", "BFL request payload is outside the fixed contract")
@@ -81,7 +102,9 @@ class BFLFrontAnchorHTTPTransport:
         connect_timeout_seconds: float, read_timeout_seconds: float,
         maximum_response_bytes: int,
     ) -> dict[str, Any]:
-        locator = _https_locator(polling_url)
+        locator = _https_locator(polling_url, policy="poll")
+        if headers.get("x-key", "") == "" or "Authorization" in headers:
+            raise BFLFrontAnchorTransportError("configuration", "BFL poll authorization is invalid")
         body = await self._json_request(
             "GET", locator, headers=headers, json_body=None,
             connect_timeout_seconds=connect_timeout_seconds,
@@ -96,7 +119,7 @@ class BFLFrontAnchorHTTPTransport:
         self, result_url: str, *, connect_timeout_seconds: float,
         read_timeout_seconds: float, maximum_bytes: int,
     ) -> URLFetchResult:
-        locator = _https_locator(result_url)
+        locator = _https_locator(result_url, policy="delivery")
         response = await self._stream(
             "GET", locator, headers={"accept": "image/png"}, json_body=None,
             connect_timeout_seconds=connect_timeout_seconds,
