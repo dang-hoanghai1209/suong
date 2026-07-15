@@ -46,5 +46,4 @@ def test_live_mode_is_gated_and_does_not_construct_provider(capsys, monkeypatch)
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "blocked_no_execution"
     assert result["provider_calls"] == 0
-    assert result["credential_present"] is False
-
+    assert "credential_present" not in result

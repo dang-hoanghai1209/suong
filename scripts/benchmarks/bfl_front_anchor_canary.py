@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -55,17 +56,62 @@ def validate_only(*, config_path: Path, repository_root: Path, session_id: str) 
     }
 
 
-def build_live_transport(*, authorization_token: str) -> Any:
-    """Build the concrete HTTP transport only at the explicitly gated live boundary."""
-    if authorization_token != AUTHORIZATION_TOKEN:
-        raise RuntimeError("exact BFL front-anchor authorization is required")
-    key = os.environ.get("BFL_API_KEY")
-    if not key:
-        raise RuntimeError("BFL credential is missing")
-    from pydantic import SecretStr
+def build_live_plan(*, config_path: Path, repository_root: Path, session_id: str):
+    from tella.media.bfl_front_anchor_orchestration import LiveFrontPlan, SEEDS
+
+    config = load_and_validate_plan(config_path, repository_root=repository_root)
+    front = config.request_specs[0]
+    return LiveFrontPlan(
+        session_id=session_id,
+        character_id=config.character_id,
+        character_fingerprint=config.character_fingerprint,
+        canonical_spec_version=1,
+        generation_spec_version=config.generation_spec_version,
+        prompt=front.prompt,
+        prompt_sha256=front.prompt_sha256,
+        asset_role=front.asset_role,
+        width=front.width,
+        height=front.height,
+        output_format="png",
+        prompt_upsampling=False,
+        seeds=SEEDS,
+        maximum_submissions=3,
+        targeted_submissions=0,
+        retries=0,
+        fallbacks=0,
+        output_root=Path("out") / "character_reference_bootstrap" / session_id,
+    )
+
+
+def _live_provider_factory(key):
+    from tella.media.bfl_front_anchor_orchestration import ProviderBundle
+    from tella.media.bfl_front_anchor_provider import BFLFrontAnchorConfig, BFLFrontAnchorProvider
     from tella.media.bfl_front_anchor_transport import build_bfl_front_anchor_http_transport
 
-    return build_bfl_front_anchor_http_transport(SecretStr(key))
+    transport = build_bfl_front_anchor_http_transport(key)
+    provider = BFLFrontAnchorProvider(
+        config=BFLFrontAnchorConfig(), transport=transport, api_key=key, accounting={}
+    )
+    return ProviderBundle(provider=provider, close=transport.close)
+
+
+async def execute_live_mode(args) -> Any:
+    from pydantic import SecretStr
+    from tella.media.bfl_front_anchor_orchestration import execute_live_front
+
+    plan = build_live_plan(
+        config_path=args.config, repository_root=args.repository_root,
+        session_id=args.session_id,
+    )
+    return await execute_live_front(
+        plan=plan,
+        repository_root=args.repository_root,
+        authorization_token=args.authorization_token,
+        credential_reader=lambda: (
+            SecretStr(os.environ["BFL_API_KEY"]) if "BFL_API_KEY" in os.environ else None
+        ),
+        provider_factory=_live_provider_factory,
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -84,14 +130,13 @@ def main(argv: list[str] | None = None) -> int:
         config_path=args.config, repository_root=args.repository_root, session_id=args.session_id
     )
     if args.mode == "live-front-bfl":
-        result["status"] = "blocked_no_execution"
-        if args.authorization_token != AUTHORIZATION_TOKEN:
-            result["live_blocker"] = "exact BFL front-anchor authorization is required"
-        else:
-            result["live_blocker"] = "live execution requires separately reviewed BFL transport and credential gate"
-        result["credential_present"] = bool(os.environ.get("BFL_API_KEY"))
+        live = asyncio.run(execute_live_mode(args))
+        result["status"] = live.status
+        result["manifest_path"] = (
+            live.manifest_path.as_posix() if live.manifest_path is not None else None
+        )
         print(json.dumps(result, sort_keys=True))
-        return 2
+        return live.exit_code
     print(json.dumps(result, sort_keys=True))
     return 0
 
