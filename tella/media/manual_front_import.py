@@ -117,7 +117,8 @@ SEMANTIC_CHECKS = (
     "no_head_crop", "age_appearance_24_to_28", "softly_angular_face",
     "small_dark_eyes", "short_dark_side_swept_hair", "warm_medium_light_skin_tone",
     "muted_teal_top", "no_coral_clothing", "no_extra_person", "no_prop",
-    "no_logo", "no_text", "no_watermark", "plausible_anatomy",
+    "no_unauthorized_accessory_or_logo", "no_text", "no_watermark", "plausible_anatomy",
+    "neutral_expression", "simple_approved_background",
     "suitable_for_later_three_quarter_profile_and_full_body_derivation",
 )
 
