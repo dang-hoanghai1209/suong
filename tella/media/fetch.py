@@ -56,6 +56,14 @@ from tella.planner.visual_prompts import build_scene_visual_plan, repair_prompt
 
 logger = logging.getLogger("tella.media.fetch")
 
+
+def _asset_library_mode_enabled(plan: TellaScenePlan | None) -> bool:
+    raw = (os.environ.get("TELLA_ASSET_LIBRARY_V2") or "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    return False
+
+
 # Keep concurrency modest: bursting many simultaneous requests at one CF
 # account triggers rate-limit 429s. 3 in flight + the global throttle in
 # ai_image keeps us under the limit while still rendering quickly.
@@ -88,6 +96,60 @@ class AIImageRequestBudgetError(RuntimeError):
 
 def _provider_prompt_hash(prompt: str) -> str:
     return hashlib.sha256((prompt or "").encode("utf-8")).hexdigest()[:24]
+
+
+async def _fetch_asset_library_scenes(
+    plan: TellaScenePlan,
+    body_scenes: list,
+    job_dir: Path,
+) -> None:
+    from tella.asset_library.semantic_resolver import (
+        build_production_scene_request,
+        compose_asset_library_scene,
+        select_semantic_asset,
+    )
+
+    asset_library_root = Path((os.environ.get("TELLA_ASSET_LIBRARY_ROOT") or "").strip() or r"D:\tella-assets-staging\mvp_v1_processed_v2").expanduser().resolve()
+    semantics_path = Path((os.environ.get("TELLA_ASSET_LIBRARY_SEMANTICS_PATH") or "").strip() or r"D:\tella-production-resolver\scripts\asset_batch\asset_semantics_patch.json").expanduser().resolve()
+    metadata_path = job_dir / "asset_library_scene_metadata.json"
+    scene_metadata: list[dict] = []
+    for scene in body_scenes:
+        request = build_production_scene_request(scene)
+        resolution = select_semantic_asset(semantics_path, asset_library_root, request)
+        out_path = job_dir / "assets" / f"scene_{scene.scene_index:02d}_asset_library.png"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        scene_payload = compose_asset_library_scene(scene, out_path, asset_library_root, semantics_path)
+        scene.image_filenames = [f"assets/{out_path.name}"]
+        scene.asset_status = "asset_library"
+        scene.asset_error = ""
+        scene.asset_path = scene.image_filenames[0]
+        scene.asset_library_request = request.to_dict()
+        scene.asset_library_result = {
+            "selected_semantic_id": resolution.selected_semantic_id,
+            "selected_source_asset_id": resolution.selected_source_asset_id,
+            "selection_score": resolution.selection_score,
+            "selection_reasons": resolution.selection_reasons,
+            "score_breakdown": resolution.score_breakdown,
+            "selected_tier": resolution.selected_tier,
+            "enabled": resolution.enabled_flag,
+            "canonical": resolution.canonical_flag,
+            "production_eligible": resolution.production_eligible,
+            "quality_status": resolution.quality_status,
+            "fallback_reason": resolution.fallback_reason,
+            "background_path": resolution.background_path,
+            "object_paths": resolution.object_paths,
+            "character_processed_path": resolution.character_processed_path,
+            "deterministic_seed": resolution.deterministic_seed,
+        }
+        scene_metadata.append(scene_payload)
+        logger.info(
+            "asset_library scene=%02d semantic=%s score=%d seed=%d",
+            scene.scene_index,
+            resolution.selected_semantic_id,
+            resolution.selection_score,
+            resolution.deterministic_seed,
+        )
+    metadata_path.write_text(json.dumps(scene_metadata, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 class _CloudflareRequestBudget:
@@ -1933,6 +1995,11 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
 
     body_scenes = [s for s in plan.scenes if s.kind == "scene"]
     if not body_scenes:
+        return
+
+    if _asset_library_mode_enabled(plan):
+        logger.info("asset-library v2 mode enabled")
+        await _fetch_asset_library_scenes(plan, body_scenes, job_dir)
         return
 
     width, height = _GEN_DIMS.get(plan.aspect_ratio, _GEN_DIMS["9:16"])

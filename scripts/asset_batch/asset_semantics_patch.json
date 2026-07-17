@@ -12,7 +12,9 @@
       "direction": "front",
       "enabled_by_default": true,
       "canonical": true,
-      "tier": "core"
+      "tier": "core",
+      "production_eligible": true,
+      "quality_status": "approved"
     },
     {
       "semantic_id": "sit_hug_knees_sad",
@@ -24,7 +26,79 @@
       "direction": "front",
       "enabled_by_default": false,
       "canonical": false,
-      "tier": "backup"
+      "tier": "backup",
+      "production_eligible": true,
+      "quality_status": "approved"
+    },
+    {
+      "semantic_id": "stand_front_backup",
+      "source_asset_id": "stand_front_backup",
+      "character_id": "female_01",
+      "action": "stand_front_backup",
+      "emotion": "neutral",
+      "related_emotions": [],
+      "direction": "front",
+      "enabled_by_default": false,
+      "canonical": false,
+      "tier": "backup",
+      "production_eligible": false,
+      "quality_status": "source_truncated"
+    },
+    {
+      "semantic_id": "stand_wave",
+      "source_asset_id": "stand_wave",
+      "character_id": "female_01",
+      "action": "stand_wave",
+      "emotion": "neutral",
+      "related_emotions": [],
+      "direction": "front",
+      "enabled_by_default": false,
+      "canonical": true,
+      "tier": "optional",
+      "production_eligible": false,
+      "quality_status": "source_truncated"
+    },
+    {
+      "semantic_id": "stand_hands_clasped",
+      "source_asset_id": "stand_hands_clasped",
+      "character_id": "female_01",
+      "action": "stand_hands_clasped",
+      "emotion": "neutral",
+      "related_emotions": [],
+      "direction": "front",
+      "enabled_by_default": true,
+      "canonical": true,
+      "tier": "optional",
+      "production_eligible": false,
+      "quality_status": "source_truncated"
+    },
+    {
+      "semantic_id": "walk_left_backup",
+      "source_asset_id": "walk_left_backup",
+      "character_id": "female_01",
+      "action": "walk_left_backup",
+      "emotion": "neutral",
+      "related_emotions": [],
+      "direction": "left",
+      "enabled_by_default": false,
+      "canonical": false,
+      "tier": "backup",
+      "production_eligible": false,
+      "quality_status": "source_truncated"
+    },
+    {
+      "semantic_id": "walk_right_backup",
+      "source_asset_id": "walk_right_backup",
+      "character_id": "female_01",
+      "action": "walk_right_backup",
+      "emotion": "neutral",
+      "related_emotions": [],
+      "direction": "right",
+      "enabled_by_default": false,
+      "canonical": false,
+      "tier": "backup",
+      "production_eligible": false,
+      "quality_status": "source_truncated"
     }
   ]
 }

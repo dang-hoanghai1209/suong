@@ -651,6 +651,9 @@ class Scene(BaseModel):
     image_filenames: list[str] = Field(default_factory=list)
     """Relative paths to fetched assets. len == asset_count after media step."""
 
+    asset_library_request: dict[str, Any] = Field(default_factory=dict)
+    asset_library_result: dict[str, Any] = Field(default_factory=dict)
+
     # Stock-video frame-sequence sidecar (mirrors VCM pattern).
     frames_dirs: list[str] = Field(default_factory=list)
     frames_counts: list[int] = Field(default_factory=list)
