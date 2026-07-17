@@ -1,0 +1,30 @@
+{
+  "schema_version": 2,
+  "description": "Non-destructive semantic overlay for Renderable MVP V2.",
+  "assets": [
+    {
+      "semantic_id": "sit_hug_knees_neutral",
+      "source_asset_id": "sit_hug_knees",
+      "character_id": "female_01",
+      "action": "sit_hug_knees",
+      "emotion": "neutral",
+      "related_emotions": ["gentle", "calm"],
+      "direction": "front",
+      "enabled_by_default": true,
+      "canonical": true,
+      "tier": "core"
+    },
+    {
+      "semantic_id": "sit_hug_knees_sad",
+      "source_asset_id": "sit_hug_knees_backup",
+      "character_id": "female_01",
+      "action": "sit_hug_knees",
+      "emotion": "sad",
+      "related_emotions": ["withdrawn", "worried", "lonely"],
+      "direction": "front",
+      "enabled_by_default": false,
+      "canonical": false,
+      "tier": "backup"
+    }
+  ]
+}
