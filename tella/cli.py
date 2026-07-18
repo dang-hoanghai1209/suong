@@ -58,7 +58,6 @@ except ImportError:
 
 from tella._voice_pace import (
     PRESETS,
-    default_pace_for_theme,
     normalize_voice_rate,
     resolve_pace,
 )
@@ -723,6 +722,9 @@ async def _run_pipeline_unlocked(
     """
 
     use_script = bool((user_script or "").strip())
+    asset_library_v2 = (os.environ.get("TELLA_ASSET_LIBRARY_V2") or "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
     life_insight_planner = bool(
         recipe is not None and recipe.planner_id == "life_insight_symbolic"
     )
@@ -863,7 +865,7 @@ async def _run_pipeline_unlocked(
     if use_script:
         logger.info("step 1/6 — skip topic translation (paste-script mode)")
         topic_in_target = (topic or "").strip()
-    elif life_insight_planner or practical_steps_planner:
+    elif asset_library_v2 or life_insight_planner or practical_steps_planner:
         logger.info("step 1/6 - skip topic translation (local recipe planner)")
         topic_in_target = (topic or "").strip()
     else:
@@ -891,7 +893,15 @@ async def _run_pipeline_unlocked(
         override=voice_pace_name,
         custom_edge_rate=voice_rate_custom,
     )
-    if trusted_aligned_resume:
+    if asset_library_v2:
+        from tella.asset_library.production_mvp import build_seven_scene_plan
+
+        plan = build_seven_scene_plan(enabled=True)
+        logger.info(
+            "asset-library V2 active: deterministic production plan (%d scenes, base_seed=12345)",
+            len(plan.scenes),
+        )
+    elif trusted_aligned_resume:
         from tella.planner.models import TellaScenePlan
 
         plan = TellaScenePlan.model_validate_json(
@@ -1942,7 +1952,10 @@ def main(argv: list[str] | None = None) -> int:
         voice_resolution.recipe_voice_override_applied,
     )
 
-    requires_gemini = not (
+    asset_library_v2 = (os.environ.get("TELLA_ASSET_LIBRARY_V2") or "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    requires_gemini = not asset_library_v2 and not (
         selected_recipe is not None
         and selected_recipe.planner_id
         in {"life_insight_symbolic", "practical_life_steps"}

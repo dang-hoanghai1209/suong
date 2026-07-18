@@ -21,8 +21,10 @@ service-account*.json
 
 # ─── Render output ───
 out/
+/output/
 *.mp4
 *.mp3
+*.log
 .tts_cache/
 channels/*/jobs/
 music/tracks/*
