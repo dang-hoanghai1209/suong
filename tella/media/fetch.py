@@ -140,6 +140,16 @@ async def _fetch_asset_library_scenes(
             "object_paths": resolution.object_paths,
             "character_processed_path": resolution.character_processed_path,
             "deterministic_seed": resolution.deterministic_seed,
+            "object_warnings": resolution.object_warnings,
+            "object_dimensions": [
+                {
+                    "object_id": item["asset_id"],
+                    "width": item["placement"]["width"],
+                    "height": item["placement"]["height"],
+                    "rotation_degrees": item["placement"]["rotation_degrees"],
+                }
+                for item in scene_payload.get("objects", [])
+            ],
         }
         scene_metadata.append(scene_payload)
         logger.info(

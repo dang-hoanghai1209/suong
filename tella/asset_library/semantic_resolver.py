@@ -16,6 +16,70 @@ SEMANTICS_DEFAULT_PATH = Path(__file__).resolve().parents[1] / ".." / "scripts" 
 PRESETS_DEFAULT_PATH = Path(__file__).resolve().parents[1] / ".." / "scripts" / "asset_batch" / "test_scene_presets.json"
 
 
+class AssetLibraryResolutionError(RuntimeError):
+    """Structured failure for a required asset-library dependency."""
+
+    def __init__(self, code: str, message: str, *, details: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.code = code
+        self.details = details or {}
+
+
+COMPOSITION_PRESETS: dict[str, dict[str, Any]] = {
+    "bedroom_floor_sitting": {
+        "character": {"target_height": 700, "x": 320, "bottom": 220},
+        "shadow": {"alpha": 26, "blur": 12, "height": 32, "inset_x": 80},
+        "objects": {
+            "pillow": {"target_height": 175, "x": 225, "bottom": 240, "rotation_degrees": 0, "layer": "pre_character"},
+            "phone_dark": {"target_height": 120, "x": 610, "bottom": 180, "rotation_degrees": 10, "layer": "post_character"},
+        },
+    },
+    "window_waiting": {
+        "character": {"target_height": 690, "x": 300, "bottom": 230},
+        "shadow": {"alpha": 24, "blur": 12, "height": 30, "inset_x": 80},
+        "objects": {
+            "phone_dark": {"target_height": 115, "x": 660, "bottom": 205, "rotation_degrees": 10, "layer": "post_character"},
+        },
+    },
+    "cafe_sitting": {
+        "character": {"target_height": 680, "x": 285, "bottom": 300},
+        "shadow": {"alpha": 25, "blur": 12, "height": 30, "inset_x": 75},
+        "objects": {
+            "empty_cup": {"target_height": 150, "x": 145, "bottom": 270, "rotation_degrees": 0, "layer": "pre_character"},
+            "phone_dark": {"target_height": 115, "x": 690, "bottom": 250, "rotation_degrees": 8, "layer": "post_character"},
+        },
+    },
+    "bus_stop_waiting": {
+        "character": {"target_height": 880, "x": 350, "bottom": 170},
+        "shadow": {"alpha": 22, "blur": 12, "height": 28, "inset_x": 70},
+        "objects": {},
+    },
+    "floor_reflection": {
+        "character": {"target_height": 700, "x": 320, "bottom": 220},
+        "shadow": {"alpha": 24, "blur": 12, "height": 30, "inset_x": 80},
+        "objects": {
+            "paper_letter": {"target_height": 160, "x": 170, "bottom": 180, "rotation_degrees": -8, "layer": "pre_character"},
+            "flower_single": {"target_height": 240, "x": 680, "bottom": 175, "rotation_degrees": 4, "layer": "post_character"},
+        },
+    },
+    "tear_wiping": {
+        "character": {"target_height": 880, "x": 340, "bottom": 170},
+        "shadow": {"alpha": 22, "blur": 12, "height": 28, "inset_x": 70},
+        "objects": {
+            "tissue_box": {"target_height": 150, "x": 150, "bottom": 170, "rotation_degrees": 0, "layer": "pre_character"},
+            "phone_dark": {"target_height": 110, "x": 690, "bottom": 155, "rotation_degrees": 12, "layer": "post_character"},
+        },
+    },
+    "park_acceptance": {
+        "character": {"target_height": 760, "x": 310, "bottom": 240},
+        "shadow": {"alpha": 22, "blur": 12, "height": 28, "inset_x": 80},
+        "objects": {
+            "flower_single": {"target_height": 220, "x": 700, "bottom": 210, "rotation_degrees": 0, "layer": "post_character"},
+        },
+    },
+}
+
+
 @dataclass(slots=True)
 class AssetLibraryRequest:
     character_id: str
@@ -25,8 +89,12 @@ class AssetLibraryRequest:
     location: str
     time_of_day: str
     objects: list[str] = field(default_factory=list)
+    optional_objects: list[str] = field(default_factory=list)
     composition_preset: str = ""
     seed: int = 0
+    base_seed: int = 0
+    scene_duration: float = 0.0
+    narration_segment: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -37,8 +105,12 @@ class AssetLibraryRequest:
             "location": self.location,
             "time_of_day": self.time_of_day,
             "objects": list(self.objects),
+            "optional_objects": list(self.optional_objects),
             "composition_preset": self.composition_preset,
             "seed": self.seed,
+            "base_seed": self.base_seed,
+            "duration": self.scene_duration,
+            "narration_segment": self.narration_segment,
         }
 
 
@@ -50,6 +122,7 @@ class SemanticResolution:
     character_processed_path: str
     background_path: str
     object_paths: dict[str, str]
+    object_warnings: list[dict[str, Any]]
     selection_score: int
     selection_reasons: list[str]
     score_breakdown: dict[str, int]
@@ -186,13 +259,53 @@ def select_semantic_asset(
     ranked.sort(key=lambda item: (-item[0], item[1]))
     score, _, selected, reasons, score_breakdown = ranked[0]
 
-    character_record = _find_processed(index, selected["source_asset_id"], selected["character_id"])
+    try:
+        character_record = _find_processed(
+            index,
+            selected["source_asset_id"],
+            selected["character_id"],
+        )
+    except LookupError as exc:
+        raise AssetLibraryResolutionError(
+            "required_character_missing",
+            str(exc),
+            details={
+                "character_id": selected["character_id"],
+                "source_asset_id": selected["source_asset_id"],
+            },
+        ) from exc
     characters_root = asset_library_root / "characters"
-    background_path = _resolve_background(asset_library_root, request.location, request.time_of_day)
-    object_paths = {
-        obj: _resolve_object_path(asset_library_root, obj)
-        for obj in request.objects
-    }
+    try:
+        background_path = _resolve_background(
+            asset_library_root,
+            request.location,
+            request.time_of_day,
+        )
+    except FileNotFoundError as exc:
+        raise AssetLibraryResolutionError(
+            "required_background_missing",
+            str(exc),
+            details={"location": request.location, "time_of_day": request.time_of_day},
+        ) from exc
+    object_paths: dict[str, str] = {}
+    object_warnings: list[dict[str, Any]] = []
+    optional_objects = set(request.optional_objects)
+    for obj in request.objects:
+        try:
+            object_paths[obj] = _resolve_object_path(asset_library_root, obj)
+        except FileNotFoundError as exc:
+            if obj in optional_objects:
+                object_warnings.append({
+                    "code": "optional_object_missing",
+                    "object_id": obj,
+                    "message": str(exc),
+                })
+                continue
+            raise AssetLibraryResolutionError(
+                "required_object_missing",
+                str(exc),
+                details={"object_id": obj},
+            ) from exc
     return SemanticResolution(
         requested=request,
         selected_semantic_id=selected["semantic_id"],
@@ -200,6 +313,7 @@ def select_semantic_asset(
         character_processed_path=str(character_record["processed_path"]),
         background_path=str(background_path),
         object_paths=object_paths,
+        object_warnings=object_warnings,
         selection_score=score,
         selection_reasons=reasons,
         score_breakdown=score_breakdown,
@@ -218,6 +332,7 @@ def select_semantic_asset(
             "index_path": str(asset_library_root / "processed_asset_index.json"),
             "background_key": f"{request.location}:{request.time_of_day}",
             "object_keys": list(request.objects),
+            "object_warnings": object_warnings,
             "scene_preset": request.composition_preset,
             "characters_root": str(characters_root),
         },
@@ -234,27 +349,26 @@ def _find_processed(index: dict[str, Any], asset_id: str, character_id: str | No
 def _resolve_background(asset_library_root: Path, location: str, time_of_day: str) -> Path:
     desired = f"{location}_{time_of_day}"
     background_name = desired.replace(" ", "_")
-    candidate = asset_library_root / "backgrounds" / "indoor" / f"{background_name}_01.png"
-    if candidate.is_file():
-        return candidate
-    fallback = asset_library_root / "backgrounds" / "indoor" / f"{background_name}.png"
-    if fallback.is_file():
-        return fallback
+    for category in ("indoor", "outdoor", "public_places"):
+        candidate = asset_library_root / "backgrounds" / category / f"{background_name}_01.png"
+        if candidate.is_file():
+            return candidate
+        fallback = asset_library_root / "backgrounds" / category / f"{background_name}.png"
+        if fallback.is_file():
+            return fallback
     raise FileNotFoundError(f"Background asset not found for {location}/{time_of_day}")
 
 
 def _resolve_object_path(asset_library_root: Path, object_name: str) -> str:
     object_name = object_name.strip().lower()
-    aliases = {
-        "phone_dark": "01_phone_dark.png",
-        "pillow": "01_pillow.png",
-    }
-    if object_name not in aliases:
-        raise FileNotFoundError(f"Object asset not found: {object_name}")
-    path = asset_library_root / "objects" / "emotional" / aliases["phone_dark"] if object_name == "phone_dark" else asset_library_root / "objects" / "room_props" / aliases["pillow"]
-    if not path.is_file():
-        raise FileNotFoundError(f"Object asset not found: {object_name}")
-    return str(path)
+    index_path = asset_library_root / "processed_asset_index.json"
+    index = _read_json(index_path)
+    for asset in index.get("assets", []):
+        if asset.get("asset_type") == "object" and asset.get("asset_id") == object_name:
+            path = Path(str(asset.get("processed_path") or ""))
+            if path.is_file():
+                return str(path)
+    raise FileNotFoundError(f"Object asset not found: {object_name}")
 
 
 def build_production_scene_request(scene: Any) -> AssetLibraryRequest:
@@ -279,8 +393,12 @@ def build_production_scene_request(scene: Any) -> AssetLibraryRequest:
         location=str(payload.get("location", "")),
         time_of_day=str(payload.get("time_of_day", "")),
         objects=[str(item) for item in payload.get("objects", []) or []],
+        optional_objects=[str(item) for item in payload.get("optional_objects", []) or []],
         composition_preset=str(payload.get("composition_preset", "")),
         seed=int(payload.get("seed", 0) or 0),
+        base_seed=int(payload.get("base_seed", 0) or 0),
+        scene_duration=float(payload.get("duration", 0.0) or 0.0),
+        narration_segment=str(payload.get("narration_segment", "") or ""),
     )
 
 
@@ -294,32 +412,44 @@ def compose_asset_library_scene(
     resolution = select_semantic_asset(semantics_path, asset_library_root, request)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas_size = (1080, 1920)
+    preset = COMPOSITION_PRESETS.get(
+        request.composition_preset,
+        COMPOSITION_PRESETS["bedroom_floor_sitting"],
+    )
     background = Image.open(resolution.background_path).convert("RGBA")
     background = _fit_cover(background, canvas_size)
     canvas = background.copy()
 
     character = Image.open(resolution.character_processed_path).convert("RGBA")
-    character = _scale_height(character, 750)
-    char_x = 310
-    char_y = canvas_size[1] - character.height - 220
+    character_spec = preset["character"]
+    character = _scale_height(character, int(character_spec["target_height"]))
+    char_x = int(character_spec["x"])
+    char_y = canvas_size[1] - character.height - int(character_spec["bottom"])
+    shadow_spec = preset["shadow"]
     shadow_layer = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
     shadow_draw = ImageDraw.Draw(shadow_layer)
-    shadow_draw.ellipse((char_x + 90, char_y + character.height - 17, char_x + character.width - 90, char_y + character.height + 17), fill=(0, 0, 0, 30))
-    shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(12))
+    shadow_inset = int(shadow_spec["inset_x"])
+    shadow_height = int(shadow_spec["height"])
+    shadow_box = (
+        char_x + shadow_inset,
+        char_y + character.height - shadow_height // 2,
+        char_x + character.width - shadow_inset,
+        char_y + character.height + shadow_height // 2,
+    )
+    shadow_draw.ellipse(shadow_box, fill=(0, 0, 0, int(shadow_spec["alpha"])))
+    shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(float(shadow_spec["blur"])))
     canvas.alpha_composite(shadow_layer)
 
-    object_specs = {
-        "pillow": {"target_height": 175, "x": 245, "bottom": 238, "rotation_degrees": 0},
-        "phone_dark": {
-            "target_height": 125,
-            "x": 610,
-            "bottom": 202,
-            "rotation_degrees": 10,
-        },
-    }
+    object_specs = preset["objects"]
     prepared_objects: dict[str, tuple[Image.Image, dict[str, int]]] = {}
     for asset_id, path in resolution.object_paths.items():
-        spec = object_specs[asset_id]
+        spec = object_specs.get(asset_id)
+        if spec is None:
+            raise AssetLibraryResolutionError(
+                "composition_object_unsupported",
+                f"Composition preset {request.composition_preset!r} has no placement for {asset_id!r}",
+                details={"object_id": asset_id, "preset": request.composition_preset},
+            )
         with Image.open(path) as opened:
             rendered = _scale_height(opened.convert("RGBA"), spec["target_height"])
         rotation_degrees = spec["rotation_degrees"]
@@ -338,17 +468,41 @@ def compose_asset_library_scene(
         }
         prepared_objects[asset_id] = rendered, placement
 
-    if "pillow" in prepared_objects:
-        pillow, pillow_placement = prepared_objects["pillow"]
-        canvas.alpha_composite(pillow, (pillow_placement["x"], pillow_placement["y"]))
-
+    pre_character = [
+        asset_id for asset_id, spec in object_specs.items()
+        if spec.get("layer") == "pre_character" and asset_id in prepared_objects
+    ]
+    post_character = [
+        asset_id for asset_id, spec in object_specs.items()
+        if spec.get("layer") == "post_character" and asset_id in prepared_objects
+    ]
+    for asset_id in pre_character:
+        rendered, placement = prepared_objects[asset_id]
+        canvas.alpha_composite(rendered, (placement["x"], placement["y"]))
     canvas.alpha_composite(character, (char_x, char_y))
-
-    if "phone_dark" in prepared_objects:
-        phone, phone_placement = prepared_objects["phone_dark"]
-        canvas.alpha_composite(phone, (phone_placement["x"], phone_placement["y"]))
+    for asset_id in post_character:
+        rendered, placement = prepared_objects[asset_id]
+        canvas.alpha_composite(rendered, (placement["x"], placement["y"]))
 
     canvas.convert("RGB").save(output_path, format="PNG", optimize=True)
+    object_metadata = [
+        {"asset_id": asset_id, "processed_path": resolution.object_paths[asset_id], "placement": prepared_objects[asset_id][1]}
+        for asset_id in (*pre_character, *post_character)
+    ]
+    layer_order = ["background", "character_shadow", *pre_character, "character", *post_character]
+    layers = [
+        {"layer": "background", "x": 0, "y": 0, "width": canvas_size[0], "height": canvas_size[1], "rotation_degrees": 0},
+        {"layer": "character_shadow", "x": shadow_box[0], "y": shadow_box[1], "width": shadow_box[2] - shadow_box[0], "height": shadow_box[3] - shadow_box[1], "rotation_degrees": 0},
+        *[
+            {"layer": asset_id, **prepared_objects[asset_id][1]}
+            for asset_id in pre_character
+        ],
+        {"layer": "character", "x": char_x, "y": char_y, "width": character.width, "height": character.height, "rotation_degrees": 0},
+        *[
+            {"layer": asset_id, **prepared_objects[asset_id][1]}
+            for asset_id in post_character
+        ],
+    ]
     metadata = {
         "schema_version": 2,
         "seed": request.seed,
@@ -368,17 +522,12 @@ def compose_asset_library_scene(
             "quality_status": resolution.quality_status,
             "fallback_reason": resolution.fallback_reason,
             "score_breakdown": resolution.score_breakdown,
-            "placement": {"x": char_x, "y": char_y, "width": character.width, "height": character.height, "target_height": 750},
+            "placement": {"x": char_x, "y": char_y, "width": character.width, "height": character.height, "target_height": character_spec["target_height"], "rotation_degrees": 0},
         },
-        "objects": [
-            {
-                "asset_id": asset_id,
-                "processed_path": path,
-                "placement": prepared_objects[asset_id][1],
-            }
-            for asset_id, path in resolution.object_paths.items()
-        ],
-        "layer_order": ["background", "character_shadow", "pillow", "character", "phone_dark"],
+        "objects": object_metadata,
+        "object_warnings": resolution.object_warnings,
+        "layer_order": layer_order,
+        "layers": layers,
         "output": str(output_path),
     }
     return metadata
@@ -400,6 +549,7 @@ def _scale_height(image: Image.Image, target_height: int) -> Image.Image:
 
 __all__ = [
     "AssetLibraryRequest",
+    "AssetLibraryResolutionError",
     "SemanticResolution",
     "build_production_scene_request",
     "compose_asset_library_scene",
