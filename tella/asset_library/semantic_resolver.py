@@ -10,6 +10,8 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFilter
 
+from tella.asset_library.background_renderer import resolve_background_mode
+
 
 DEFAULT_ASSET_LIBRARY_ROOT = Path(r"D:\tella-assets-staging\mvp_v1_processed_v2")
 SEMANTICS_DEFAULT_PATH = Path(__file__).resolve().parents[1] / ".." / "scripts" / "asset_batch" / "asset_semantics_patch.json"
@@ -95,6 +97,8 @@ class AssetLibraryRequest:
     base_seed: int = 0
     scene_duration: float = 0.0
     narration_segment: str = ""
+    background_mood: str = ""
+    layout_template: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -111,6 +115,8 @@ class AssetLibraryRequest:
             "base_seed": self.base_seed,
             "duration": self.scene_duration,
             "narration_segment": self.narration_segment,
+            "background_mood": self.background_mood,
+            "layout_template": self.layout_template,
         }
 
 
@@ -237,6 +243,7 @@ def select_semantic_asset(
     asset_library_root: str | Path | None,
     request: AssetLibraryRequest,
 ) -> SemanticResolution:
+    background_mode = resolve_background_mode()
     semantics_path = _resolve_semantics_path(semantics_path)
     asset_library_root = _resolve_registry_root(asset_library_root)
     if not semantics_path.is_file():
@@ -275,18 +282,21 @@ def select_semantic_asset(
             },
         ) from exc
     characters_root = asset_library_root / "characters"
-    try:
-        background_path = _resolve_background(
-            asset_library_root,
-            request.location,
-            request.time_of_day,
-        )
-    except FileNotFoundError as exc:
-        raise AssetLibraryResolutionError(
-            "required_background_missing",
-            str(exc),
-            details={"location": request.location, "time_of_day": request.time_of_day},
-        ) from exc
+    if background_mode == "scenic_asset":
+        try:
+            background_path = _resolve_background(
+                asset_library_root,
+                request.location,
+                request.time_of_day,
+            )
+        except FileNotFoundError as exc:
+            raise AssetLibraryResolutionError(
+                "required_background_missing",
+                str(exc),
+                details={"location": request.location, "time_of_day": request.time_of_day},
+            ) from exc
+    else:
+        background_path = ""
     object_paths: dict[str, str] = {}
     object_warnings: list[dict[str, Any]] = []
     optional_objects = set(request.optional_objects)
@@ -331,6 +341,7 @@ def select_semantic_asset(
             "character_record": character_record,
             "index_path": str(asset_library_root / "processed_asset_index.json"),
             "background_key": f"{request.location}:{request.time_of_day}",
+            "background_mode": background_mode,
             "object_keys": list(request.objects),
             "object_warnings": object_warnings,
             "scene_preset": request.composition_preset,
@@ -399,6 +410,8 @@ def build_production_scene_request(scene: Any) -> AssetLibraryRequest:
         base_seed=int(payload.get("base_seed", 0) or 0),
         scene_duration=float(payload.get("duration", 0.0) or 0.0),
         narration_segment=str(payload.get("narration_segment", "") or ""),
+        background_mood=str(payload.get("background_mood", "") or ""),
+        layout_template=str(payload.get("layout_template", "") or ""),
     )
 
 
@@ -410,6 +423,14 @@ def compose_asset_library_scene(
 ) -> dict[str, Any]:
     request = build_production_scene_request(scene)
     resolution = select_semantic_asset(semantics_path, asset_library_root, request)
+    if resolve_background_mode() == "procedural_minimal":
+        from tella.asset_library.compositor import compose_procedural_scene
+
+        return compose_procedural_scene(
+            request=request,
+            resolution=resolution,
+            output_path=output_path,
+        )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     canvas_size = (1080, 1920)
     preset = COMPOSITION_PRESETS.get(

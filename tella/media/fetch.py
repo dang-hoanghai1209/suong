@@ -113,6 +113,8 @@ async def _fetch_asset_library_scenes(
     semantics_path = Path((os.environ.get("TELLA_ASSET_LIBRARY_SEMANTICS_PATH") or "").strip() or r"D:\tella-production-resolver\scripts\asset_batch\asset_semantics_patch.json").expanduser().resolve()
     metadata_path = job_dir / "asset_library_scene_metadata.json"
     scene_metadata: list[dict] = []
+    selected_semantic_ids: list[str] = []
+    selected_source_ids: list[str] = []
     for scene in body_scenes:
         request = build_production_scene_request(scene)
         resolution = select_semantic_asset(semantics_path, asset_library_root, request)
@@ -150,7 +152,18 @@ async def _fetch_asset_library_scenes(
                 }
                 for item in scene_payload.get("objects", [])
             ],
+            "background_mode": scene_payload.get("background", {}).get("mode", "scenic_asset"),
+            "layout_template": scene_payload.get("layout_template", ""),
+            "harmonization": scene_payload.get("harmonization", {}),
         }
+        selected_semantic_ids.append(resolution.selected_semantic_id)
+        selected_source_ids.append(resolution.selected_source_asset_id)
+        if (
+            len(selected_source_ids) >= 2
+            and selected_source_ids[-1] == selected_source_ids[-2]
+        ):
+            scene_payload["character"]["repeat_fallback_reason"] = "consecutive_pose_reuse_retained_for_semantic_correctness"
+            scene.asset_library_result["repeat_fallback_reason"] = scene_payload["character"]["repeat_fallback_reason"]
         scene_metadata.append(scene_payload)
         logger.info(
             "asset_library scene=%02d semantic=%s score=%d seed=%d",
@@ -2008,7 +2021,12 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         return
 
     if _asset_library_mode_enabled(plan):
-        logger.info("asset-library v2 mode enabled")
+        from tella.asset_library.background_renderer import resolve_background_mode
+
+        logger.info(
+            "asset-library v2 mode enabled (background_mode=%s)",
+            resolve_background_mode(),
+        )
         await _fetch_asset_library_scenes(plan, body_scenes, job_dir)
         return
 
