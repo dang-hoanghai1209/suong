@@ -150,6 +150,9 @@ class CandidateMetadata(StrictModel):
     actual_width: int | None = Field(default=None, ge=1)
     actual_height: int | None = Field(default=None, ge=1)
     mime_type: str = ""
+    requested_width: int | None = Field(default=None, ge=1)
+    requested_height: int | None = Field(default=None, ge=1)
+    prepared_references: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class QCDecision(StrEnum):

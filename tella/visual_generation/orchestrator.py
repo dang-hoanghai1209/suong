@@ -200,6 +200,8 @@ async def render_proof(
             len(selected)
             * plan.max_generation_attempts_per_scene
             * plan.max_repairs_per_candidate
+            if capabilities.supports_image_edit
+            else 0
         ),
         "results": [item.model_dump(mode="json") for item in results],
         "complete": complete,
@@ -236,6 +238,7 @@ async def _render_scene(
         started = time.monotonic()
         metadata = await provider.generate_scene(current, output)
         generation_attempts += 1
+        output = metadata.output_path
         metadata = _normalized_metadata(metadata, current, output, capabilities, started)
         _write_json(output.with_suffix(".metadata.json"), metadata.model_dump(mode="json"))
         structural = validate_candidate_structure(output, width=style_width, height=style_height)
@@ -249,7 +252,7 @@ async def _render_scene(
             )
         qc_records.append(qc.model_dump(mode="json"))
         if scores_meet_acceptance(qc, scene):
-            accepted = scene_dir / "accepted.png"
+            accepted = scene_dir / f"accepted{output.suffix}"
             shutil.copy2(output, accepted)
             return (
                 SceneResult(

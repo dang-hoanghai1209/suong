@@ -11,7 +11,14 @@ from dotenv import load_dotenv
 
 from .orchestrator import load_proof_plan, render_proof
 from .providers.existing import ExistingTellaProviderAdapter
-from .providers.gemini import DEFAULT_MODEL, GeminiSceneImageProvider
+from .providers.cloudflare_flux import (
+    DEFAULT_HEIGHT as CLOUDFLARE_DEFAULT_HEIGHT,
+    DEFAULT_MODEL as CLOUDFLARE_DEFAULT_MODEL,
+    DEFAULT_WIDTH as CLOUDFLARE_DEFAULT_WIDTH,
+    CloudflareFluxSceneImageProvider,
+)
+from .providers.gemini import DEFAULT_MODEL as GEMINI_DEFAULT_MODEL
+from .providers.gemini import GeminiSceneImageProvider
 from .references import ReferenceMissingError
 
 
@@ -26,14 +33,18 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("--job-id", required=True)
     render.add_argument("--dry-run", action="store_true")
     render.add_argument("--live", action="store_true")
-    render.add_argument("--provider", choices=("gemini", "existing"), default="existing")
-    render.add_argument("--model", default=DEFAULT_MODEL)
+    render.add_argument(
+        "--provider", choices=("gemini", "cloudflare-flux", "existing"), default="existing"
+    )
+    render.add_argument("--model")
     render.add_argument(
         "--resolution", choices=("0.5K", "1K", "2K", "4K"), default="1K"
     )
     render.add_argument(
         "--scene", choices=tuple(f"scene_{i:02d}" for i in range(1, 5))
     )
+    render.add_argument("--width", type=int)
+    render.add_argument("--height", type=int)
     return parser
 
 
@@ -52,7 +63,13 @@ def main(argv: list[str] | None = None) -> int:
         provider = None
     elif args.provider == "gemini":
         provider = GeminiSceneImageProvider(
-            model=args.model, resolution=args.resolution
+            model=args.model or GEMINI_DEFAULT_MODEL, resolution=args.resolution
+        )
+    elif args.provider == "cloudflare-flux":
+        provider = CloudflareFluxSceneImageProvider(
+            model=args.model or CLOUDFLARE_DEFAULT_MODEL,
+            width=args.width or CLOUDFLARE_DEFAULT_WIDTH,
+            height=args.height or CLOUDFLARE_DEFAULT_HEIGHT,
         )
     else:
         provider = ExistingTellaProviderAdapter(
@@ -82,7 +99,13 @@ def main(argv: list[str] | None = None) -> int:
                     "supports_required_references": caps.supports_reference_images,
                     "live_opt_in": os.environ.get("TELLA_VISUAL_QUALITY_LIVE") == "1",
                     "requested_aspect_ratio": "9:16",
-                    "requested_resolution": args.resolution,
+                    "requested_resolution": (
+                        f"{provider.width}x{provider.height}"
+                        if isinstance(provider, CloudflareFluxSceneImageProvider)
+                        else args.resolution
+                    ),
+                    "requested_width": getattr(provider, "width", None),
+                    "requested_height": getattr(provider, "height", None),
                     "reference_count": "scene-dependent (1-3)",
                 },
                 indent=2,
