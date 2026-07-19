@@ -84,15 +84,7 @@ class ObjectIngestionService:
         adapter = self.adapters.get(candidate.source)
         if adapter is None:
             raise ValueError(f"No adapter configured for {candidate.source}")
-        cache_path = self._asset_cache_path(candidate)
-        if cache_path.is_file():
-            content = cache_path.read_bytes()
-            self.cache_stats["asset_hits"] += 1
-        else:
-            content = adapter.fetch(candidate)
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_path.write_bytes(content)
-            self.cache_stats["asset_misses"] += 1
+        content = self.fetch_candidate(candidate)
         taxonomy = enrich(candidate.canonical_label, candidate.aliases)
         record = ObjectRecord(
             object_id=deterministic_object_id(candidate.source, candidate.source_object_id),
@@ -114,6 +106,22 @@ class ObjectIngestionService:
         if process:
             record = process_record(record, self.store)
         return record
+
+    def fetch_candidate(self, candidate: SourceCandidate) -> bytes:
+        """Fetch an asset through the shared deterministic provider cache."""
+        adapter = self.adapters.get(candidate.source)
+        if adapter is None:
+            raise ValueError(f"No adapter configured for {candidate.source}")
+        cache_path = self._asset_cache_path(candidate)
+        if cache_path.is_file():
+            content = cache_path.read_bytes()
+            self.cache_stats["asset_hits"] += 1
+        else:
+            content = adapter.fetch(candidate)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_bytes(content)
+            self.cache_stats["asset_misses"] += 1
+        return content
 
     def ingest_keyword(
         self,
