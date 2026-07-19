@@ -48,6 +48,7 @@ desktop.ini
 # ─── Tella local artifacts ───
 scratch/
 debug/
+object_library_data/
 
 # ─── Private build notes (kept local, never published) ───
 CLAUDE_CONTEXT.md

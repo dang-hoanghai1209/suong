@@ -14,8 +14,20 @@ from tella.asset_library.background_renderer import resolve_background_mode
 
 
 DEFAULT_ASSET_LIBRARY_ROOT = Path(r"D:\tella-assets-staging\mvp_v1_processed_v2")
-SEMANTICS_DEFAULT_PATH = Path(__file__).resolve().parents[1] / ".." / "scripts" / "asset_batch" / "asset_semantics_patch.json"
-PRESETS_DEFAULT_PATH = Path(__file__).resolve().parents[1] / ".." / "scripts" / "asset_batch" / "test_scene_presets.json"
+SEMANTICS_DEFAULT_PATH = (
+    Path(__file__).resolve().parents[1]
+    / ".."
+    / "scripts"
+    / "asset_batch"
+    / "asset_semantics_patch.json"
+)
+PRESETS_DEFAULT_PATH = (
+    Path(__file__).resolve().parents[1]
+    / ".."
+    / "scripts"
+    / "asset_batch"
+    / "test_scene_presets.json"
+)
 
 
 class AssetLibraryResolutionError(RuntimeError):
@@ -32,23 +44,53 @@ COMPOSITION_PRESETS: dict[str, dict[str, Any]] = {
         "character": {"target_height": 700, "x": 320, "bottom": 220},
         "shadow": {"alpha": 26, "blur": 12, "height": 32, "inset_x": 80},
         "objects": {
-            "pillow": {"target_height": 175, "x": 225, "bottom": 240, "rotation_degrees": 0, "layer": "pre_character"},
-            "phone_dark": {"target_height": 120, "x": 610, "bottom": 180, "rotation_degrees": 10, "layer": "post_character"},
+            "pillow": {
+                "target_height": 175,
+                "x": 225,
+                "bottom": 240,
+                "rotation_degrees": 0,
+                "layer": "pre_character",
+            },
+            "phone_dark": {
+                "target_height": 120,
+                "x": 610,
+                "bottom": 180,
+                "rotation_degrees": 10,
+                "layer": "post_character",
+            },
         },
     },
     "window_waiting": {
         "character": {"target_height": 690, "x": 300, "bottom": 230},
         "shadow": {"alpha": 24, "blur": 12, "height": 30, "inset_x": 80},
         "objects": {
-            "phone_dark": {"target_height": 115, "x": 660, "bottom": 205, "rotation_degrees": 10, "layer": "post_character"},
+            "phone_dark": {
+                "target_height": 115,
+                "x": 660,
+                "bottom": 205,
+                "rotation_degrees": 10,
+                "layer": "post_character",
+            },
         },
     },
     "cafe_sitting": {
         "character": {"target_height": 680, "x": 285, "bottom": 300},
         "shadow": {"alpha": 25, "blur": 12, "height": 30, "inset_x": 75},
         "objects": {
-            "empty_cup": {"target_height": 150, "x": 145, "bottom": 270, "rotation_degrees": 0, "layer": "pre_character"},
-            "phone_dark": {"target_height": 115, "x": 690, "bottom": 250, "rotation_degrees": 8, "layer": "post_character"},
+            "empty_cup": {
+                "target_height": 150,
+                "x": 145,
+                "bottom": 270,
+                "rotation_degrees": 0,
+                "layer": "pre_character",
+            },
+            "phone_dark": {
+                "target_height": 115,
+                "x": 690,
+                "bottom": 250,
+                "rotation_degrees": 8,
+                "layer": "post_character",
+            },
         },
     },
     "bus_stop_waiting": {
@@ -60,23 +102,53 @@ COMPOSITION_PRESETS: dict[str, dict[str, Any]] = {
         "character": {"target_height": 700, "x": 320, "bottom": 220},
         "shadow": {"alpha": 24, "blur": 12, "height": 30, "inset_x": 80},
         "objects": {
-            "paper_letter": {"target_height": 160, "x": 170, "bottom": 180, "rotation_degrees": -8, "layer": "pre_character"},
-            "flower_single": {"target_height": 240, "x": 680, "bottom": 175, "rotation_degrees": 4, "layer": "post_character"},
+            "paper_letter": {
+                "target_height": 160,
+                "x": 170,
+                "bottom": 180,
+                "rotation_degrees": -8,
+                "layer": "pre_character",
+            },
+            "flower_single": {
+                "target_height": 240,
+                "x": 680,
+                "bottom": 175,
+                "rotation_degrees": 4,
+                "layer": "post_character",
+            },
         },
     },
     "tear_wiping": {
         "character": {"target_height": 880, "x": 340, "bottom": 170},
         "shadow": {"alpha": 22, "blur": 12, "height": 28, "inset_x": 70},
         "objects": {
-            "tissue_box": {"target_height": 150, "x": 150, "bottom": 170, "rotation_degrees": 0, "layer": "pre_character"},
-            "phone_dark": {"target_height": 110, "x": 690, "bottom": 155, "rotation_degrees": 12, "layer": "post_character"},
+            "tissue_box": {
+                "target_height": 150,
+                "x": 150,
+                "bottom": 170,
+                "rotation_degrees": 0,
+                "layer": "pre_character",
+            },
+            "phone_dark": {
+                "target_height": 110,
+                "x": 690,
+                "bottom": 155,
+                "rotation_degrees": 12,
+                "layer": "post_character",
+            },
         },
     },
     "park_acceptance": {
         "character": {"target_height": 760, "x": 310, "bottom": 240},
         "shadow": {"alpha": 22, "blur": 12, "height": 28, "inset_x": 80},
         "objects": {
-            "flower_single": {"target_height": 220, "x": 700, "bottom": 210, "rotation_degrees": 0, "layer": "post_character"},
+            "flower_single": {
+                "target_height": 220,
+                "x": 700,
+                "bottom": 210,
+                "rotation_degrees": 0,
+                "layer": "post_character",
+            },
         },
     },
 }
@@ -218,7 +290,9 @@ def _is_production_eligible(candidate: dict[str, Any]) -> bool:
     return True
 
 
-def _safe_candidate_pool(semantics: dict[str, Any], request: AssetLibraryRequest) -> list[dict[str, Any]]:
+def _safe_candidate_pool(
+    semantics: dict[str, Any], request: AssetLibraryRequest
+) -> list[dict[str, Any]]:
     candidates = []
     for candidate in semantics.get("assets", []):
         if candidate.get("character_id") != request.character_id:
@@ -305,11 +379,13 @@ def select_semantic_asset(
             object_paths[obj] = _resolve_object_path(asset_library_root, obj)
         except FileNotFoundError as exc:
             if obj in optional_objects:
-                object_warnings.append({
-                    "code": "optional_object_missing",
-                    "object_id": obj,
-                    "message": str(exc),
-                })
+                object_warnings.append(
+                    {
+                        "code": "optional_object_missing",
+                        "object_id": obj,
+                        "message": str(exc),
+                    }
+                )
                 continue
             raise AssetLibraryResolutionError(
                 "required_object_missing",
@@ -333,7 +409,8 @@ def select_semantic_asset(
         production_eligible=_is_production_eligible(selected),
         quality_status=str(selected.get("quality_status") or "approved"),
         fallback_reason=(
-            "" if selected.get("action") == request.action
+            ""
+            if selected.get("action") == request.action
             else "no_production_eligible_exact_action"
         ),
         deterministic_seed=request.seed,
@@ -350,8 +427,15 @@ def select_semantic_asset(
     )
 
 
-def _find_processed(index: dict[str, Any], asset_id: str, character_id: str | None = None) -> dict[str, Any]:
-    matches = [asset for asset in index.get("assets", []) if asset.get("asset_id") == asset_id and (character_id is None or asset.get("character_id") == character_id)]
+def _find_processed(
+    index: dict[str, Any], asset_id: str, character_id: str | None = None
+) -> dict[str, Any]:
+    matches = [
+        asset
+        for asset in index.get("assets", [])
+        if asset.get("asset_id") == asset_id
+        and (character_id is None or asset.get("character_id") == character_id)
+    ]
     if not matches:
         raise LookupError(f"Processed asset missing: {character_id}:{asset_id}")
     return matches[0]
@@ -378,6 +462,19 @@ def _resolve_object_path(asset_library_root: Path, object_name: str) -> str:
         if asset.get("asset_type") == "object" and asset.get("asset_id") == object_name:
             path = Path(str(asset.get("processed_path") or ""))
             if path.is_file():
+                return str(path)
+    object_library_root = (os.environ.get("TELLA_OBJECT_LIBRARY_ROOT") or "").strip()
+    if object_library_root:
+        from tella.object_library.registry import ObjectRegistry
+
+        matches = ObjectRegistry.from_root(object_library_root).search(
+            object_name,
+            production_only=True,
+            limit=1,
+        )
+        if matches:
+            path = Path(matches[0].object.local_processed_path)
+            if path.suffix.lower() == ".png" and path.is_file():
                 return str(path)
     raise FileNotFoundError(f"Object asset not found: {object_name}")
 
@@ -490,11 +587,13 @@ def compose_asset_library_scene(
         prepared_objects[asset_id] = rendered, placement
 
     pre_character = [
-        asset_id for asset_id, spec in object_specs.items()
+        asset_id
+        for asset_id, spec in object_specs.items()
         if spec.get("layer") == "pre_character" and asset_id in prepared_objects
     ]
     post_character = [
-        asset_id for asset_id, spec in object_specs.items()
+        asset_id
+        for asset_id, spec in object_specs.items()
         if spec.get("layer") == "post_character" and asset_id in prepared_objects
     ]
     for asset_id in pre_character:
@@ -507,28 +606,50 @@ def compose_asset_library_scene(
 
     canvas.convert("RGB").save(output_path, format="PNG", optimize=True)
     object_metadata = [
-        {"asset_id": asset_id, "processed_path": resolution.object_paths[asset_id], "placement": prepared_objects[asset_id][1]}
+        {
+            "asset_id": asset_id,
+            "processed_path": resolution.object_paths[asset_id],
+            "placement": prepared_objects[asset_id][1],
+        }
         for asset_id in (*pre_character, *post_character)
     ]
     layer_order = ["background", "character_shadow", *pre_character, "character", *post_character]
     layers = [
-        {"layer": "background", "x": 0, "y": 0, "width": canvas_size[0], "height": canvas_size[1], "rotation_degrees": 0},
-        {"layer": "character_shadow", "x": shadow_box[0], "y": shadow_box[1], "width": shadow_box[2] - shadow_box[0], "height": shadow_box[3] - shadow_box[1], "rotation_degrees": 0},
-        *[
-            {"layer": asset_id, **prepared_objects[asset_id][1]}
-            for asset_id in pre_character
-        ],
-        {"layer": "character", "x": char_x, "y": char_y, "width": character.width, "height": character.height, "rotation_degrees": 0},
-        *[
-            {"layer": asset_id, **prepared_objects[asset_id][1]}
-            for asset_id in post_character
-        ],
+        {
+            "layer": "background",
+            "x": 0,
+            "y": 0,
+            "width": canvas_size[0],
+            "height": canvas_size[1],
+            "rotation_degrees": 0,
+        },
+        {
+            "layer": "character_shadow",
+            "x": shadow_box[0],
+            "y": shadow_box[1],
+            "width": shadow_box[2] - shadow_box[0],
+            "height": shadow_box[3] - shadow_box[1],
+            "rotation_degrees": 0,
+        },
+        *[{"layer": asset_id, **prepared_objects[asset_id][1]} for asset_id in pre_character],
+        {
+            "layer": "character",
+            "x": char_x,
+            "y": char_y,
+            "width": character.width,
+            "height": character.height,
+            "rotation_degrees": 0,
+        },
+        *[{"layer": asset_id, **prepared_objects[asset_id][1]} for asset_id in post_character],
     ]
     metadata = {
         "schema_version": 2,
         "seed": request.seed,
         "canvas": {"width": canvas_size[0], "height": canvas_size[1]},
-        "background": {"relative_path": Path(resolution.background_path).name, "path": resolution.background_path},
+        "background": {
+            "relative_path": Path(resolution.background_path).name,
+            "path": resolution.background_path,
+        },
         "character_request": request.to_dict(),
         "character": {
             "selected_semantic_id": resolution.selected_semantic_id,
@@ -543,7 +664,14 @@ def compose_asset_library_scene(
             "quality_status": resolution.quality_status,
             "fallback_reason": resolution.fallback_reason,
             "score_breakdown": resolution.score_breakdown,
-            "placement": {"x": char_x, "y": char_y, "width": character.width, "height": character.height, "target_height": character_spec["target_height"], "rotation_degrees": 0},
+            "placement": {
+                "x": char_x,
+                "y": char_y,
+                "width": character.width,
+                "height": character.height,
+                "target_height": character_spec["target_height"],
+                "rotation_degrees": 0,
+            },
         },
         "objects": object_metadata,
         "object_warnings": resolution.object_warnings,
@@ -557,7 +685,9 @@ def compose_asset_library_scene(
 def _fit_cover(image: Image.Image, size: tuple[int, int]) -> Image.Image:
     width, height = size
     scale = max(width / image.width, height / image.height)
-    resized = image.resize((math.ceil(image.width * scale), math.ceil(image.height * scale)), Image.Resampling.LANCZOS)
+    resized = image.resize(
+        (math.ceil(image.width * scale), math.ceil(image.height * scale)), Image.Resampling.LANCZOS
+    )
     left = (resized.width - width) // 2
     top = (resized.height - height) // 2
     return resized.crop((left, top, left + width, top + height))

@@ -14,8 +14,11 @@ dependencies = [
   "jinja2>=3.1",
   "python-dotenv>=1.0",
   "pillow>=10.3",
+  "cairosvg>=2.7",
+  "pycairo>=1.29",
   "edge-tts>=7.0",
   "rich>=13.7",
+  "pycairo>=1.29.0",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +30,7 @@ dev = [
 
 [project.scripts]
 tella = "tella.cli:main"
+tella-objects = "tella.object_library.cli:main"
 
 [project.urls]
 Homepage = "https://khuetran.com"
