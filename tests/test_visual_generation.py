@@ -152,6 +152,21 @@ def test_prompt_builder_is_deterministic_and_provider_neutral(tmp_path):
     assert build_instruction(scene, style) == build_instruction(scene, style)
 
 
+def test_scene_one_quality_lock_keeps_character_primary_and_vignette_restrained():
+    style = load_style_bible(STYLE_PATH)
+    scene = load_proof_plan(PLAN_PATH).scenes[0]
+    instruction, negative = build_instruction(scene, style)
+
+    assert "woman as the primary focal subject" in instruction
+    assert "small restrained irregular muted beige-cream vignette" in instruction
+    assert "secondary supporting background shape" in instruction
+    assert "low-contrast" in instruction
+    assert "asymmetrical hand-brushed organic edge" in instruction
+    assert "no giant halo" in negative
+    assert "light column" in negative
+    assert "no oval spotlight" in negative
+
+
 def test_reference_selection_for_all_scenes(tmp_path):
     plan = load_proof_plan(PLAN_PATH)
     catalog = resolve_reference_catalog(_references(tmp_path))

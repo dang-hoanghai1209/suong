@@ -27,12 +27,18 @@ def build_instruction(scene: SceneBrief, style: StyleBible) -> tuple[str, str]:
         sections.append(
             (
                 "SCENE 1 QUALITY LOCK",
-                "Create one soft irregular cream-colored glow behind the character with "
-                "powdery, hazy, hand-brushed edges and a diffused asymmetrical transition, with a visibly lopsided cloud silhouette (one side extending farther than the other). "
-                "The glow is an organic atmosphere, never a perfect circle, radially symmetric disk, concentric ring, "
-                "target, badge, or mechanical spotlight. Keep the woman relatively small in "
-                "the lower-middle of the vertical frame with abundant empty negative space "
-                "above; the composition must breathe and remain airy rather than crowded. "
+                "Keep the woman as the primary focal subject: a medium-small, clearly readable "
+                "full-body figure in the lower-middle of the vertical frame, large enough for "
+                "her facial emotion and hand-on-chest pose to read, while preserving abundant "
+                "empty negative space above. Directly behind her, place one small restrained "
+                "irregular muted beige-cream vignette that only slightly exceeds her body "
+                "silhouette—roughly one-and-a-half times her visual height, never most of the "
+                "frame. It is a secondary supporting background shape, low-contrast, "
+                "semi-transparent, matte, softly blended, dusty, and powdery, with an "
+                "asymmetrical hand-brushed organic edge. Keep it close behind her body; it must "
+                "not extend far above her head, dominate the composition, become bright white, "
+                "or resemble a giant glowing cloud, light column, luminous aura, perfect circle, "
+                "oval spotlight, concentric ring, target, badge, or mechanical spotlight. "
                 "Her expression and posture should feel gentle, introspective, tender, calm, "
                 "slightly wistful, healing, and quietly emotional—not cheerful, exaggeratedly "
                 "sad, overly cute, or mannequin-neutral. Treat the ticket, cup, flower, and "
@@ -64,6 +70,11 @@ def build_instruction(scene: SceneBrief, style: StyleBible) -> tuple[str, str]:
                 "no concentric rings",
                 "no target-like framing",
                 "no badge-like spotlight",
+                "no giant halo, towering cream glow, or light column",
+                "no luminous aura or white-hot center",
+                "no oversized cream shape occupying most of the central frame",
+                "no glow extending far above the character",
+                "no oval spotlight",
                 "no cheerful or overly cute expression",
                 "no crisp vector or glossy graphic finish",
                 "no crowded motif cluster",
