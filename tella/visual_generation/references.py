@@ -47,6 +47,7 @@ def resolve_reference_catalog(root: Path | str) -> dict[str, ReferenceAsset]:
         path = (root_path / filename).resolve()
         catalog[role] = ReferenceAsset(
             role=role,
+            semantic_roles=[role],
             path=path,
             sha256=sha256_file(path),
             source=source,

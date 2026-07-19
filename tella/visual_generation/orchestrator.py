@@ -86,10 +86,20 @@ async def render_proof(
     dry_run: bool,
     provider: SceneImageProvider | None = None,
     qc_evaluator: QCEvaluator | None = None,
+    scene_id: str | None = None,
 ) -> dict[str, object]:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", job_id):
         raise ValueError("job-id must be a safe 1-80 character filename component")
     plan = load_proof_plan(plan_path)
+    if scene_id is not None:
+        selected = [scene for scene in plan.scenes if scene.scene_id == scene_id]
+        if not selected:
+            raise ValueError(f"unknown scene: {scene_id}")
+        plan = plan.model_copy(
+            update={"candidate_count": 1, "max_generation_attempts_per_scene": 1}
+        )
+    else:
+        selected = plan.scenes
     style = load_style_bible(style_path)
     catalog = resolve_reference_catalog(reference_root)
 
@@ -120,7 +130,7 @@ async def render_proof(
     accepted_scenes: dict[str, Path] = {}
     results: list[SceneResult] = []
     all_qc: dict[str, list[dict[str, object]]] = {}
-    for scene in plan.scenes:
+    for scene in selected:
         scene_dir = job_dir / scene.scene_id
         scene_dir.mkdir(parents=True, exist_ok=True)
         reference_pack = select_references(
@@ -175,16 +185,19 @@ async def render_proof(
         else:
             break
 
-    complete = len(results) == 4 and all(item.status == "accepted" for item in results)
+    complete = len(results) == len(selected) and all(
+        item.status == "accepted" for item in results
+    )
     summary: dict[str, object] = {
         "job_id": job_id,
         "dry_run": dry_run,
         "provider": capabilities.provider_id,
         "model": capabilities.model,
-        "planned_initial_candidates": len(plan.scenes) * plan.candidate_count,
-        "maximum_generation_calls": len(plan.scenes) * plan.max_generation_attempts_per_scene,
+        "selected_scenes": [scene.scene_id for scene in selected],
+        "planned_initial_candidates": len(selected) * plan.candidate_count,
+        "maximum_generation_calls": len(selected) * plan.max_generation_attempts_per_scene,
         "maximum_edit_calls": (
-            len(plan.scenes)
+            len(selected)
             * plan.max_generation_attempts_per_scene
             * plan.max_repairs_per_candidate
         ),
@@ -193,7 +206,7 @@ async def render_proof(
         "human_review_required": True,
         "external_calls_made": 0 if dry_run else sum(item.generation_attempts + item.repair_attempts for item in results),
     }
-    if complete:
+    if complete and len(results) > 1:
         summary["contact_sheet"] = str(_build_contact_sheet(results, job_dir))
     _write_json(job_dir / "summary.json", summary)
     return summary
@@ -219,7 +232,7 @@ async def _render_scene(
     for attempt in range(1, plan.max_generation_attempts_per_scene + 1):
         candidate_index = min(attempt, plan.candidate_count)
         current = request.model_copy(update={"attempt": attempt, "candidate_index": candidate_index})
-        output = scene_dir / f"candidate_{attempt:02d}.png"
+        output = scene_dir / f"candidate_{attempt:02d}{_provider_extension(provider)}"
         started = time.monotonic()
         metadata = await provider.generate_scene(current, output)
         generation_attempts += 1
@@ -262,7 +275,10 @@ async def _render_scene(
             repair_qc = qc
             for repair_index in range(1, plan.max_repairs_per_candidate + 1):
                 repair = build_repair_request(current, repair_qc, attempt=attempt)
-                repaired = scene_dir / f"candidate_{attempt:02d}_repair_{repair_index:02d}.png"
+                repaired = scene_dir / (
+                    f"candidate_{attempt:02d}_repair_{repair_index:02d}"
+                    f"{_provider_extension(provider)}"
+                )
                 repair_started = time.monotonic()
                 repair_metadata = await provider.edit_scene(repair_source, repair, repaired)
                 repair_attempts += 1
@@ -379,3 +395,8 @@ def _require_provider(provider: SceneImageProvider | None) -> SceneImageProvider
     if provider is None:
         raise RuntimeError("live render requires an explicit scene image provider")
     return provider
+
+
+def _provider_extension(provider: SceneImageProvider) -> str:
+    """Select the provider's truthful output suffix without changing legacy paths."""
+    return ".jpg" if provider.capabilities().provider_id == "gemini" else ".png"

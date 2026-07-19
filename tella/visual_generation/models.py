@@ -85,6 +85,7 @@ class ProofPlan(StrictModel):
 
 class ReferenceAsset(StrictModel):
     role: str
+    semantic_roles: list[str] = Field(default_factory=list)
     path: Path
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source: Literal["master", "scene_type", "accepted_scene"]
@@ -143,6 +144,12 @@ class CandidateMetadata(StrictModel):
     generation_attempt: int = Field(ge=1)
     output_path: Path
     latency_ms: int | None = Field(default=None, ge=0)
+    reference_roles: list[list[str]] = Field(default_factory=list)
+    requested_aspect_ratio: str = ""
+    requested_resolution: str = ""
+    actual_width: int | None = Field(default=None, ge=1)
+    actual_height: int | None = Field(default=None, ge=1)
+    mime_type: str = ""
 
 
 class QCDecision(StrEnum):

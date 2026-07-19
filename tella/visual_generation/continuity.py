@@ -31,6 +31,7 @@ def select_references(
         requested.append(
             ReferenceAsset(
                 role="scene_01_accepted_continuity",
+                semantic_roles=["scene_01_accepted_continuity"],
                 path=path,
                 sha256=sha256_file(path),
                 source="accepted_scene",
@@ -40,13 +41,34 @@ def select_references(
 
     requested.sort(key=lambda item: (item.priority, item.role))
     unique: list[ReferenceAsset] = []
-    seen_paths: set[Path] = set()
+    seen_paths: dict[Path, int] = {}
+    seen_hashes: dict[str, int] = {}
     for reference in requested:
         resolved = reference.path.resolve()
-        if resolved in seen_paths:
+        index = seen_paths.get(resolved)
+        if index is None:
+            index = seen_hashes.get(reference.sha256)
+        if index is not None:
+            prior = unique[index]
+            roles = list(
+                dict.fromkeys(
+                    [
+                        prior.role,
+                        *prior.semantic_roles,
+                        reference.role,
+                        *reference.semantic_roles,
+                    ]
+                )
+            )
+            unique[index] = prior.model_copy(update={"semantic_roles": roles})
             continue
-        seen_paths.add(resolved)
-        unique.append(reference)
+        seen_paths[resolved] = len(unique)
+        seen_hashes[reference.sha256] = len(unique)
+        unique.append(
+            reference.model_copy(
+                update={"semantic_roles": reference.semantic_roles or [reference.role]}
+            )
+        )
 
     limit = 1 if not capabilities.supports_multiple_references else capabilities.max_reference_images
     selected = unique[:limit]
