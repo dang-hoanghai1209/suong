@@ -50,6 +50,26 @@ def build_instruction(scene: SceneBrief, style: StyleBible) -> tuple[str, str]:
                 "high-contrast, or decorative rendering.",
             )
         )
+    elif scene.scene_id == "scene_02":
+        sections.append(
+            (
+                "SCENE 2 QUALITY LOCK",
+                "Keep the seated couple as the primary focal subject: two clearly readable, "
+                "similarly simplified full-body characters in the lower-middle, male on the "
+                "left and female on the right, with generous empty negative space above. Their "
+                "shared bench contact, limb spacing, hand placement, body scale, and slight "
+                "orientation toward one another must feel natural and anatomically coherent. "
+                "Show quiet companionship and subtle shared attention, never a dramatic romance "
+                "pose, embrace, or kiss. Keep the woman visually continuous with Scene 1 and "
+                "render the man in exactly the same hand-drawn illustration language. Behind the "
+                "couple, use one restrained asymmetrical muted beige-cream vignette, only a little "
+                "wider than the seated pair, low-contrast, matte, powdery, and softly blended. It "
+                "is a secondary supporting shape close to the couple, never a giant halo, bright "
+                "aura, light column, circular spotlight, oval badge, or dominant scene object. "
+                "Draw only the simple shared bench, one small potted plant, and one small warm "
+                "lantern as subtle integrated props; do not add scenery or decorative clutter.",
+            )
+        )
     sections.extend(
         [
         (
@@ -78,6 +98,17 @@ def build_instruction(scene: SceneBrief, style: StyleBible) -> tuple[str, str]:
                 "no cheerful or overly cute expression",
                 "no crisp vector or glossy graphic finish",
                 "no crowded motif cluster",
+            ]
+        )
+        negatives = sorted(set(negatives))
+    elif scene.scene_id == "scene_02":
+        negatives.extend(
+            [
+                "no dramatic romance poster pose, embrace, or kiss",
+                "no giant halo, bright aura, or light column",
+                "no circular spotlight, oval badge, or concentric rings",
+                "no dominant bench, plant, lantern, or vignette",
+                "no detailed environment or decorative clutter",
             ]
         )
         negatives = sorted(set(negatives))

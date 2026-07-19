@@ -167,6 +167,21 @@ def test_scene_one_quality_lock_keeps_character_primary_and_vignette_restrained(
     assert "no oval spotlight" in negative
 
 
+def test_scene_two_quality_lock_is_couple_specific_and_does_not_leak_to_scene_one():
+    style = load_style_bible(STYLE_PATH)
+    scene_1, scene_2 = load_proof_plan(PLAN_PATH).scenes[:2]
+    scene_1_instruction, _ = build_instruction(scene_1, style)
+    scene_2_instruction, scene_2_negative = build_instruction(scene_2, style)
+
+    assert "SCENE 2 QUALITY LOCK" not in scene_1_instruction
+    assert "seated couple as the primary focal subject" in scene_2_instruction
+    assert "shared bench contact" in scene_2_instruction
+    assert "restrained asymmetrical muted beige-cream vignette" in scene_2_instruction
+    assert "never a dramatic romance pose" in scene_2_instruction
+    assert "no giant halo" in scene_2_negative
+    assert "no dominant bench" in scene_2_negative
+
+
 def test_reference_selection_for_all_scenes(tmp_path):
     plan = load_proof_plan(PLAN_PATH)
     catalog = resolve_reference_catalog(_references(tmp_path))
