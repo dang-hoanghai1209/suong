@@ -232,6 +232,69 @@ async def test_single_scene_render_is_bounded_to_one_call(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_default_scene_seed_remains_deterministic(tmp_path):
+    sender = Sender(_success(_png(1080, 1920)))
+    await render_proof(
+        plan_path=PLAN,
+        style_path=STYLE,
+        reference_root=_refs(tmp_path),
+        out_root=tmp_path / "out",
+        job_id="default-seed",
+        dry_run=False,
+        provider=_provider(sender, width=1080, height=1920),
+        scene_id="scene_01",
+    )
+    request = json.loads(
+        (tmp_path / "out" / "visual_quality_v1" / "default-seed" / "scene_01" / "request.json").read_text()
+    )
+    assert request["seed"] == 10101
+    assert sender.calls[0]["data"]["seed"] == "10101"
+
+
+@pytest.mark.asyncio
+async def test_explicit_seed_override_reaches_request_and_cloudflare(tmp_path):
+    sender = Sender(_success(_png(1080, 1920)))
+    await render_proof(
+        plan_path=PLAN,
+        style_path=STYLE,
+        reference_root=_refs(tmp_path),
+        out_root=tmp_path / "out",
+        job_id="override-seed",
+        dry_run=False,
+        provider=_provider(sender, width=1080, height=1920),
+        scene_id="scene_01",
+        seed_override=27183,
+    )
+    request = json.loads(
+        (tmp_path / "out" / "visual_quality_v1" / "override-seed" / "scene_01" / "request.json").read_text()
+    )
+    assert request["seed"] == 27183
+    assert sender.calls[0]["data"]["seed"] == "27183"
+
+
+@pytest.mark.asyncio
+async def test_seed_override_dry_run_is_network_free(tmp_path):
+    sender = Sender(_success())
+    summary = await render_proof(
+        plan_path=PLAN,
+        style_path=STYLE,
+        reference_root=_refs(tmp_path),
+        out_root=tmp_path / "out",
+        job_id="dry-override-seed",
+        dry_run=True,
+        provider=_provider(sender),
+        scene_id="scene_01",
+        seed_override=27183,
+    )
+    request = json.loads(
+        (tmp_path / "out" / "visual_quality_v1" / "dry-override-seed" / "scene_01" / "request.json").read_text()
+    )
+    assert request["seed"] == 27183
+    assert sender.calls == []
+    assert summary["external_calls_made"] == 0
+
+
+@pytest.mark.asyncio
 async def test_provider_neutral_dry_run_makes_no_cloudflare_call(tmp_path):
     sender = Sender(_success())
     summary = await render_proof(

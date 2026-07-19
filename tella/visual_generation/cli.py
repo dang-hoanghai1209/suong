@@ -45,6 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     render.add_argument("--width", type=int)
     render.add_argument("--height", type=int)
+    render.add_argument("--seed", type=int)
     return parser
 
 
@@ -122,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 provider=provider,
                 scene_id=args.scene,
+                seed_override=args.seed,
             )
         )
     except ReferenceMissingError as exc:

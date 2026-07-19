@@ -87,6 +87,7 @@ async def render_proof(
     provider: SceneImageProvider | None = None,
     qc_evaluator: QCEvaluator | None = None,
     scene_id: str | None = None,
+    seed_override: int | None = None,
 ) -> dict[str, object]:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", job_id):
         raise ValueError("job-id must be a safe 1-80 character filename component")
@@ -145,7 +146,13 @@ async def render_proof(
             reference_pack,
             candidate_index=1,
             attempt=1,
-            seed=10_000 + int(scene.scene_id[-2:]) * 101 if capabilities.supports_seed else None,
+            seed=(
+                seed_override
+                if seed_override is not None and capabilities.supports_seed
+                else 10_000 + int(scene.scene_id[-2:]) * 101
+                if capabilities.supports_seed
+                else None
+            ),
         )
         _write_json(scene_dir / "request.json", first_request.model_dump(mode="json"))
         review_path = scene_dir / "human_review.json"
