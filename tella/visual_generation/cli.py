@@ -15,6 +15,7 @@ from .providers.cloudflare_flux import (
     DEFAULT_HEIGHT as CLOUDFLARE_DEFAULT_HEIGHT,
     DEFAULT_MODEL as CLOUDFLARE_DEFAULT_MODEL,
     DEFAULT_WIDTH as CLOUDFLARE_DEFAULT_WIDTH,
+    HTTP_TIMEOUT as CLOUDFLARE_HTTP_TIMEOUT,
     CloudflareFluxSceneImageProvider,
 )
 from .providers.gemini import DEFAULT_MODEL as GEMINI_DEFAULT_MODEL
@@ -46,6 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("--width", type=int)
     render.add_argument("--height", type=int)
     render.add_argument("--seed", type=int)
+    render.add_argument("--steps", type=int)
+    render.add_argument("--timeout-seconds", type=float)
     return parser
 
 
@@ -60,9 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.dry_run and not args.live:
         print("LIVE_VISUAL_ACCEPTANCE_NOT_RUN_OPT_IN_REQUIRED")
         return 2
-    if args.dry_run:
-        provider = None
-    elif args.provider == "gemini":
+    if args.provider == "gemini":
         provider = GeminiSceneImageProvider(
             model=args.model or GEMINI_DEFAULT_MODEL, resolution=args.resolution
         )
@@ -71,12 +72,18 @@ def main(argv: list[str] | None = None) -> int:
             model=args.model or CLOUDFLARE_DEFAULT_MODEL,
             width=args.width or CLOUDFLARE_DEFAULT_WIDTH,
             height=args.height or CLOUDFLARE_DEFAULT_HEIGHT,
+            steps=args.steps,
+            timeout_seconds=(
+                args.timeout_seconds
+                if args.timeout_seconds is not None
+                else CLOUDFLARE_HTTP_TIMEOUT
+            ),
         )
     else:
         provider = ExistingTellaProviderAdapter(
             name=os.environ.get("TELLA_IMAGE_PROVIDER") or "cloudflare"
         )
-    if not args.dry_run and provider is not None:
+    if provider is not None:
         plan = load_proof_plan(args.plan)
         caps = provider.capabilities()
         print(
@@ -96,7 +103,9 @@ def main(argv: list[str] | None = None) -> int:
                         else len(plan.scenes) * plan.max_generation_attempts_per_scene
                     ),
                     "maximum_edit_calls": 0,
-                    "credentials_present": provider.credentials_present(),
+                    "credentials_present": (
+                        provider.credentials_present() if not args.dry_run else None
+                    ),
                     "supports_required_references": caps.supports_reference_images,
                     "live_opt_in": os.environ.get("TELLA_VISUAL_QUALITY_LIVE") == "1",
                     "requested_aspect_ratio": "9:16",
@@ -108,6 +117,8 @@ def main(argv: list[str] | None = None) -> int:
                     "requested_width": getattr(provider, "width", None),
                     "requested_height": getattr(provider, "height", None),
                     "reference_count": "scene-dependent (1-3)",
+                    "steps": getattr(provider, "steps", None),
+                    "timeout_seconds": getattr(provider, "timeout_seconds", None),
                 },
                 indent=2,
             )

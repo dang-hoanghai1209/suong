@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import io
+import json
 import os
 import re
 from collections.abc import Awaitable, Callable
@@ -21,6 +23,7 @@ from ..prompt_builder import instruction_hash, request_hash
 from ..references import sha256_file
 
 DEFAULT_MODEL = "@cf/black-forest-labs/flux-2-klein-9b"
+DEV_MODEL = "@cf/black-forest-labs/flux-2-dev"
 DEFAULT_WIDTH = 576
 DEFAULT_HEIGHT = 1024
 REFERENCE_LIMIT = 511
@@ -60,14 +63,24 @@ class CloudflareFluxSceneImageProvider:
         model: str = DEFAULT_MODEL,
         width: int = DEFAULT_WIDTH,
         height: int = DEFAULT_HEIGHT,
+        steps: int | None = None,
+        timeout_seconds: float = HTTP_TIMEOUT,
         credential_resolver: Callable[[], list[tuple[str, str]]] = resolve_all_credentials,
         request_sender: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
         if not 256 <= width <= 1920 or not 256 <= height <= 1920:
             raise ValueError("Cloudflare FLUX width and height must be between 256 and 1920")
+        if steps is not None and model != DEV_MODEL:
+            raise ValueError("Cloudflare FLUX steps are supported only for flux-2-dev")
+        if steps is not None and steps < 1:
+            raise ValueError("Cloudflare FLUX steps must be positive")
+        if timeout_seconds <= 0:
+            raise ValueError("Cloudflare FLUX timeout must be positive")
         self.model = model
         self.width = width
         self.height = height
+        self.steps = steps
+        self.timeout_seconds = timeout_seconds
         self._credential_resolver = credential_resolver
         self._request_sender = request_sender or _post_once
 
@@ -109,6 +122,16 @@ class CloudflareFluxSceneImageProvider:
             }
             if request.seed is not None:
                 fields["seed"] = str(request.seed)
+            if self.steps is not None:
+                fields["steps"] = str(self.steps)
+            invocation_hash = provider_request_hash(
+                request=request,
+                prompt=prompt,
+                model=self.model,
+                width=self.width,
+                height=self.height,
+                steps=self.steps,
+            )
         except Exception as exc:
             raise _error("request_build", exc) from exc
 
@@ -140,6 +163,7 @@ class CloudflareFluxSceneImageProvider:
                 headers={"Authorization": f"Bearer {token}"},
                 data=fields,
                 files=files,
+                timeout_seconds=self.timeout_seconds,
             )
         except Exception as exc:
             raise _error("api_request", exc, reached=True) from exc
@@ -249,6 +273,9 @@ class CloudflareFluxSceneImageProvider:
             actual_height=actual_height,
             mime_type=mime,
             prepared_references=prepared,
+            steps=self.steps,
+            provider_request_hash=invocation_hash,
+            request_timeout_seconds=self.timeout_seconds,
         )
 
     async def edit_scene(
@@ -289,8 +316,42 @@ def prepare_reference(path: Path, original_hash: str, cache: Path) -> dict[str, 
 
 
 async def _post_once(**kwargs: Any) -> httpx.Response:
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+    timeout = kwargs.pop("timeout_seconds", HTTP_TIMEOUT)
+    async with httpx.AsyncClient(timeout=timeout) as client:
         return await client.post(**kwargs)
+
+
+def provider_request_hash(
+    *,
+    request: GenerationRequest,
+    prompt: str,
+    model: str,
+    width: int,
+    height: int,
+    steps: int | None,
+) -> str:
+    """Hash the exact non-secret Cloudflare invocation identity."""
+    material = {
+        "provider": "cloudflare-flux",
+        "model": model,
+        "prompt": prompt,
+        "logical_request_hash": request_hash(request),
+        "seed": request.seed,
+        "width": width,
+        "height": height,
+        "steps": steps,
+        "references": [
+            {
+                "sha256": item.sha256,
+                "semantic_roles": item.semantic_roles or [item.role],
+            }
+            for item in request.references
+        ],
+    }
+    encoded = json.dumps(
+        material, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _cloudflare_prompt(request: GenerationRequest) -> str:
@@ -362,5 +423,7 @@ __all__ = [
     "DEFAULT_HEIGHT",
     "DEFAULT_MODEL",
     "DEFAULT_WIDTH",
+    "DEV_MODEL",
     "prepare_reference",
+    "provider_request_hash",
 ]

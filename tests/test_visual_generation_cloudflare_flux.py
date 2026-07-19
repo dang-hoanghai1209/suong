@@ -16,12 +16,16 @@ from tella.visual_generation.orchestrator import (
     load_proof_plan,
     render_proof,
 )
-from tella.visual_generation.prompt_builder import build_generation_request
+from tella.visual_generation.prompt_builder import build_generation_request, request_hash
 from tella.visual_generation.providers.cloudflare_flux import (
     CloudflareFluxError,
     CloudflareFluxSceneImageProvider,
+    DEV_MODEL,
+    HTTP_TIMEOUT,
     prepare_reference,
+    provider_request_hash,
 )
+import tella.visual_generation.providers.cloudflare_flux as cloudflare_module
 from tella.visual_generation.references import REFERENCE_FILES, resolve_reference_catalog
 from tella.visual_generation.style_bible import load_style_bible
 
@@ -95,6 +99,119 @@ def _provider(sender, **kwargs):
         request_sender=sender,
         **kwargs,
     )
+
+
+@pytest.mark.asyncio
+async def test_dev_serializes_steps_seed_and_real_reference(tmp_path):
+    sender = Sender(_success())
+    provider = _provider(sender, model=DEV_MODEL, steps=25)
+    request = _request(tmp_path).model_copy(update={"seed": 27183})
+    metadata = await provider.generate_scene(request, tmp_path / "candidate.png")
+
+    call = sender.calls[0]
+    assert call["url"].endswith(f"/ai/run/{DEV_MODEL}")
+    assert call["data"]["steps"] == "25"
+    assert call["data"]["seed"] == "27183"
+    assert list(call["files"]) == ["input_image_0"]
+    assert call["files"]["input_image_0"][1]
+    assert metadata.steps == 25
+    assert metadata.seed == 27183
+    assert metadata.provider_request_hash
+    assert metadata.request_timeout_seconds == HTTP_TIMEOUT
+
+
+def test_klein_rejects_dev_only_steps():
+    with pytest.raises(ValueError, match="only for flux-2-dev"):
+        _provider(Sender(_success()), steps=25)
+
+
+@pytest.mark.asyncio
+async def test_klein_default_timeout_is_unchanged_and_reaches_sender(tmp_path):
+    sender = Sender(_success())
+    provider = _provider(sender)
+    await provider.generate_scene(_request(tmp_path), tmp_path / "candidate.png")
+    assert provider.timeout_seconds == 120.0 == HTTP_TIMEOUT
+    assert sender.calls[0]["timeout_seconds"] == 120.0
+
+
+@pytest.mark.asyncio
+async def test_dev_timeout_override_is_single_call_and_observable(tmp_path):
+    calls = []
+
+    async def timeout_sender(**kwargs):
+        calls.append(kwargs)
+        raise TimeoutError("controlled timeout")
+
+    provider = _provider(
+        timeout_sender, model=DEV_MODEL, steps=25, timeout_seconds=300.0
+    )
+    with pytest.raises(CloudflareFluxError) as raised:
+        await provider.generate_scene(_request(tmp_path), tmp_path / "candidate.png")
+    assert len(calls) == 1
+    assert calls[0]["timeout_seconds"] == 300.0
+    assert raised.value.stage == "api_request"
+    assert raised.value.exception_class == "TimeoutError"
+    assert raised.value.request_reached_provider is True
+    assert raised.value.response_received is False
+    assert raised.value.image_bytes_present is False
+
+
+@pytest.mark.asyncio
+async def test_timeout_override_reaches_http_client(monkeypatch):
+    observed = {}
+
+    class FakeClient:
+        def __init__(self, *, timeout):
+            observed["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(cloudflare_module.httpx, "AsyncClient", FakeClient)
+    await cloudflare_module._post_once(
+        url="https://example.invalid",
+        headers={},
+        data={},
+        files={},
+        timeout_seconds=300.0,
+    )
+    assert observed["timeout"] == 300.0
+
+
+def test_provider_request_hash_is_deterministic_and_provider_specific(tmp_path):
+    request = _request(tmp_path).model_copy(update={"seed": 27183})
+    prompt = "exact provider prompt"
+
+    def digest(*, model=DEV_MODEL, steps=25, candidate=request):
+        return provider_request_hash(
+            request=candidate,
+            prompt=prompt,
+            model=model,
+            width=576,
+            height=1024,
+            steps=steps,
+        )
+
+    baseline_logical_hash = request_hash(request)
+    assert digest() == digest()
+    assert digest(model="@cf/black-forest-labs/flux-2-klein-9b", steps=None) != digest()
+    assert digest(steps=24) != digest()
+    assert digest(candidate=request.model_copy(update={"seed": 10101})) != digest()
+    assert request_hash(request) == baseline_logical_hash
+
+    second = request.references[0].model_copy(
+        update={"role": "second", "semantic_roles": ["second"], "sha256": "b" * 64}
+    )
+    forward = request.model_copy(update={"references": [request.references[0], second]})
+    reverse = request.model_copy(update={"references": [second, request.references[0]]})
+    assert digest(candidate=forward) != digest(candidate=reverse)
+    assert "test-token" not in digest()
 
 
 def _success(image=None):
@@ -336,3 +453,36 @@ def test_cli_selects_cloudflare_flux_for_scene_one(monkeypatch, tmp_path):
     assert result == 0
     assert captured["scene_id"] == "scene_01"
     assert isinstance(captured["provider"], CloudflareFluxSceneImageProvider)
+
+
+def test_cli_dry_run_carries_dev_model_steps_and_seed(monkeypatch, tmp_path):
+    captured = {}
+
+    async def fake_render(**kwargs):
+        captured.update(kwargs)
+        return {"external_calls_made": 0}
+
+    monkeypatch.setattr("tella.visual_generation.cli.render_proof", fake_render)
+    result = main(
+        [
+            "render-proof",
+            "--plan", str(PLAN),
+            "--style", str(STYLE),
+            "--reference-root", str(tmp_path),
+            "--out", str(tmp_path / "out"),
+            "--job-id", "cloudflare-dev-dry",
+            "--provider", "cloudflare-flux",
+            "--model", DEV_MODEL,
+            "--scene", "scene_01",
+            "--seed", "27183",
+            "--steps", "25",
+            "--timeout-seconds", "300",
+            "--dry-run",
+        ]
+    )
+    assert result == 0
+    assert captured["dry_run"] is True
+    assert captured["seed_override"] == 27183
+    assert captured["provider"].model == DEV_MODEL
+    assert captured["provider"].steps == 25
+    assert captured["provider"].timeout_seconds == 300.0

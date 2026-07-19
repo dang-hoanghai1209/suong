@@ -153,6 +153,9 @@ class CandidateMetadata(StrictModel):
     requested_width: int | None = Field(default=None, ge=1)
     requested_height: int | None = Field(default=None, ge=1)
     prepared_references: list[dict[str, Any]] = Field(default_factory=list)
+    steps: int | None = Field(default=None, ge=1)
+    provider_request_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    request_timeout_seconds: float | None = Field(default=None, gt=0)
 
 
 class QCDecision(StrEnum):
