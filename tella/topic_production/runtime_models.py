@@ -95,6 +95,7 @@ class GenerationAttempt(BaseModel):
     candidate_id: str = Field(min_length=1)
     candidate_path: str | None = None
     artifact_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    planning_request_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     logical_request_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     provider_request_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     reference_hashes: list[str] = Field(default_factory=list)
@@ -201,6 +202,7 @@ class AcceptedCandidateRecord(BaseModel):
     model: str
     seed: int
     logical_request_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    planning_request_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     provider_request_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     reference_hashes: list[str] = Field(default_factory=list)
     qc_record_id: str = Field(min_length=1)
@@ -246,7 +248,7 @@ class ExecutionRunState(BaseModel):
     run_plan: ProductionRunPlan
     scenes: list[SceneRuntimeState]
     event_history: list[ExecutionEvent]
-    external_calls: int = Field(default=0, ge=0, le=0)
+    external_calls: int = Field(default=0, ge=0)
 
 
 class SceneCallBudget(BaseModel):

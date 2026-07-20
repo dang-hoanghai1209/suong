@@ -110,8 +110,9 @@ def record_generation_attempt(
         request.seed,
     ):
         raise ValueError("generation attempt does not match its authorized request template")
-    if attempt.logical_request_hash != scene.execution_plan.draft.logical_visual_request_hash:
-        raise ValueError("generation attempt logical request hash does not match scene plan")
+    planning_identity = attempt.planning_request_hash or attempt.logical_request_hash
+    if planning_identity != scene.execution_plan.draft.logical_visual_request_hash:
+        raise ValueError("generation attempt planning request hash does not match scene plan")
     expected_reference_hashes = [item.sha256 for item in request.references]
     if attempt.reference_hashes != expected_reference_hashes:
         raise ValueError("generation attempt reference hashes do not match scene plan")
@@ -393,6 +394,7 @@ def register_accepted_candidate(
         model=attempt.model,
         seed=attempt.seed,
         logical_request_hash=attempt.logical_request_hash,
+        planning_request_hash=attempt.planning_request_hash,
         provider_request_hash=attempt.provider_request_hash,
         reference_hashes=attempt.reference_hashes,
         qc_record_id=qc_record_id,
@@ -471,6 +473,7 @@ def evaluate_execution_readiness(state: ExecutionRunState) -> ReadinessResult:
                     or accepted.model != attempt.model
                     or accepted.seed != attempt.seed
                     or accepted.logical_request_hash != attempt.logical_request_hash
+                    or accepted.planning_request_hash != attempt.planning_request_hash
                     or accepted.provider_request_hash != attempt.provider_request_hash
                     or accepted.reference_hashes != attempt.reference_hashes
                 ):

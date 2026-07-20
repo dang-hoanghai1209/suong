@@ -15,6 +15,18 @@ from .execution_models import (
     SceneExecutionPlan,
 )
 from .manifest import build_initial_manifest, refresh_manifest_readiness
+from .live_execution import (
+    build_draft_execution_preview,
+    build_infrastructure_canary_state,
+    execute_draft_scene,
+    select_draft_canary_scene,
+)
+from .live_execution_models import (
+    CanarySelection,
+    DraftExecutionOutcome,
+    DraftExecutionPreview,
+    ProductionJobPaths,
+)
 from .models import (
     AcceptancePriority,
     CandidateArtifact,
@@ -38,6 +50,8 @@ from .planner import (
     build_scene_briefs,
     validate_topic_fidelity,
 )
+from .persistence import load_runtime_state, persist_production_job, production_job_paths
+from .production_prompt import PROMPT_PROFILE, build_topic_production_request
 from .readiness import evaluate_render_readiness
 from .reference_planning import (
     APPROVED_REFERENCE_DEFINITIONS,
@@ -87,8 +101,11 @@ __all__ = [
     "APPROVED_REFERENCE_DEFINITIONS",
     "CandidateArtifact",
     "CallBudgetSummary",
+    "CanarySelection",
     "DeterministicTopicPlanner",
     "DualTierPolicy",
+    "DraftExecutionOutcome",
+    "DraftExecutionPreview",
     "ExecutionMode",
     "ExecutionEvent",
     "ExecutionRunState",
@@ -97,6 +114,7 @@ __all__ = [
     "GenerationAttempt",
     "PlannerMode",
     "ProductionManifest",
+    "ProductionJobPaths",
     "ProductionRunPlan",
     "ProductionScene",
     "ProductionSceneBrief",
@@ -122,21 +140,29 @@ __all__ = [
     "TechnicalStatus",
     "TopicFidelityEvaluator",
     "TopicStoryPlanner",
+    "PROMPT_PROFILE",
     "adapt_scene_brief",
     "authorize_draft_acceptance",
     "block_scene",
     "build_fixture_preview_run",
+    "build_draft_execution_preview",
+    "build_infrastructure_canary_state",
     "build_initial_manifest",
     "build_production_run_plan",
     "build_scene_briefs",
+    "build_topic_production_request",
     "deterministic_scene_seed",
     "evaluate_render_readiness",
+    "execute_draft_scene",
     "evaluate_execution_readiness",
     "initialize_execution_state",
+    "load_runtime_state",
     "load_reference_catalog",
     "refresh_manifest_readiness",
     "plan_resume",
+    "persist_production_job",
     "promote_scene_to_acceptance",
+    "production_job_paths",
     "record_generation_attempt",
     "record_human_qc",
     "record_qc",
@@ -144,6 +170,7 @@ __all__ = [
     "required_reference_roles",
     "resolve_references",
     "simulate_eight_scene_execution",
+    "select_draft_canary_scene",
     "summarize_call_budget",
     "validate_topic_fidelity",
 ]
