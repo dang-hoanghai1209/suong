@@ -104,6 +104,37 @@ def build_instruction(scene: SceneBrief, style: StyleBible) -> tuple[str, str]:
                 "PLANT AND WARM LAMP, and last the CREAM ATMOSPHERIC PATCH.",
             )
         )
+    elif scene.scene_id == "scene_04":
+        sections.append(
+            (
+                "SCENE 4 QUALITY LOCK",
+                "Keep the established dark brown or deep taupe outer background and place one "
+                "quiet lower emotional cluster in the lower-middle of the vertical frame, with "
+                "large calm negative space above. Keep the recurring woman as the primary emotional "
+                "subject in the lower-right or lower-center-right, with her short rounded dark bob, "
+                "simple cream face, muted dusty-pink or coral clothing, curled sitting pose, and "
+                "arms clearly hugging her knees. Make the central idea immediately read as someone "
+                "missing: place one faint incomplete empty human outline beside her on the LEFT as "
+                "an absence, not another character. The absence must be hollow or nearly transparent, "
+                "outline-based or softly partial, with parts of the outline fading into the dark "
+                "background. Give it no face, skin, clothing, body detail, detailed arm, or detailed "
+                "hand; never render it as a solid gray person, ghost character, realistic second "
+                "person, or fully rendered human body. Keep the woman-and-absence spatial relationship "
+                "primary, followed by one restrained taupe-cream support patch directly behind the "
+                "emotional cluster only. The support patch must be irregular, soft, matte, "
+                "semi-transparent, feathered, secondary, and naturally integrated; it must not fill "
+                "the page, become a light overall background, or form a giant enclosure. Include "
+                "exactly one small loose dark scribbled cloud total, close to the emotional cluster, "
+                "understated and secondary; never add a second cloud, a large competing cloud collage, "
+                "a white or light cloud near the top, a dramatic storm cloud, or a dominant top-center "
+                "object. Include one clearly visible tiny muted hand-drawn broken-heart doodle, lightly "
+                "integrated near the cluster; never make it a large bright heart icon, emoji, sticker, "
+                "or UI symbol. Keep only a few falling marks or tears, a few leaves, and one restrained "
+                "cream botanical doodle on the right. These marks remain subordinate so the image reads "
+                "as one quiet emotional illustration rather than a collage of sadness icons. Preserve "
+                "the established warm, muted, hand-drawn Tella visual world and dark-background grammar.",
+            )
+        )
     sections.extend(
         [
         (
@@ -157,6 +188,23 @@ def build_instruction(scene: SceneBrief, style: StyleBible) -> tuple[str, str]:
                 "no visible hard outline around the atmospheric patch",
                 "no dominant, oversized, bright, or high-contrast cream patch",
                 "no cream patch competing with the woman, meal, or eating action",
+            ]
+        )
+        negatives = sorted(set(negatives))
+    elif scene.scene_id == "scene_04":
+        negatives.extend(
+            [
+                "no solid gray person, ghost character, or realistic second person",
+                "no detailed face, clothing, skin, body, arm, or hand on the absence",
+                "no fully rendered human body or filled-in silhouette",
+                "no large isolated top-center cloud or dramatic storm cloud",
+                "no dominant cloud competing with the woman and absence",
+                "no second cloud or competing cloud collage",
+                "no white or light cloud near the top",
+                "no full beige page or full light background",
+                "no giant cream enclosure or page-filling vignette",
+                "no large bright heart icon, emoji, sticker, or UI symbol",
+                "no icon collage or competing sadness symbols",
             ]
         )
         negatives = sorted(set(negatives))

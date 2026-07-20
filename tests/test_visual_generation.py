@@ -223,6 +223,38 @@ def test_scene_three_quality_lock_keeps_open_vignette_secondary_to_eating_action
     assert "no cream patch competing with the woman, meal, or eating action" in negative
 
 
+def test_scene_four_quality_lock_keeps_absence_primary_and_symbols_secondary():
+    style = load_style_bible(STYLE_PATH)
+    scene = load_proof_plan(PLAN_PATH).scenes[3]
+    instruction, negative = build_instruction(scene, style)
+
+    assert "faint incomplete empty human outline" in instruction
+    assert "hollow or nearly transparent" in instruction
+    assert "parts of the outline fading into the dark background" in instruction
+    assert "absence, not another character" in instruction
+    assert "no face, skin, clothing, body detail, detailed arm, or detailed hand" in instruction
+    assert "never render it as a solid gray person, ghost character" in instruction
+    assert "woman-and-absence spatial relationship primary" in instruction
+    assert "exactly one small loose dark scribbled cloud total" in instruction
+    assert "never add a second cloud, a large competing cloud collage" in instruction
+    assert "one clearly visible tiny muted hand-drawn broken-heart doodle" in instruction
+    assert "never make it a large bright heart icon, emoji, sticker, or UI symbol" in instruction
+    assert "established dark brown or deep taupe outer background" in instruction
+    assert "one quiet lower emotional cluster" in instruction
+    assert "one restrained taupe-cream support patch directly behind the emotional cluster only" in instruction
+    assert "must not fill the page" in instruction
+    assert "exactly one small loose dark scribbled cloud total" in instruction
+    assert "never add a second cloud" in instruction
+    assert "one clearly visible tiny muted hand-drawn broken-heart doodle" in instruction
+    assert "no solid gray person" in negative
+    assert "no detailed face, clothing, skin, body, arm, or hand" in negative
+    assert "no large isolated top-center cloud" in negative
+    assert "no large bright heart icon" in negative
+    assert "no second cloud" in negative
+    assert "no full beige page" in negative
+    assert "no giant cream enclosure" in negative
+
+
 def test_reference_selection_for_all_scenes(tmp_path):
     plan = load_proof_plan(PLAN_PATH)
     catalog = resolve_reference_catalog(_references(tmp_path))
