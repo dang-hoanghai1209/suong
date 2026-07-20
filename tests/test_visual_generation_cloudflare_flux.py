@@ -22,6 +22,8 @@ from tella.visual_generation.providers.cloudflare_flux import (
     CloudflareFluxSceneImageProvider,
     DEV_MODEL,
     HTTP_TIMEOUT,
+    KLEIN_4B_FIXED_STEPS,
+    KLEIN_4B_MODEL,
     prepare_reference,
     provider_request_hash,
 )
@@ -126,6 +128,41 @@ def test_klein_rejects_dev_only_steps():
 
 
 @pytest.mark.asyncio
+async def test_klein_4b_uses_fixed_steps_seed_and_multipart_references(tmp_path):
+    sender = Sender(_success())
+    provider = _provider(
+        sender,
+        model=KLEIN_4B_MODEL,
+        steps=4,
+        tier="draft",
+        intended_usage_class="draft",
+    )
+    request = _request(tmp_path, scene=1).model_copy(update={"seed": 27183})
+    metadata = await provider.generate_scene(request, tmp_path / "candidate.png")
+
+    call = sender.calls[0]
+    assert call["url"].endswith(f"/ai/run/{KLEIN_4B_MODEL}")
+    assert "steps" not in call["data"]
+    assert call["data"]["seed"] == "27183"
+    assert list(call["files"]) == ["input_image_0", "input_image_1"]
+    assert all(item[1] for item in call["files"].values())
+    assert metadata.steps == KLEIN_4B_FIXED_STEPS
+    assert metadata.model == KLEIN_4B_MODEL
+    assert metadata.tier == "draft"
+    assert metadata.intended_usage_class == "draft"
+    assert metadata.logical_request_hash == metadata.request_hash
+    assert metadata.reference_hashes == [item.sha256 for item in request.references]
+    assert metadata.provider_request_hash
+    assert metadata.request_timeout_seconds == HTTP_TIMEOUT
+
+
+def test_klein_4b_defaults_to_fixed_steps_and_rejects_dev_steps():
+    assert _provider(Sender(_success()), model=KLEIN_4B_MODEL).steps == 4
+    with pytest.raises(ValueError, match="fixed 4-step"):
+        _provider(Sender(_success()), model=KLEIN_4B_MODEL, steps=25)
+
+
+@pytest.mark.asyncio
 async def test_klein_default_timeout_is_unchanged_and_reaches_sender(tmp_path):
     sender = Sender(_success())
     provider = _provider(sender)
@@ -201,6 +238,9 @@ def test_provider_request_hash_is_deterministic_and_provider_specific(tmp_path):
     baseline_logical_hash = request_hash(request)
     assert digest() == digest()
     assert digest(model="@cf/black-forest-labs/flux-2-klein-9b", steps=None) != digest()
+    klein_4b = digest(model=KLEIN_4B_MODEL, steps=KLEIN_4B_FIXED_STEPS)
+    assert klein_4b == digest(model=KLEIN_4B_MODEL, steps=KLEIN_4B_FIXED_STEPS)
+    assert klein_4b != digest()
     assert digest(steps=24) != digest()
     assert digest(candidate=request.model_copy(update={"seed": 10101})) != digest()
     assert request_hash(request) == baseline_logical_hash
@@ -486,3 +526,34 @@ def test_cli_dry_run_carries_dev_model_steps_and_seed(monkeypatch, tmp_path):
     assert captured["provider"].model == DEV_MODEL
     assert captured["provider"].steps == 25
     assert captured["provider"].timeout_seconds == 300.0
+
+
+def test_cli_dry_run_reports_klein_4b_fixed_steps(monkeypatch, tmp_path):
+    captured = {}
+
+    async def fake_render(**kwargs):
+        captured.update(kwargs)
+        return {"external_calls_made": 0}
+
+    monkeypatch.setattr("tella.visual_generation.cli.render_proof", fake_render)
+    result = main(
+        [
+            "render-proof",
+            "--plan", str(PLAN),
+            "--style", str(STYLE),
+            "--reference-root", str(tmp_path),
+            "--out", str(tmp_path / "out"),
+            "--job-id", "cloudflare-klein4b-dry",
+            "--provider", "cloudflare-flux",
+            "--model", KLEIN_4B_MODEL,
+            "--scene", "scene_01",
+            "--seed", "27183",
+            "--steps", "4",
+            "--dry-run",
+        ]
+    )
+    assert result == 0
+    assert captured["dry_run"] is True
+    assert captured["seed_override"] == 27183
+    assert captured["provider"].model == KLEIN_4B_MODEL
+    assert captured["provider"].steps == KLEIN_4B_FIXED_STEPS

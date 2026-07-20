@@ -88,9 +88,17 @@ async def render_proof(
     qc_evaluator: QCEvaluator | None = None,
     scene_id: str | None = None,
     seed_override: int | None = None,
+    tier: str | None = None,
+    intended_usage_class: str | None = None,
+    chain_accepted_scenes: bool | None = None,
 ) -> dict[str, object]:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", job_id):
         raise ValueError("job-id must be a safe 1-80 character filename component")
+    tier = tier or getattr(provider, "tier", None)
+    intended_usage_class = intended_usage_class or getattr(
+        provider, "intended_usage_class", None
+    )
+    effective_chaining = tier is None if chain_accepted_scenes is None else chain_accepted_scenes
     plan = load_proof_plan(plan_path)
     if scene_id is not None:
         selected = [scene for scene in plan.scenes if scene.scene_id == scene_id]
@@ -110,7 +118,13 @@ async def render_proof(
         raise ValueError("output job escaped isolated visual_quality_v1 root")
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    capabilities = DRY_RUN_CAPABILITIES if dry_run else _require_provider(provider).capabilities()
+    capabilities = (
+        provider.capabilities()
+        if provider is not None
+        else DRY_RUN_CAPABILITIES
+        if dry_run
+        else _require_provider(provider).capabilities()
+    )
     if not dry_run:
         gate = live_gate_status(
             references_available=True,
@@ -138,7 +152,7 @@ async def render_proof(
             scene,
             catalog,
             capabilities,
-            accepted_scenes=accepted_scenes,
+            accepted_scenes=accepted_scenes if effective_chaining else {},
         )
         first_request = build_generation_request(
             scene,
@@ -169,7 +183,19 @@ async def render_proof(
                     repair_attempts=0,
                     provider=capabilities.provider_id,
                     model=capabilities.model,
-                    metadata={"request_hash": request_hash(first_request)},
+                    metadata={
+                        "tier": tier,
+                        "intended_usage_class": intended_usage_class,
+                        "provider": capabilities.provider_id,
+                        "model": capabilities.model,
+                        "effective_steps": getattr(provider, "steps", None),
+                        "timeout_seconds": getattr(provider, "timeout_seconds", None),
+                        "logical_request_hash": request_hash(first_request),
+                        "reference_hashes": [
+                            item.sha256 for item in first_request.references
+                        ],
+                        "seed": first_request.seed,
+                    },
                 )
             )
             continue
@@ -183,6 +209,8 @@ async def render_proof(
             plan=plan,
             provider=_require_provider(provider),
             qc_evaluator=qc_evaluator,
+            tier=tier,
+            intended_usage_class=intended_usage_class,
         )
         results.append(result)
         all_qc[scene.scene_id] = qc_records
@@ -198,6 +226,9 @@ async def render_proof(
     summary: dict[str, object] = {
         "job_id": job_id,
         "dry_run": dry_run,
+        "tier": tier,
+        "intended_usage_class": intended_usage_class,
+        "accepted_scene_chaining": effective_chaining,
         "provider": capabilities.provider_id,
         "model": capabilities.model,
         "selected_scenes": [scene.scene_id for scene in selected],
@@ -231,6 +262,8 @@ async def _render_scene(
     plan: ProofPlan,
     provider: SceneImageProvider,
     qc_evaluator: QCEvaluator | None,
+    tier: str | None,
+    intended_usage_class: str | None,
 ) -> tuple[SceneResult, list[dict[str, object]]]:
     capabilities = provider.capabilities()
     generation_attempts = 0
@@ -246,7 +279,15 @@ async def _render_scene(
         metadata = await provider.generate_scene(current, output)
         generation_attempts += 1
         output = metadata.output_path
-        metadata = _normalized_metadata(metadata, current, output, capabilities, started)
+        metadata = _normalized_metadata(
+            metadata,
+            current,
+            output,
+            capabilities,
+            started,
+            tier=tier,
+            intended_usage_class=intended_usage_class,
+        )
         _write_json(output.with_suffix(".metadata.json"), metadata.model_dump(mode="json"))
         structural = validate_candidate_structure(output, width=style_width, height=style_height)
         qc = await _evaluate(evaluator, scene, output)
@@ -293,7 +334,13 @@ async def _render_scene(
                 repair_metadata = await provider.edit_scene(repair_source, repair, repaired)
                 repair_attempts += 1
                 repair_metadata = _normalized_metadata(
-                    repair_metadata, repair, repaired, capabilities, repair_started
+                    repair_metadata,
+                    repair,
+                    repaired,
+                    capabilities,
+                    repair_started,
+                    tier=tier,
+                    intended_usage_class=intended_usage_class,
                 )
                 _write_json(
                     repaired.with_suffix(".metadata.json"),
@@ -360,12 +407,18 @@ def _normalized_metadata(
     output: Path,
     capabilities: ProviderCapabilities,
     started: float,
+    *,
+    tier: str | None,
+    intended_usage_class: str | None,
 ) -> CandidateMetadata:
     return metadata.model_copy(
         update={
+            "tier": tier,
+            "intended_usage_class": intended_usage_class,
             "provider": capabilities.provider_id,
             "model": capabilities.model,
             "request_hash": request_hash(request),
+            "logical_request_hash": request_hash(request),
             "reference_hashes": [item.sha256 for item in request.references],
             "instruction_hash": instruction_hash(request),
             "seed": request.seed,

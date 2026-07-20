@@ -135,9 +135,12 @@ class GenerationRequest(StrictModel):
 
 
 class CandidateMetadata(StrictModel):
+    tier: Literal["draft", "acceptance"] | None = None
+    intended_usage_class: Literal["draft", "acceptance"] | None = None
     provider: str
     model: str
     request_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    logical_request_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     reference_hashes: list[str]
     instruction_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     seed: int | None

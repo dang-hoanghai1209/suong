@@ -10,6 +10,7 @@ from .models import (
     StyleBible,
     VisualQCResult,
 )
+from .tiers import VisualQualityTier, VisualTierConfig, resolve_visual_tier
 
 __all__ = [
     "GenerationRequest",
@@ -20,4 +21,7 @@ __all__ = [
     "SceneResult",
     "StyleBible",
     "VisualQCResult",
+    "VisualQualityTier",
+    "VisualTierConfig",
+    "resolve_visual_tier",
 ]

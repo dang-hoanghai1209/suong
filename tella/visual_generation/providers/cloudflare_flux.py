@@ -24,6 +24,8 @@ from ..references import sha256_file
 
 DEFAULT_MODEL = "@cf/black-forest-labs/flux-2-klein-9b"
 DEV_MODEL = "@cf/black-forest-labs/flux-2-dev"
+KLEIN_4B_MODEL = "@cf/black-forest-labs/flux-2-klein-4b"
+KLEIN_4B_FIXED_STEPS = 4
 DEFAULT_WIDTH = 576
 DEFAULT_HEIGHT = 1024
 REFERENCE_LIMIT = 511
@@ -65,22 +67,33 @@ class CloudflareFluxSceneImageProvider:
         height: int = DEFAULT_HEIGHT,
         steps: int | None = None,
         timeout_seconds: float = HTTP_TIMEOUT,
+        tier: str | None = None,
+        intended_usage_class: str | None = None,
         credential_resolver: Callable[[], list[tuple[str, str]]] = resolve_all_credentials,
         request_sender: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
         if not 256 <= width <= 1920 or not 256 <= height <= 1920:
             raise ValueError("Cloudflare FLUX width and height must be between 256 and 1920")
-        if steps is not None and model != DEV_MODEL:
-            raise ValueError("Cloudflare FLUX steps are supported only for flux-2-dev")
         if steps is not None and steps < 1:
             raise ValueError("Cloudflare FLUX steps must be positive")
+        if model == KLEIN_4B_MODEL:
+            if steps not in (None, KLEIN_4B_FIXED_STEPS):
+                raise ValueError("Cloudflare FLUX Klein 4B uses fixed 4-step inference")
+            effective_steps = KLEIN_4B_FIXED_STEPS
+        else:
+            if steps is not None and model != DEV_MODEL:
+                raise ValueError("Cloudflare FLUX steps are supported only for flux-2-dev")
+            effective_steps = steps
         if timeout_seconds <= 0:
             raise ValueError("Cloudflare FLUX timeout must be positive")
         self.model = model
         self.width = width
         self.height = height
-        self.steps = steps
+        self.steps = effective_steps
+        self._serialize_steps = model == DEV_MODEL and steps is not None
         self.timeout_seconds = timeout_seconds
+        self.tier = tier
+        self.intended_usage_class = intended_usage_class
         self._credential_resolver = credential_resolver
         self._request_sender = request_sender or _post_once
 
@@ -122,7 +135,7 @@ class CloudflareFluxSceneImageProvider:
             }
             if request.seed is not None:
                 fields["seed"] = str(request.seed)
-            if self.steps is not None:
+            if self._serialize_steps:
                 fields["steps"] = str(self.steps)
             invocation_hash = provider_request_hash(
                 request=request,
@@ -256,9 +269,12 @@ class CloudflareFluxSceneImageProvider:
                 "image_write", exc, reached=True, received=True, image_bytes=True
             ) from exc
         return CandidateMetadata(
+            tier=self.tier,
+            intended_usage_class=self.intended_usage_class,
             provider="cloudflare-flux",
             model=self.model,
             request_hash=request_hash(request),
+            logical_request_hash=request_hash(request),
             reference_hashes=[item.sha256 for item in request.references],
             reference_roles=[item.semantic_roles or [item.role] for item in request.references],
             instruction_hash=instruction_hash(request),
@@ -424,6 +440,8 @@ __all__ = [
     "DEFAULT_MODEL",
     "DEFAULT_WIDTH",
     "DEV_MODEL",
+    "KLEIN_4B_FIXED_STEPS",
+    "KLEIN_4B_MODEL",
     "prepare_reference",
     "provider_request_hash",
 ]

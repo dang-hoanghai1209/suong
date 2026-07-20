@@ -20,7 +20,8 @@ from .providers.cloudflare_flux import (
 )
 from .providers.gemini import DEFAULT_MODEL as GEMINI_DEFAULT_MODEL
 from .providers.gemini import GeminiSceneImageProvider
-from .references import ReferenceMissingError
+from .references import REFERENCE_FILES, ReferenceMissingError
+from .tiers import VisualQualityTier, resolve_visual_tier
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,8 +36,9 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("--dry-run", action="store_true")
     render.add_argument("--live", action="store_true")
     render.add_argument(
-        "--provider", choices=("gemini", "cloudflare-flux", "existing"), default="existing"
+        "--provider", choices=("gemini", "cloudflare-flux", "existing")
     )
+    render.add_argument("--tier", choices=tuple(item.value for item in VisualQualityTier))
     render.add_argument("--model")
     render.add_argument(
         "--resolution", choices=("0.5K", "1K", "2K", "4K"), default="1K"
@@ -49,6 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("--seed", type=int)
     render.add_argument("--steps", type=int)
     render.add_argument("--timeout-seconds", type=float)
+    render.add_argument(
+        "--chain-accepted-scenes",
+        action="store_true",
+        help="explicitly use an accepted Scene 1 output as continuity input for Scenes 3-4",
+    )
     return parser
 
 
@@ -63,37 +70,77 @@ def main(argv: list[str] | None = None) -> int:
     if not args.dry_run and not args.live:
         print("LIVE_VISUAL_ACCEPTANCE_NOT_RUN_OPT_IN_REQUIRED")
         return 2
-    if args.provider == "gemini":
-        provider = GeminiSceneImageProvider(
-            model=args.model or GEMINI_DEFAULT_MODEL, resolution=args.resolution
-        )
-    elif args.provider == "cloudflare-flux":
-        provider = CloudflareFluxSceneImageProvider(
-            model=args.model or CLOUDFLARE_DEFAULT_MODEL,
-            width=args.width or CLOUDFLARE_DEFAULT_WIDTH,
-            height=args.height or CLOUDFLARE_DEFAULT_HEIGHT,
-            steps=args.steps,
-            timeout_seconds=(
-                args.timeout_seconds
-                if args.timeout_seconds is not None
-                else CLOUDFLARE_HTTP_TIMEOUT
-            ),
-        )
-    else:
-        provider = ExistingTellaProviderAdapter(
-            name=os.environ.get("TELLA_IMAGE_PROVIDER") or "cloudflare"
-        )
+    tier_config = None
+    try:
+        if args.tier:
+            tier_config = resolve_visual_tier(
+                args.tier,
+                provider=args.provider,
+                model=args.model,
+                steps=args.steps,
+                timeout_seconds=args.timeout_seconds,
+            )
+            provider = CloudflareFluxSceneImageProvider(
+                model=tier_config.model,
+                width=args.width or CLOUDFLARE_DEFAULT_WIDTH,
+                height=args.height or CLOUDFLARE_DEFAULT_HEIGHT,
+                steps=tier_config.steps,
+                timeout_seconds=tier_config.timeout_seconds,
+                tier=tier_config.tier.value,
+                intended_usage_class=tier_config.output_intent,
+            )
+        elif args.provider == "gemini":
+            provider = GeminiSceneImageProvider(
+                model=args.model or GEMINI_DEFAULT_MODEL, resolution=args.resolution
+            )
+        elif args.provider == "cloudflare-flux":
+            provider = CloudflareFluxSceneImageProvider(
+                model=args.model or CLOUDFLARE_DEFAULT_MODEL,
+                width=args.width or CLOUDFLARE_DEFAULT_WIDTH,
+                height=args.height or CLOUDFLARE_DEFAULT_HEIGHT,
+                steps=args.steps,
+                timeout_seconds=(
+                    args.timeout_seconds
+                    if args.timeout_seconds is not None
+                    else CLOUDFLARE_HTTP_TIMEOUT
+                ),
+            )
+        else:
+            provider = ExistingTellaProviderAdapter(
+                name=os.environ.get("TELLA_IMAGE_PROVIDER") or "cloudflare"
+            )
+    except ValueError as exc:
+        print(str(exc))
+        return 2
     if provider is not None:
         plan = load_proof_plan(args.plan)
         caps = provider.capabilities()
+        selected_scenes = (
+            [scene for scene in plan.scenes if scene.scene_id == args.scene]
+            if args.scene
+            else plan.scenes
+        )
+        reference_counts = {
+            scene.scene_id: len(
+                {
+                    REFERENCE_FILES[role][0]
+                    for role in scene.reference_roles
+                    if role in REFERENCE_FILES
+                }
+            )
+            for scene in selected_scenes
+        }
         print(
             json.dumps(
                 {
+                    "selected_tier": tier_config.tier.value if tier_config else None,
                     "selected_provider": caps.provider_id,
                     "selected_model": caps.model,
-                    "selected_scenes": (
-                        [args.scene] if args.scene else [scene.scene_id for scene in plan.scenes]
+                    "intended_usage_class": (
+                        tier_config.output_intent if tier_config else None
                     ),
+                    "cost_posture": tier_config.cost_posture if tier_config else None,
+                    "selected_scenes": [scene.scene_id for scene in selected_scenes],
                     "planned_candidate_images": (
                         1 if args.scene else len(plan.scenes) * plan.candidate_count
                     ),
@@ -116,7 +163,10 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                     "requested_width": getattr(provider, "width", None),
                     "requested_height": getattr(provider, "height", None),
-                    "reference_count": "scene-dependent (1-3)",
+                    "reference_count": reference_counts,
+                    "accepted_scene_chaining": (
+                        args.chain_accepted_scenes if tier_config else True
+                    ),
                     "steps": getattr(provider, "steps", None),
                     "timeout_seconds": getattr(provider, "timeout_seconds", None),
                 },
@@ -135,6 +185,11 @@ def main(argv: list[str] | None = None) -> int:
                 provider=provider,
                 scene_id=args.scene,
                 seed_override=args.seed,
+                tier=tier_config.tier.value if tier_config else None,
+                intended_usage_class=(tier_config.output_intent if tier_config else None),
+                chain_accepted_scenes=(
+                    args.chain_accepted_scenes if tier_config else True
+                ),
             )
         )
     except ReferenceMissingError as exc:

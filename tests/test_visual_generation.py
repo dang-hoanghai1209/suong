@@ -399,6 +399,33 @@ async def test_accepted_scene_one_is_supplementary_for_later_scenes(tmp_path, mo
     assert (tmp_path / "out" / "visual_quality_v1" / "accepted-sequence" / "contact_sheet.png").is_file()
 
 
+@pytest.mark.asyncio
+async def test_tiered_flow_does_not_chain_accepted_scene_without_opt_in(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("TELLA_VISUAL_QUALITY_LIVE", "1")
+    provider = FakeProvider()
+    summary = await render_proof(
+        plan_path=PLAN_PATH,
+        style_path=STYLE_PATH,
+        reference_root=_references(tmp_path),
+        out_root=tmp_path / "out",
+        job_id="draft-no-chain",
+        dry_run=False,
+        provider=provider,
+        qc_evaluator=lambda _scene, _path: _qc(),
+        tier="draft",
+        intended_usage_class="draft",
+    )
+    assert summary["complete"] is True
+    assert summary["accepted_scene_chaining"] is False
+    assert all(
+        reference.source != "accepted_scene"
+        for request in provider.generate_calls
+        for reference in request.references
+    )
+
+
 def test_job_id_cannot_escape_isolated_output(tmp_path):
     with pytest.raises(ValueError, match="job-id"):
         asyncio.run(
