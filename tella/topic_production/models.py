@@ -35,6 +35,11 @@ class GenerationTier(StrEnum):
     ACCEPTANCE = "acceptance"
 
 
+class PlannerMode(StrEnum):
+    FIXTURE = "fixture"
+    PRODUCTION = "production"
+
+
 class ProductionSceneStatus(StrEnum):
     PLANNED = "PLANNED"
     DRAFT_PENDING = "DRAFT_PENDING"
@@ -58,7 +63,15 @@ class PlannerMetadata(BaseModel):
     topic_concepts: list[str] = Field(min_length=1)
     deterministic_key: str = Field(pattern=r"^[0-9a-f]{16}$")
     semantic_evaluator: str = "deterministic_structural_v1"
+    planner_mode: PlannerMode = PlannerMode.FIXTURE
+    production_eligible: bool = False
     external_calls: int = Field(default=0, ge=0, le=0)
+
+    @model_validator(mode="after")
+    def validate_capability(self) -> "PlannerMetadata":
+        if self.planner_mode is PlannerMode.FIXTURE and self.production_eligible:
+            raise ValueError("fixture planners cannot be marked production eligible")
+        return self
 
 
 class SemanticBeat(BaseModel):
