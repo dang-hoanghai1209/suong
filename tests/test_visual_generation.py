@@ -166,6 +166,11 @@ def test_scene_one_quality_lock_keeps_character_primary_and_vignette_restrained(
     assert "light column" in negative
     assert "no oval spotlight" in negative
 
+    prompt_digest = hashlib.sha256(
+        (instruction + "\0" + negative).encode("utf-8")
+    ).hexdigest()
+    assert prompt_digest == "9b33befcaee0e9856b88104c74363d6c1cabf51627de184f605563153be10ee0"
+
 
 def test_scene_two_quality_lock_is_couple_specific_and_does_not_leak_to_scene_one():
     style = load_style_bible(STYLE_PATH)
@@ -175,10 +180,20 @@ def test_scene_two_quality_lock_is_couple_specific_and_does_not_leak_to_scene_on
 
     assert "SCENE 2 QUALITY LOCK" not in scene_1_instruction
     assert "seated couple as the primary focal subject" in scene_2_instruction
+    assert "young man on the LEFT side of the bench" in scene_2_instruction
+    assert "young woman on the RIGHT side" in scene_2_instruction
+    assert "male must remain viewer-left and the female viewer-right" in scene_2_instruction
+    assert "Do not mirror, reverse, or swap their positions" in scene_2_instruction
     assert "shared bench contact" in scene_2_instruction
-    assert "restrained asymmetrical muted beige-cream vignette" in scene_2_instruction
+    assert "restrained irregular muted beige-cream" in scene_2_instruction
+    assert "low-contrast, semi-transparent, matte" in scene_2_instruction
+    assert "asymmetrical hand-brushed organic edge" in scene_2_instruction
+    assert "giant oval or symmetrical ellipse" in scene_2_instruction
+    assert "white luminous disk or circular/oval spotlight" in scene_2_instruction
     assert "never a dramatic romance pose" in scene_2_instruction
+    assert "no swapped positions" in scene_2_negative
     assert "no giant halo" in scene_2_negative
+    assert "no giant symmetrical oval spotlight" in scene_2_negative
     assert "no dominant bench" in scene_2_negative
 
 

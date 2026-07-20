@@ -55,17 +55,27 @@ def build_instruction(scene: SceneBrief, style: StyleBible) -> tuple[str, str]:
             (
                 "SCENE 2 QUALITY LOCK",
                 "Keep the seated couple as the primary focal subject: two clearly readable, "
-                "similarly simplified full-body characters in the lower-middle, male on the "
-                "left and female on the right, with generous empty negative space above. Their "
+                "similarly simplified full-body characters in the lower-middle, with generous "
+                "empty negative space above. From the viewer's perspective, place the young man "
+                "on the LEFT side of the bench and the young woman on the RIGHT side. Maintain "
+                "this left-to-right order exactly: MAN -> WOMAN. Do not mirror, reverse, or swap "
+                "their positions; the male must remain viewer-left and the female viewer-right. "
+                "Their "
                 "shared bench contact, limb spacing, hand placement, body scale, and slight "
                 "orientation toward one another must feel natural and anatomically coherent. "
                 "Show quiet companionship and subtle shared attention, never a dramatic romance "
                 "pose, embrace, or kiss. Keep the woman visually continuous with Scene 1 and "
                 "render the man in exactly the same hand-drawn illustration language. Behind the "
-                "couple, use one restrained asymmetrical muted beige-cream vignette, only a little "
-                "wider than the seated pair, low-contrast, matte, powdery, and softly blended. It "
-                "is a secondary supporting shape close to the couple, never a giant halo, bright "
-                "aura, light column, circular spotlight, oval badge, or dominant scene object. "
+                "couple, place one small-to-moderate restrained irregular muted beige-cream "
+                "emotional vignette, only large enough to softly support the two-person cluster. "
+                "Keep it close behind the couple, low-contrast, semi-transparent, matte, softly "
+                "blended, dusty, and powdery, with an asymmetrical hand-brushed organic edge. It "
+                "is secondary to the couple and must not extend dramatically above their heads, "
+                "fill most of the central frame, become bright white, form a giant oval or "
+                "symmetrical ellipse, resemble a white luminous disk or circular/oval spotlight, "
+                "or dominate the couple. Preserve this visual hierarchy: first the COUPLE, then "
+                "the restrained emotional vignette, then the bench, then the small plant and "
+                "lantern. "
                 "Draw only the simple shared bench, one small potted plant, and one small warm "
                 "lantern as subtle integrated props; do not add scenery or decorative clutter.",
             )
@@ -105,8 +115,10 @@ def build_instruction(scene: SceneBrief, style: StyleBible) -> tuple[str, str]:
         negatives.extend(
             [
                 "no dramatic romance poster pose, embrace, or kiss",
+                "no swapped positions, mirrored couple layout, or woman-left/man-right arrangement",
                 "no giant halo, bright aura, or light column",
-                "no circular spotlight, oval badge, or concentric rings",
+                "no giant symmetrical oval spotlight or white luminous disk",
+                "no circular spotlight, oval badge, symmetrical ellipse, or concentric rings",
                 "no dominant bench, plant, lantern, or vignette",
                 "no detailed environment or decorative clutter",
             ]
