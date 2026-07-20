@@ -80,6 +80,30 @@ def build_instruction(scene: SceneBrief, style: StyleBible) -> tuple[str, str]:
                 "lantern as subtle integrated props; do not add scenery or decorative clutter.",
             )
         )
+    elif scene.scene_id == "scene_03":
+        sections.append(
+            (
+                "SCENE 3 QUALITY LOCK",
+                "Preserve the quiet daily-life meaning and keep the recurring woman actively "
+                "eating alone as the primary focal subject in the lower-middle of the vertical "
+                "frame, with substantial empty negative space above. Preserve her rounded dark "
+                "bob, simple cream face, muted coral or dusty-pink clothing, coherent utensil-to-"
+                "hand alignment, the meal directly in front of her, the cup logically placed, "
+                "and natural table, chair, and body contact. Keep the small flower, restrained "
+                "plant, and warm lamp as subtle integrated supporting cues. Loosely behind only "
+                "the woman and small table, place one restrained irregular beige-cream "
+                "atmospheric patch. Keep this patch open, uneven, asymmetrical, softly feathered, "
+                "powdery, matte, semi-transparent, low-contrast, and hand-brushed, with edges "
+                "that softly fade and dissolve naturally into the dark brown background. It must "
+                "not form a closed geometric shape or an outlined enclosure, and it must not "
+                "read as an oval, ellipse, closed bubble, enclosure, badge, spotlight, white "
+                "disk, outlined backdrop, or hard-edged geometric shape. Make the patch smaller "
+                "and visually quieter than the woman, meal, and eating action. Preserve this "
+                "visual hierarchy exactly: first the WOMAN ACTIVELY EATING, then the MEAL AND "
+                "TABLE ACTION, then the subtle CHAIR, CUP, AND SMALL FLOWER, then the restrained "
+                "PLANT AND WARM LAMP, and last the CREAM ATMOSPHERIC PATCH.",
+            )
+        )
     sections.extend(
         [
         (
@@ -121,6 +145,18 @@ def build_instruction(scene: SceneBrief, style: StyleBible) -> tuple[str, str]:
                 "no circular spotlight, oval badge, symmetrical ellipse, or concentric rings",
                 "no dominant bench, plant, lantern, or vignette",
                 "no detailed environment or decorative clutter",
+            ]
+        )
+        negatives = sorted(set(negatives))
+    elif scene.scene_id == "scene_03":
+        negatives.extend(
+            [
+                "no oval, ellipse, closed bubble, enclosure, or badge",
+                "no spotlight, white disk, or outlined backdrop",
+                "no closed geometric vignette or hard-edged cream shape",
+                "no visible hard outline around the atmospheric patch",
+                "no dominant, oversized, bright, or high-contrast cream patch",
+                "no cream patch competing with the woman, meal, or eating action",
             ]
         )
         negatives = sorted(set(negatives))

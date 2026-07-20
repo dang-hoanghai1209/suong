@@ -196,6 +196,32 @@ def test_scene_two_quality_lock_is_couple_specific_and_does_not_leak_to_scene_on
     assert "no giant symmetrical oval spotlight" in scene_2_negative
     assert "no dominant bench" in scene_2_negative
 
+    prompt_digest = hashlib.sha256(
+        (scene_2_instruction + "\0" + scene_2_negative).encode("utf-8")
+    ).hexdigest()
+    assert prompt_digest == "c40d7957c93513d8c38613f145083935a1741dbbad36ef268246234ab0c5317a"
+
+
+def test_scene_three_quality_lock_keeps_open_vignette_secondary_to_eating_action():
+    style = load_style_bible(STYLE_PATH)
+    scene = load_proof_plan(PLAN_PATH).scenes[2]
+    instruction, negative = build_instruction(scene, style)
+
+    assert "woman actively eating alone as the primary focal subject" in instruction
+    assert "meal directly in front of her" in instruction
+    assert "restrained irregular beige-cream atmospheric patch" in instruction
+    assert "open, uneven, asymmetrical, softly feathered" in instruction
+    assert "semi-transparent, low-contrast, and hand-brushed" in instruction
+    assert "softly fade and dissolve naturally into the dark brown background" in instruction
+    assert "not form a closed geometric shape or an outlined enclosure" in instruction
+    assert "not read as an oval, ellipse, closed bubble, enclosure" in instruction
+    assert "visually quieter than the woman, meal, and eating action" in instruction
+    assert "last the CREAM ATMOSPHERIC PATCH" in instruction
+    assert "no oval, ellipse, closed bubble" in negative
+    assert "no visible hard outline" in negative
+    assert "no dominant, oversized, bright, or high-contrast cream patch" in negative
+    assert "no cream patch competing with the woman, meal, or eating action" in negative
+
 
 def test_reference_selection_for_all_scenes(tmp_path):
     plan = load_proof_plan(PLAN_PATH)
