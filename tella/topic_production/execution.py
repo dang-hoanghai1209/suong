@@ -29,6 +29,7 @@ from .models import (
 )
 from .planner import DeterministicTopicPlanner, build_scene_briefs
 from .reference_planning import load_reference_catalog, resolve_references
+from .strategy import ProductionStrategyConfig
 from .visual_adapter import adapt_scene_brief
 
 
@@ -85,7 +86,9 @@ def build_production_run_plan(
     scene_briefs: list[ProductionSceneBrief],
     reference_catalog: ReferenceCatalog,
     execution_mode: ExecutionMode = ExecutionMode.FIXTURE_PREVIEW,
+    production_strategy: ProductionStrategyConfig | None = None,
 ) -> ProductionRunPlan:
+    production_strategy = production_strategy or ProductionStrategyConfig.quality()
     metadata = story_plan.planner_metadata
     if execution_mode is ExecutionMode.LIVE_PRODUCTION and (
         metadata.planner_mode is not PlannerMode.PRODUCTION or not metadata.production_eligible
@@ -204,6 +207,7 @@ def build_production_run_plan(
         "story_plan": story_plan.model_dump(mode="json"),
         "executions": [item.model_dump(mode="json") for item in execution_plans],
         "manifest": manifest.model_dump(mode="json"),
+        "production_strategy": production_strategy.model_dump(mode="json"),
     }
     return ProductionRunPlan(
         plan_label=label,
@@ -214,6 +218,7 @@ def build_production_run_plan(
         scene_execution_plans=execution_plans,
         manifest=manifest,
         planning_hash=_canonical_hash(planning_payload),
+        production_strategy=production_strategy,
     )
 
 

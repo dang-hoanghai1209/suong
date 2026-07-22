@@ -37,6 +37,7 @@ from .persistence import persist_production_job, production_job_paths
 from .production_prompt import PROMPT_PROFILE, build_topic_production_request
 from .runtime import initialize_execution_state, record_generation_attempt
 from .runtime_models import ExecutionRunState, GenerationAttempt, TechnicalStatus
+from .strategy import ProductionStrategy
 
 
 def build_infrastructure_canary_state(
@@ -92,6 +93,10 @@ def select_draft_canary_scene(state: ExecutionRunState) -> CanarySelection:
 def build_draft_execution_preview(
     state: ExecutionRunState, *, scene_id: str
 ) -> DraftExecutionPreview:
+    if state.run_plan.production_strategy.strategy is not ProductionStrategy.QUALITY:
+        raise ValueError(
+            "Volume strategy live execution is not implemented; refusing to reuse Quality semantics"
+        )
     scene = next((item for item in state.scenes if item.scene_id == scene_id), None)
     if scene is None:
         raise ValueError(f"unknown scene ID: {scene_id}")

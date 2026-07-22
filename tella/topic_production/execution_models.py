@@ -17,6 +17,7 @@ from .models import (
     SceneTiming,
     StoryPlan,
 )
+from .strategy import ProductionStrategyConfig
 
 
 class ExecutionMode(StrEnum):
@@ -154,6 +155,9 @@ class ProductionRunPlan(BaseModel):
     scene_execution_plans: list[SceneExecutionPlan]
     manifest: ProductionManifest
     planning_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    production_strategy: ProductionStrategyConfig = Field(
+        default_factory=ProductionStrategyConfig.quality
+    )
     external_calls: int = Field(default=0, ge=0, le=0)
 
     @model_validator(mode="after")
