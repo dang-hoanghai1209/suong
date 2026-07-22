@@ -1,6 +1,7 @@
 """Pure orchestration for deterministic pre-generation production run plans."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 import hashlib
 import json
 from pathlib import Path
@@ -17,7 +18,9 @@ from .execution_models import (
     ReferenceCatalog,
     ReferenceDecisionStatus,
     SceneExecutionPlan,
+    VolumeLocalSceneInput,
 )
+from .local_coverage import LocalSceneCoverageResolver, plan_local_scene_execution
 from .manifest import build_initial_manifest
 from .models import (
     AcceptancePriority,
@@ -87,8 +90,19 @@ def build_production_run_plan(
     reference_catalog: ReferenceCatalog,
     execution_mode: ExecutionMode = ExecutionMode.FIXTURE_PREVIEW,
     production_strategy: ProductionStrategyConfig | None = None,
+    volume_local_inputs: Mapping[str, VolumeLocalSceneInput] | None = None,
+    local_coverage_resolver: LocalSceneCoverageResolver | None = None,
 ) -> ProductionRunPlan:
     production_strategy = production_strategy or ProductionStrategyConfig.quality()
+    local_inputs = dict(volume_local_inputs or {})
+    brief_ids = {brief.scene_id for brief in scene_briefs}
+    unknown_local_ids = set(local_inputs) - brief_ids
+    if unknown_local_ids:
+        raise ValueError(f"local inputs reference unknown scenes: {sorted(unknown_local_ids)}")
+    if local_inputs and production_strategy.strategy.value != "volume":
+        raise ValueError("local-first execution inputs require Volume strategy")
+    if local_inputs and local_coverage_resolver is None:
+        raise ValueError("local-first execution inputs require an injected coverage resolver")
     metadata = story_plan.planner_metadata
     if execution_mode is ExecutionMode.LIVE_PRODUCTION and (
         metadata.planner_mode is not PlannerMode.PRODUCTION or not metadata.production_eligible
@@ -132,39 +146,49 @@ def build_production_run_plan(
             "references": [item.model_dump(mode="json") for item in references],
             "accepted_scene_chaining": False,
         }
-        execution_plans.append(
-            SceneExecutionPlan(
-                scene_id=brief.scene_id,
-                order=brief.order,
-                scene_brief=brief,
-                visual_adapter=adapter,
-                timing=timing,
-                draft=DraftRequestPlan(
-                    provider=draft_tier.provider,
-                    model=draft_tier.model,
-                    steps=draft_tier.steps,
-                    timeout_seconds=draft_tier.timeout_seconds,
-                    width=DEFAULT_WIDTH,
-                    height=DEFAULT_HEIGHT,
-                    seed=seed,
-                    references=references,
-                    reference_decisions=decisions,
-                    logical_visual_request_hash=_canonical_hash(logical_payload),
-                ),
-                acceptance=AcceptanceRequestTemplate(
-                    provider=acceptance_tier.provider,
-                    model=acceptance_tier.model,
-                    steps=acceptance_tier.steps,
-                    timeout_seconds=acceptance_tier.timeout_seconds,
-                    width=DEFAULT_WIDTH,
-                    height=DEFAULT_HEIGHT,
-                    seed=seed,
-                    references=references,
-                    reference_decisions=decisions,
-                ),
-                acceptance_policy=_acceptance_policy(brief),
-            )
+        scene_execution = SceneExecutionPlan(
+            scene_id=brief.scene_id,
+            order=brief.order,
+            scene_brief=brief,
+            visual_adapter=adapter,
+            timing=timing,
+            draft=DraftRequestPlan(
+                provider=draft_tier.provider,
+                model=draft_tier.model,
+                steps=draft_tier.steps,
+                timeout_seconds=draft_tier.timeout_seconds,
+                width=DEFAULT_WIDTH,
+                height=DEFAULT_HEIGHT,
+                seed=seed,
+                references=references,
+                reference_decisions=decisions,
+                logical_visual_request_hash=_canonical_hash(logical_payload),
+            ),
+            acceptance=AcceptanceRequestTemplate(
+                provider=acceptance_tier.provider,
+                model=acceptance_tier.model,
+                steps=acceptance_tier.steps,
+                timeout_seconds=acceptance_tier.timeout_seconds,
+                width=DEFAULT_WIDTH,
+                height=DEFAULT_HEIGHT,
+                seed=seed,
+                references=references,
+                reference_decisions=decisions,
+            ),
+            acceptance_policy=_acceptance_policy(brief),
         )
+        if brief.scene_id in local_inputs:
+            scene_execution = scene_execution.model_copy(
+                update={
+                    "local_execution": plan_local_scene_execution(
+                        brief.scene_id,
+                        local_inputs[brief.scene_id],
+                        local_coverage_resolver,
+                    )
+                },
+                deep=True,
+            )
+        execution_plans.append(scene_execution)
     execution_summary = [
         {
             "scene_id": item.scene_id,

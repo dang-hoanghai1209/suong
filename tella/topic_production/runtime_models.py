@@ -6,6 +6,8 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from tella.visual_generation.providers.kinds import ProviderKind
+
 from .execution_models import ProductionRunPlan, SceneExecutionPlan
 from .models import GenerationTier, ProductionSceneStatus, ReadinessResult
 
@@ -90,6 +92,7 @@ class GenerationAttempt(BaseModel):
     scene_id: str = Field(pattern=r"^scene_[0-9]{2}$")
     tier: GenerationTier
     provider: str = Field(min_length=1)
+    provider_kind: ProviderKind | None = None
     model: str = Field(min_length=1)
     seed: int = Field(ge=0)
     candidate_id: str = Field(min_length=1)
@@ -104,6 +107,8 @@ class GenerationAttempt(BaseModel):
     technical_status: TechnicalStatus
     technical_failure_reason: str | None = None
     simulated: bool = False
+    consumes_ai_call: bool = True
+    consumes_ai_retry: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("reference_hashes")
@@ -115,6 +120,13 @@ class GenerationAttempt(BaseModel):
 
     @model_validator(mode="after")
     def validate_technical_result(self) -> "GenerationAttempt":
+        if self.provider_kind is ProviderKind.LOCAL_COMPOSITOR:
+            if self.provider != ProviderKind.LOCAL_COMPOSITOR.value:
+                raise ValueError("local provider identity mismatch")
+            if self.consumes_ai_call or self.consumes_ai_retry:
+                raise ValueError("local compositor cannot consume AI call or retry budget")
+            if self.provider_request_hash is not None:
+                raise ValueError("local compositor cannot have external provider request metadata")
         if self.technical_status is TechnicalStatus.SUCCEEDED:
             if not self.candidate_path or not self.artifact_sha256:
                 raise ValueError("successful generation requires artifact path and SHA-256")

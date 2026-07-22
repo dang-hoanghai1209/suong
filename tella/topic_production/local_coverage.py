@@ -1,6 +1,8 @@
 """Fail-closed coverage adapter for the existing semantic asset resolver."""
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Protocol
 
@@ -11,7 +13,17 @@ from tella.asset_library.semantic_resolver import (
     select_semantic_asset,
 )
 
-from .strategy import LocalCoverageAssessment, LocalCoverageStatus
+from .execution_models import (
+    LocalCompositionRequest,
+    LocalExecutionPlan,
+    VolumeLocalSceneInput,
+)
+from .strategy import (
+    LocalCoverageAssessment,
+    LocalCoverageStatus,
+    SceneRoutingRequest,
+    route_scene,
+)
 
 
 class LocalSceneCoverageResolver(Protocol):
@@ -47,6 +59,43 @@ class SemanticAssetCoverageResolver:
         return assess_semantic_resolution(resolution)
 
 
+def to_asset_library_request(request: LocalCompositionRequest) -> AssetLibraryRequest:
+    return AssetLibraryRequest(**request.model_dump())
+
+
+def plan_local_scene_execution(
+    scene_id: str,
+    scene_input: VolumeLocalSceneInput,
+    resolver: LocalSceneCoverageResolver,
+) -> LocalExecutionPlan:
+    """Assess and route one explicitly configured Volume scene without side effects."""
+
+    coverage = resolver.assess(to_asset_library_request(scene_input.request))
+    route = route_scene(
+        SceneRoutingRequest(
+            sensitivity=scene_input.sensitivity,
+            local_coverage=coverage,
+        )
+    )
+    payload = {
+        "scene_id": scene_id,
+        "sensitivity": scene_input.sensitivity.value,
+        "request": scene_input.request.model_dump(mode="json"),
+        "coverage": coverage.model_dump(mode="json"),
+        "route": route.model_dump(mode="json"),
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return LocalExecutionPlan(
+        sensitivity=scene_input.sensitivity,
+        request=scene_input.request,
+        coverage=coverage,
+        route=route,
+        logical_request_hash=hashlib.sha256(encoded).hexdigest(),
+    )
+
+
 def assess_semantic_resolution(resolution: SemanticResolution) -> LocalCoverageAssessment:
     """Require an exact, approved result; uncertain semantic fallback is not coverage."""
 
@@ -79,4 +128,6 @@ __all__ = [
     "LocalSceneCoverageResolver",
     "SemanticAssetCoverageResolver",
     "assess_semantic_resolution",
+    "plan_local_scene_execution",
+    "to_asset_library_request",
 ]

@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from tella.visual_generation.models import SceneBrief as VisualSceneBrief
+from tella.visual_generation.providers.kinds import ProviderKind
 
 from .models import (
     AcceptancePriority,
@@ -17,7 +18,12 @@ from .models import (
     SceneTiming,
     StoryPlan,
 )
-from .strategy import ProductionStrategyConfig
+from .strategy import (
+    LocalCoverageAssessment,
+    ProductionStrategyConfig,
+    ProviderRoute,
+    SceneDataSensitivity,
+)
 
 
 class ExecutionMode(StrEnum):
@@ -127,6 +133,51 @@ class AcceptancePolicyDecision(BaseModel):
     reasons: list[str] = Field(min_length=1)
 
 
+class LocalCompositionRequest(BaseModel):
+    """Portable inputs understood by the existing semantic resolver/compositor."""
+
+    model_config = ConfigDict(frozen=True)
+
+    character_id: str = Field(min_length=1)
+    action: str = Field(min_length=1)
+    emotion: str = Field(min_length=1)
+    direction: str = "front"
+    location: str = Field(min_length=1)
+    time_of_day: str = Field(min_length=1)
+    objects: list[str] = Field(default_factory=list)
+    optional_objects: list[str] = Field(default_factory=list)
+    composition_preset: str = Field(min_length=1)
+    seed: int = Field(ge=0)
+    base_seed: int = Field(default=0, ge=0)
+    scene_duration: float = Field(default=0.0, ge=0)
+    narration_segment: str = ""
+    background_mood: str = ""
+    layout_template: str = ""
+
+
+class VolumeLocalSceneInput(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    sensitivity: SceneDataSensitivity
+    request: LocalCompositionRequest
+
+
+class LocalExecutionPlan(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    provider: Literal[ProviderKind.LOCAL_COMPOSITOR] = ProviderKind.LOCAL_COMPOSITOR
+    sensitivity: SceneDataSensitivity
+    request: LocalCompositionRequest
+    coverage: LocalCoverageAssessment
+    route: ProviderRoute
+    logical_request_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_width: Literal[1080] = 1080
+    expected_height: Literal[1920] = 1920
+    consumes_ai_call: Literal[False] = False
+    consumes_ai_retry: Literal[False] = False
+    external_calls: Literal[0] = 0
+
+
 class SceneExecutionPlan(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -141,6 +192,7 @@ class SceneExecutionPlan(BaseModel):
     draft: DraftRequestPlan
     acceptance: AcceptanceRequestTemplate
     acceptance_policy: AcceptancePolicyDecision
+    local_execution: LocalExecutionPlan | None = None
 
 
 class ProductionRunPlan(BaseModel):

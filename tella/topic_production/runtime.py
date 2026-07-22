@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from tella.visual_generation.providers.kinds import ProviderKind
+
 from .models import GenerationTier, ProductionSceneStatus, ReadinessResult
 from .runtime_models import (
     AcceptedCandidateRecord,
@@ -116,6 +118,53 @@ def record_generation_attempt(
     expected_reference_hashes = [item.sha256 for item in request.references]
     if attempt.reference_hashes != expected_reference_hashes:
         raise ValueError("generation attempt reference hashes do not match scene plan")
+    return _apply_generation_attempt(state, index, scene, attempt)
+
+
+def record_local_generation_attempt(
+    state: ExecutionRunState, attempt: GenerationAttempt
+) -> ExecutionRunState:
+    """Record a local candidate without applying external-provider request semantics."""
+
+    index = _scene_index(state, attempt.scene_id)
+    scene = state.scenes[index]
+    local_plan = scene.execution_plan.local_execution
+    if local_plan is None:
+        raise ValueError("scene has no authorized local execution plan")
+    if scene.status is not ProductionSceneStatus.DRAFT_PENDING:
+        raise ValueError(f"local generation is not authorized from {scene.status.value}")
+    if scene.generation_attempts:
+        raise ValueError("local candidate is already recorded")
+    if (
+        attempt.tier is not GenerationTier.DRAFT
+        or attempt.provider_kind is not ProviderKind.LOCAL_COMPOSITOR
+        or attempt.provider != ProviderKind.LOCAL_COMPOSITOR.value
+        or attempt.model != "semantic_asset_compositor_v2"
+        or attempt.seed != local_plan.request.seed
+        or attempt.logical_request_hash != local_plan.logical_request_hash
+        or attempt.planning_request_hash != local_plan.logical_request_hash
+        or attempt.reference_hashes
+        or attempt.consumes_ai_call
+        or attempt.consumes_ai_retry
+    ):
+        raise ValueError("local attempt does not match its authorized execution plan")
+    if local_plan.route.selected_provider is not ProviderKind.LOCAL_COMPOSITOR:
+        raise ValueError("local compositor is not the authorized route")
+    if any(
+        prior.candidate_id == attempt.candidate_id
+        for candidate_scene in state.scenes
+        for prior in candidate_scene.generation_attempts
+    ):
+        raise ValueError("candidate ID is already recorded")
+    return _apply_generation_attempt(state, index, scene, attempt)
+
+
+def _apply_generation_attempt(
+    state: ExecutionRunState,
+    index: int,
+    scene: SceneRuntimeState,
+    attempt: GenerationAttempt,
+) -> ExecutionRunState:
     if attempt.technical_status is TechnicalStatus.SUCCEEDED:
         status = (
             ProductionSceneStatus.DRAFT_GENERATED
@@ -504,10 +553,12 @@ def summarize_call_budget(state: ExecutionRunState) -> CallBudgetSummary:
     budgets: list[SceneCallBudget] = []
     for scene in state.scenes:
         draft_completed = sum(
-            item.tier is GenerationTier.DRAFT for item in scene.generation_attempts
+            item.tier is GenerationTier.DRAFT and item.consumes_ai_call
+            for item in scene.generation_attempts
         )
         acceptance_completed = sum(
-            item.tier is GenerationTier.ACCEPTANCE for item in scene.generation_attempts
+            item.tier is GenerationTier.ACCEPTANCE and item.consumes_ai_call
+            for item in scene.generation_attempts
         )
         budgets.append(
             SceneCallBudget(

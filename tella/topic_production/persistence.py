@@ -38,6 +38,28 @@ def persist_production_job(
     preview: DraftExecutionPreview,
     provider_metadata: CandidateMetadata | None = None,
 ) -> None:
+    candidate_payload = (
+        provider_metadata.model_dump(mode="json") if provider_metadata is not None else None
+    )
+    persist_execution_snapshot(
+        state,
+        paths,
+        execution_purpose=preview.execution_purpose,
+        selected_scene_id=preview.scene_id,
+        candidate_metadata=candidate_payload,
+    )
+
+
+def persist_execution_snapshot(
+    state: ExecutionRunState,
+    paths: ProductionJobPaths,
+    *,
+    execution_purpose: str,
+    selected_scene_id: str,
+    candidate_metadata: dict[str, object] | None = None,
+) -> None:
+    """Persist provider-neutral execution state and optional candidate metadata atomically."""
+
     readiness = evaluate_execution_readiness(state)
     budget = summarize_call_budget(state)
     resume = plan_resume(state)
@@ -53,9 +75,9 @@ def persist_production_job(
             "production_eligible": (
                 state.run_plan.story_plan.planner_metadata.production_eligible
             ),
-            "execution_purpose": preview.execution_purpose,
+            "execution_purpose": execution_purpose,
             "planning_hash": state.run_plan.planning_hash,
-            "selected_scene_id": preview.scene_id,
+            "selected_scene_id": selected_scene_id,
             "runtime_scenes": [
                 {
                     "scene_id": scene.scene_id,
@@ -78,11 +100,8 @@ def persist_production_job(
             "external_calls": state.external_calls,
         },
     )
-    if provider_metadata is not None:
-        atomic_write_json(
-            paths.candidate_metadata_path,
-            provider_metadata.model_dump(mode="json"),
-        )
+    if candidate_metadata is not None:
+        atomic_write_json(paths.candidate_metadata_path, candidate_metadata)
 
 
 def load_runtime_state(path: Path | str) -> ExecutionRunState:
