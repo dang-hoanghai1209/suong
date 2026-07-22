@@ -19,6 +19,7 @@ from .execution_models import (
     ReferenceCatalog,
     ReferenceDecisionStatus,
     SceneExecutionPlan,
+    SceneRoutingPlan,
     VolumeLocalSceneInput,
 )
 from .local_coverage import LocalSceneCoverageResolver, plan_local_scene_execution
@@ -33,8 +34,14 @@ from .models import (
 )
 from .planner import DeterministicTopicPlanner, build_scene_briefs
 from .reference_planning import load_reference_catalog, resolve_references
-from .strategy import ProductionStrategyConfig
-from .strategy import SceneDataSensitivity
+from .strategy import (
+    ProductionStrategyConfig,
+    SceneDataSensitivity,
+    SceneRoutingRequest,
+    VisualExecutionMode,
+    route_illustrated_scene,
+    route_scene,
+)
 from .visual_adapter import adapt_scene_brief
 
 
@@ -103,7 +110,11 @@ def build_production_run_plan(
         raise ValueError(f"local inputs reference unknown scenes: {sorted(unknown_local_ids)}")
     if local_inputs and production_strategy.strategy.value != "volume":
         raise ValueError("local-first execution inputs require Volume strategy")
-    if local_inputs and local_coverage_resolver is None:
+    if (
+        local_inputs
+        and production_strategy.visual_mode is VisualExecutionMode.LOCAL_COMPOSITOR
+        and local_coverage_resolver is None
+    ):
         raise ValueError("local-first execution inputs require an injected coverage resolver")
     metadata = story_plan.planner_metadata
     if execution_mode is ExecutionMode.LIVE_PRODUCTION and (
@@ -121,15 +132,28 @@ def build_production_run_plan(
         adapter = adapt_scene_brief(brief)
         references, decisions = resolve_references(brief, reference_catalog)
         local_input = local_inputs.get(brief.scene_id)
-        local_execution = (
-            plan_local_scene_execution(
-                brief.scene_id,
-                local_input,
-                local_coverage_resolver,
+        local_execution = None
+        routing = None
+        if local_input is not None:
+            if production_strategy.visual_mode is VisualExecutionMode.LOCAL_COMPOSITOR:
+                assert local_coverage_resolver is not None
+                local_execution = plan_local_scene_execution(
+                    brief.scene_id,
+                    local_input,
+                    local_coverage_resolver,
+                )
+                route = route_scene(
+                    SceneRoutingRequest(
+                        sensitivity=local_input.sensitivity,
+                        local_coverage=local_execution.coverage,
+                    )
+                )
+            else:
+                route = route_illustrated_scene(local_input.sensitivity)
+            routing = SceneRoutingPlan(
+                sensitivity=local_input.sensitivity,
+                route=route,
             )
-            if local_input is not None and local_coverage_resolver is not None
-            else None
-        )
         blocking_reference_decisions = [
             decision
             for decision in decisions
@@ -140,8 +164,8 @@ def build_production_run_plan(
             }
         ]
         local_covered = bool(
-            local_execution is not None
-            and local_execution.route.selected_provider is ProviderKind.LOCAL_COMPOSITOR
+            routing is not None
+            and routing.route.selected_provider is ProviderKind.LOCAL_COMPOSITOR
         )
         public_safe_text_only = bool(
             local_input is not None
@@ -205,12 +229,9 @@ def build_production_run_plan(
                 reference_decisions=decisions,
             ),
             acceptance_policy=_acceptance_policy(brief),
+            routing=routing,
+            local_execution=local_execution,
         )
-        if local_execution is not None:
-            scene_execution = scene_execution.model_copy(
-                update={"local_execution": local_execution},
-                deep=True,
-            )
         execution_plans.append(scene_execution)
     execution_summary = [
         {

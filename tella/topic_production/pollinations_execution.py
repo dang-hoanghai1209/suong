@@ -76,12 +76,12 @@ def _pollinations_request(
     privacy: PollinationsPrivacyMetadata,
 ) -> PollinationsExecutionRequest:
     scene = next(item for item in state.scenes if item.scene_id == scene_id)
-    local_plan = scene.execution_plan.local_execution
-    if local_plan is None:
+    routing = scene.execution_plan.routing
+    if routing is None:
         raise ValueError("Pollinations overflow requires a sensitivity-aware scene plan")
     return PollinationsExecutionRequest(
         scene_id=scene_id,
-        sensitivity=local_plan.sensitivity.value,
+        sensitivity=routing.sensitivity.value,
         prompt_source=prompt_source,
         privacy=privacy,
         seed=scene.execution_plan.draft.seed,
@@ -110,11 +110,11 @@ async def execute_pollinations_overflow(
     scene = next((item for item in state.scenes if item.scene_id == scene_id), None)
     if scene is None:
         raise ValueError(f"unknown scene ID: {scene_id}")
-    local_plan = scene.execution_plan.local_execution
-    if local_plan is None:
+    routing = scene.execution_plan.routing
+    if routing is None:
         raise ValueError("Pollinations overflow requires a sensitivity-aware scene plan")
     decision = pollinations_failover_decision(
-        sensitivity=local_plan.sensitivity,
+        sensitivity=routing.sensitivity,
         failed_provider=ProviderKind.CLOUDFLARE_KLEIN_4B,
         failure=authorization.failure_category,
     )

@@ -117,10 +117,10 @@ def build_draft_execution_preview(
     plan = scene.execution_plan
     strategy = state.run_plan.production_strategy.strategy
     if strategy is ProductionStrategy.VOLUME:
-        local_plan = plan.local_execution
+        routing = plan.routing
         if (
-            local_plan is None
-            or local_plan.route.selected_provider is not ProviderKind.CLOUDFLARE_KLEIN_4B
+            routing is None
+            or routing.route.selected_provider is not ProviderKind.CLOUDFLARE_KLEIN_4B
         ):
             raise ValueError(
                 "Volume Cloudflare execution requires an explicit non-local Cloudflare route"

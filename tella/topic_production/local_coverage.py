@@ -88,10 +88,8 @@ def plan_local_scene_execution(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return LocalExecutionPlan(
-        sensitivity=scene_input.sensitivity,
         request=scene_input.request,
         coverage=coverage,
-        route=route,
         logical_request_hash=hashlib.sha256(encoded).hexdigest(),
     )
 

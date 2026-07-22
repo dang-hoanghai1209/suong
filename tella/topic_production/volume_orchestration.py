@@ -34,10 +34,10 @@ async def execute_volume_initial_scene(
     scene = next((item for item in state.scenes if item.scene_id == scene_id), None)
     if scene is None:
         raise ValueError(f"unknown scene ID: {scene_id}")
-    local_plan = scene.execution_plan.local_execution
-    if local_plan is None:
+    routing = scene.execution_plan.routing
+    if routing is None:
         raise ValueError("Volume scene requires a sensitivity-aware route")
-    selected = local_plan.route.selected_provider
+    selected = routing.route.selected_provider
     if selected is ProviderKind.LOCAL_COMPOSITOR:
         kwargs: dict[str, Any] = {}
         if composer is not None:
@@ -60,7 +60,7 @@ async def execute_volume_initial_scene(
             live_authorized=live_authorized,
             provider=cloudflare_provider,
         )
-    raise PermissionError(local_plan.route.reason)
+    raise PermissionError(routing.route.reason)
 
 
 __all__ = ["execute_volume_initial_scene"]

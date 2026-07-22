@@ -194,7 +194,7 @@ def test_manual_three_scene_volume_plan_validates_and_persists(tmp_path):
     assert len(run.scene_execution_plans) == len(state.scenes) == 3
     assert run.story_plan.planner_metadata.production_eligible is True
     assert [
-        item.local_execution.route.selected_provider for item in run.scene_execution_plans
+        item.routing.route.selected_provider for item in run.scene_execution_plans
     ] == [
         ProviderKind.LOCAL_COMPOSITOR,
         ProviderKind.LOCAL_COMPOSITOR,
@@ -223,10 +223,10 @@ def test_public_safe_external_scene_builds_text_only_cloudflare_preview():
 def test_non_public_scene_cannot_cross_text_only_request_boundary():
     run = _run()
     scene = run.scene_execution_plans[2]
-    local = scene.local_execution.model_copy(
+    routing = scene.routing.model_copy(
         update={"sensitivity": SceneDataSensitivity.PRIVATE}, deep=True
     )
-    private_scene = scene.model_copy(update={"local_execution": local}, deep=True)
+    private_scene = scene.model_copy(update={"routing": routing}, deep=True)
 
     with pytest.raises(ValueError, match="references are missing"):
         build_topic_production_request(private_scene)

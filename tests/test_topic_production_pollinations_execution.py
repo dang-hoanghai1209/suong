@@ -337,7 +337,7 @@ def test_request_hash_is_sanitized_semantic_identity_only():
     prompt_digest = hashlib.sha256(_prompt().model_dump_json().encode()).hexdigest()
     serialized = state.run_plan.model_dump_json()
     assert prompt_digest not in serialized
-    assert ProviderKind.POLLINATIONS in state.scenes[0].execution_plan.local_execution.route.eligible_providers
+    assert ProviderKind.POLLINATIONS in state.scenes[0].execution_plan.routing.route.eligible_providers
 
 
 def test_readiness_is_recorded_once_unless_explicitly_refreshed():

@@ -166,16 +166,23 @@ class LocalExecutionPlan(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     provider: Literal[ProviderKind.LOCAL_COMPOSITOR] = ProviderKind.LOCAL_COMPOSITOR
-    sensitivity: SceneDataSensitivity
     request: LocalCompositionRequest
     coverage: LocalCoverageAssessment
-    route: ProviderRoute
     logical_request_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     expected_width: Literal[1080] = 1080
     expected_height: Literal[1920] = 1920
     consumes_ai_call: Literal[False] = False
     consumes_ai_retry: Literal[False] = False
     external_calls: Literal[0] = 0
+
+
+class SceneRoutingPlan(BaseModel):
+    """Provider-neutral privacy and provider intent for one scene."""
+
+    model_config = ConfigDict(frozen=True)
+
+    sensitivity: SceneDataSensitivity
+    route: ProviderRoute
 
 
 class SceneExecutionPlan(BaseModel):
@@ -192,7 +199,26 @@ class SceneExecutionPlan(BaseModel):
     draft: DraftRequestPlan
     acceptance: AcceptanceRequestTemplate
     acceptance_policy: AcceptancePolicyDecision
+    routing: SceneRoutingPlan | None = None
     local_execution: LocalExecutionPlan | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_local_route(cls, value: Any) -> Any:
+        """Load v2 plans that stored generic routing inside local_execution."""
+
+        if not isinstance(value, dict) or value.get("routing") is not None:
+            return value
+        legacy_local = value.get("local_execution")
+        if not isinstance(legacy_local, dict):
+            return value
+        sensitivity = legacy_local.get("sensitivity")
+        route = legacy_local.get("route")
+        if sensitivity is None or route is None:
+            return value
+        migrated = dict(value)
+        migrated["routing"] = {"sensitivity": sensitivity, "route": route}
+        return migrated
 
 
 class ProductionRunPlan(BaseModel):

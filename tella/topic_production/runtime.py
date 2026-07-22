@@ -158,6 +158,9 @@ def record_local_generation_attempt(
     local_plan = scene.execution_plan.local_execution
     if local_plan is None:
         raise ValueError("scene has no authorized local execution plan")
+    routing = scene.execution_plan.routing
+    if routing is None:
+        raise ValueError("scene has no authorized provider route")
     if scene.status is not ProductionSceneStatus.DRAFT_PENDING:
         raise ValueError(f"local generation is not authorized from {scene.status.value}")
     if scene.generation_attempts:
@@ -175,7 +178,7 @@ def record_local_generation_attempt(
         or attempt.consumes_ai_retry
     ):
         raise ValueError("local attempt does not match its authorized execution plan")
-    if local_plan.route.selected_provider is not ProviderKind.LOCAL_COMPOSITOR:
+    if routing.route.selected_provider is not ProviderKind.LOCAL_COMPOSITOR:
         raise ValueError("local compositor is not the authorized route")
     if any(
         prior.candidate_id == attempt.candidate_id
@@ -196,12 +199,12 @@ def record_pollinations_generation_attempt(
 
     index = _scene_index(state, attempt.scene_id)
     scene = state.scenes[index]
-    local_plan = scene.execution_plan.local_execution
+    routing = scene.execution_plan.routing
     if scene.status is not ProductionSceneStatus.BLOCKED:
         raise ValueError("Pollinations overflow requires a blocked Cloudflare attempt")
-    if local_plan is None or local_plan.sensitivity.value != "public_safe":
+    if routing is None or routing.sensitivity.value != "public_safe":
         raise ValueError("Pollinations overflow requires an explicit PUBLIC_SAFE scene plan")
-    if ProviderKind.POLLINATIONS not in local_plan.route.eligible_providers:
+    if ProviderKind.POLLINATIONS not in routing.route.eligible_providers:
         raise ValueError("Pollinations is not eligible for this scene route")
     prior = next(
         (item for item in scene.generation_attempts if item.candidate_id == prior_candidate_id),
@@ -278,8 +281,8 @@ def record_volume_retry_attempt(
         raise ValueError("Volume retry policy is missing")
     index = _scene_index(state, attempt.scene_id)
     scene = state.scenes[index]
-    local_plan = scene.execution_plan.local_execution
-    if local_plan is None:
+    routing = scene.execution_plan.routing
+    if routing is None:
         raise ValueError("Volume retry requires a sensitivity-aware scene plan")
     if scene.status not in {
         ProductionSceneStatus.DRAFT_QC_FAIL,
@@ -312,7 +315,7 @@ def record_volume_retry_attempt(
         raise PermissionError("Volume per-scene hard-fail retry ceiling is exhausted")
     if used_run_retries >= policy.max_ai_retries_per_run:
         raise PermissionError("Volume run-level AI retry ceiling is exhausted")
-    if local_plan.sensitivity is SceneDataSensitivity.LOCAL_ONLY:
+    if routing.sensitivity is SceneDataSensitivity.LOCAL_ONLY:
         raise PermissionError("LOCAL_ONLY hard failures cannot externalize")
     if prior.provider == ProviderKind.POLLINATIONS.value:
         raise PermissionError("Pollinations hard failures cannot trigger another provider retry")
@@ -745,10 +748,10 @@ def summarize_call_budget(state: ExecutionRunState) -> CallBudgetSummary:
         )
         retry_calls = sum(item.consumes_ai_retry for item in scene.generation_attempts)
         strategy = state.run_plan.production_strategy
-        local_plan = scene.execution_plan.local_execution
+        routing = scene.execution_plan.routing
         initial_is_local = bool(
-            local_plan is not None
-            and local_plan.route.selected_provider is ProviderKind.LOCAL_COMPOSITOR
+            routing is not None
+            and routing.route.selected_provider is ProviderKind.LOCAL_COMPOSITOR
         )
         volume_retry_capacity = (
             strategy.volume_policy.hard_fail_retry_per_scene
@@ -814,7 +817,7 @@ def plan_resume(state: ExecutionRunState) -> ResumePlan:
                 reason = "acceptable Volume QC is recorded; complete authoritative acceptance"
             elif scene.status is ProductionSceneStatus.DRAFT_QC_FAIL:
                 policy = state.run_plan.production_strategy.volume_policy
-                local_plan = scene.execution_plan.local_execution
+                routing = scene.execution_plan.routing
                 latest_qc = scene.qc_records[-1] if scene.qc_records else None
                 scene_retries = sum(item.consumes_ai_retry for item in scene.generation_attempts)
                 run_retries = sum(
@@ -825,8 +828,8 @@ def plan_resume(state: ExecutionRunState) -> ResumePlan:
                 prior = scene.generation_attempts[-1] if scene.generation_attempts else None
                 retry_allowed = bool(
                     policy is not None
-                    and local_plan is not None
-                    and local_plan.sensitivity is not SceneDataSensitivity.LOCAL_ONLY
+                    and routing is not None
+                    and routing.sensitivity is not SceneDataSensitivity.LOCAL_ONLY
                     and latest_qc is not None
                     and latest_qc.hard_fail_reasons
                     and prior is not None

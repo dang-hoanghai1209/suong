@@ -90,7 +90,7 @@ def _volume_scene(state: ExecutionRunState, scene_id: str):
     scene = next((item for item in state.scenes if item.scene_id == scene_id), None)
     if scene is None:
         raise ValueError(f"unknown scene ID: {scene_id}")
-    if scene.execution_plan.local_execution is None:
+    if scene.execution_plan.routing is None:
         raise ValueError("Volume execution requires a sensitivity-aware scene plan")
     return scene
 
@@ -135,7 +135,9 @@ def volume_retry_decision(
             scene_retries_used=scene_retries,
             run_retries_used=run_retries,
         )
-    sensitivity = scene.execution_plan.local_execution.sensitivity
+    routing = scene.execution_plan.routing
+    assert routing is not None
+    sensitivity = routing.sensitivity
     if sensitivity is SceneDataSensitivity.LOCAL_ONLY:
         return VolumeRetryDecision(
             allowed=False,

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -81,6 +81,20 @@ class ProductionStrategyConfig(BaseModel):
     strategy: ProductionStrategy = ProductionStrategy.QUALITY
     visual_mode: VisualExecutionMode = VisualExecutionMode.ILLUSTRATED_SCENE
     volume_policy: VolumeProductionPolicy | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def preserve_legacy_visual_mode(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "visual_mode" in value:
+            return value
+        migrated = dict(value)
+        strategy = migrated.get("strategy", ProductionStrategy.QUALITY)
+        migrated["visual_mode"] = (
+            VisualExecutionMode.LOCAL_COMPOSITOR
+            if strategy in {ProductionStrategy.VOLUME, ProductionStrategy.VOLUME.value}
+            else VisualExecutionMode.ILLUSTRATED_SCENE
+        )
+        return migrated
 
     @model_validator(mode="after")
     def validate_policy_matches_strategy(self) -> "ProductionStrategyConfig":
@@ -261,6 +275,53 @@ def route_scene(
     )
 
 
+def route_illustrated_scene(
+    sensitivity: SceneDataSensitivity,
+    availability: ProviderAvailability | None = None,
+) -> ProviderRoute:
+    """Route an illustrated scene without consulting local asset coverage."""
+
+    if sensitivity is SceneDataSensitivity.LOCAL_ONLY:
+        return ProviderRoute(
+            capability=None,
+            eligible_providers=(),
+            available_route=(),
+            selected_provider=None,
+            blocked=True,
+            reason=(
+                "LOCAL_ONLY scene has no approved local illustrated provider; "
+                "external providers are prohibited"
+            ),
+        )
+    capability = (
+        SceneGenerationCapability.PRIVATE_AI
+        if sensitivity is SceneDataSensitivity.PRIVATE
+        else SceneGenerationCapability.PUBLIC_SAFE_AI
+    )
+    eligible = _eligible_providers(sensitivity, capability)
+    availability = availability or ProviderAvailability()
+    available = tuple(provider for provider in eligible if availability.is_available(provider))
+    if not available:
+        return ProviderRoute(
+            capability=capability,
+            eligible_providers=eligible,
+            available_route=(),
+            selected_provider=None,
+            blocked=True,
+            reason="no eligible illustrated provider is currently available; route fails closed",
+        )
+    selected = available[0]
+    return ProviderRoute(
+        capability=capability,
+        eligible_providers=eligible,
+        available_route=available,
+        selected_provider=selected,
+        blocked=False,
+        reason=f"selected first available illustrated provider for {sensitivity.value} data",
+        consumes_ai_call=describe_provider(selected).consumes_ai_call,
+    )
+
+
 def pollinations_failover_decision(
     *,
     sensitivity: SceneDataSensitivity,
@@ -349,5 +410,6 @@ __all__ = [
     "classify_scene_capability",
     "pollinations_failover_decision",
     "route_scene",
+    "route_illustrated_scene",
     "volume_qc_disposition",
 ]

@@ -172,6 +172,9 @@ def execute_local_scene(
     local_plan = scene.execution_plan.local_execution
     if local_plan is None:
         raise ValueError("scene has no local execution plan")
+    routing = scene.execution_plan.routing
+    if routing is None:
+        raise ValueError("scene has no sensitivity-aware route")
     paths = local_production_job_paths(
         out_root, job_id=state.run_plan.job_id, scene_id=scene_id
     )
@@ -211,12 +214,12 @@ def execute_local_scene(
         )
     if scene.status is not ProductionSceneStatus.DRAFT_PENDING:
         raise ValueError(f"local executor requires DRAFT_PENDING, got {scene.status.value}")
-    if local_plan.route.selected_provider is not ProviderKind.LOCAL_COMPOSITOR:
+    if routing.route.selected_provider is not ProviderKind.LOCAL_COMPOSITOR:
         return _not_covered_outcome(
             state,
             paths,
             scene_id=scene_id,
-            sensitivity=local_plan.sensitivity,
+            sensitivity=routing.sensitivity,
             reason=local_plan.coverage.reason,
         )
     resolver = coverage_resolver or SemanticAssetCoverageResolver(
@@ -232,7 +235,7 @@ def execute_local_scene(
             state,
             paths,
             scene_id=scene_id,
-            sensitivity=local_plan.sensitivity,
+            sensitivity=routing.sensitivity,
             reason=f"local coverage changed or is unsafe: {current_coverage.reason}",
         )
     if expected_path.exists():
@@ -281,7 +284,7 @@ def execute_local_scene(
             state,
             paths,
             scene_id=scene_id,
-            sensitivity=local_plan.sensitivity,
+            sensitivity=routing.sensitivity,
             reason=f"local compositor dependencies are not covered: {exc}",
         )
     except BaseException:

@@ -20,11 +20,11 @@ def _items(values: list[str]) -> str:
 def allows_public_safe_text_only(scene: SceneExecutionPlan) -> bool:
     """Allow reference-free transport only for explicitly generic PUBLIC_SAFE scenes."""
 
-    local_plan = scene.local_execution
+    routing = scene.routing
     brief = scene.scene_brief
     return bool(
-        local_plan is not None
-        and local_plan.sensitivity is SceneDataSensitivity.PUBLIC_SAFE
+        routing is not None
+        and routing.sensitivity is SceneDataSensitivity.PUBLIC_SAFE
         and not scene.draft.references
         and not brief.identity_requirements
         and not brief.continuity_requirements
