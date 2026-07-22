@@ -43,6 +43,17 @@ class VolumeQCAction(StrEnum):
     BLOCK = "block"
 
 
+class ProviderFailureCategory(StrEnum):
+    RATE_LIMITED = "rate_limited"
+    QUOTA_OR_CREDIT_EXHAUSTED = "quota_or_credit_exhausted"
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
+    TIMEOUT = "timeout"
+    INVALID_REQUEST = "invalid_request"
+    PROVIDER_ERROR = "provider_error"
+    SOFT_QC_FAIL = "soft_qc_fail"
+    QUALITY_INSUFFICIENT = "quality_insufficient"
+
+
 class VolumeProductionPolicy(BaseModel):
     """Deterministic one-shot defaults for the free-first volume strategy."""
 
@@ -153,6 +164,14 @@ class VolumeQCDisposition(BaseModel):
     reason: str = Field(min_length=1)
 
 
+class ProviderFailoverDecision(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    eligible: bool
+    next_provider: ProviderKind | None = None
+    reason: str = Field(min_length=1)
+
+
 def classify_scene_capability(
     sensitivity: SceneDataSensitivity,
     local_coverage: LocalCoverageStatus,
@@ -228,6 +247,40 @@ def route_scene(
     )
 
 
+def pollinations_failover_decision(
+    *,
+    sensitivity: SceneDataSensitivity,
+    failed_provider: ProviderKind,
+    failure: ProviderFailureCategory,
+) -> ProviderFailoverDecision:
+    """Authorize only PUBLIC_SAFE Cloudflare infrastructure failover to Pollinations."""
+
+    if sensitivity is not SceneDataSensitivity.PUBLIC_SAFE:
+        return ProviderFailoverDecision(
+            eligible=False,
+            reason="Pollinations failover is prohibited unless sensitivity is PUBLIC_SAFE",
+        )
+    if failed_provider is not ProviderKind.CLOUDFLARE_KLEIN_4B:
+        return ProviderFailoverDecision(
+            eligible=False,
+            reason="Pollinations overflow requires a failed Cloudflare Klein 4B attempt",
+        )
+    eligible_failures = {
+        ProviderFailureCategory.RATE_LIMITED,
+        ProviderFailureCategory.QUOTA_OR_CREDIT_EXHAUSTED,
+        ProviderFailureCategory.PROVIDER_UNAVAILABLE,
+        ProviderFailureCategory.TIMEOUT,
+    }
+    if failure not in eligible_failures:
+        return ProviderFailoverDecision(
+            eligible=False,
+            reason=f"failure category {failure.value} is not infrastructure failover eligible",
+        )
+    return ProviderFailoverDecision(
+        eligible=True,
+        next_provider=ProviderKind.POLLINATIONS,
+        reason=f"PUBLIC_SAFE Cloudflare failure {failure.value} authorizes Pollinations overflow",
+    )
 def volume_qc_disposition(
     severity: VolumeQCSeverity,
     *,
@@ -267,6 +320,8 @@ __all__ = [
     "LocalCoverageStatus",
     "ProductionStrategy",
     "ProductionStrategyConfig",
+    "ProviderFailureCategory",
+    "ProviderFailoverDecision",
     "ProviderAvailability",
     "ProviderRoute",
     "SceneDataSensitivity",
@@ -277,6 +332,7 @@ __all__ = [
     "VolumeQCDisposition",
     "VolumeQCSeverity",
     "classify_scene_capability",
+    "pollinations_failover_decision",
     "route_scene",
     "volume_qc_disposition",
 ]

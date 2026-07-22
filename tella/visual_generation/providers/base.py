@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from ..models import CandidateMetadata, GenerationRequest, ProviderCapabilities
+
+if TYPE_CHECKING:
+    from .pollinations import PollinationsExecutionRequest
 
 
 class SceneImageProvider(Protocol):
@@ -14,6 +17,16 @@ class SceneImageProvider(Protocol):
 
     async def generate_scene(
         self, request: GenerationRequest, output_path: Path
+    ) -> CandidateMetadata: ...
+
+
+class PublicTextToImageProvider(Protocol):
+    def capabilities(self) -> ProviderCapabilities: ...
+
+    def credentials_present(self) -> bool: ...
+
+    async def generate_public_scene(
+        self, request: "PollinationsExecutionRequest", output_path: Path
     ) -> CandidateMetadata: ...
 
     async def edit_scene(

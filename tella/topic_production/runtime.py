@@ -159,6 +159,83 @@ def record_local_generation_attempt(
     return _apply_generation_attempt(state, index, scene, attempt)
 
 
+def record_pollinations_generation_attempt(
+    state: ExecutionRunState,
+    attempt: GenerationAttempt,
+    *,
+    prior_candidate_id: str,
+) -> ExecutionRunState:
+    """Record one explicitly authorized PUBLIC_SAFE Cloudflare overflow attempt."""
+
+    index = _scene_index(state, attempt.scene_id)
+    scene = state.scenes[index]
+    local_plan = scene.execution_plan.local_execution
+    if scene.status is not ProductionSceneStatus.BLOCKED:
+        raise ValueError("Pollinations overflow requires a blocked Cloudflare attempt")
+    if local_plan is None or local_plan.sensitivity.value != "public_safe":
+        raise ValueError("Pollinations overflow requires an explicit PUBLIC_SAFE scene plan")
+    if ProviderKind.POLLINATIONS not in local_plan.route.eligible_providers:
+        raise ValueError("Pollinations is not eligible for this scene route")
+    prior = next(
+        (item for item in scene.generation_attempts if item.candidate_id == prior_candidate_id),
+        None,
+    )
+    if (
+        prior is None
+        or prior.tier is not GenerationTier.DRAFT
+        or prior.technical_status is TechnicalStatus.SUCCEEDED
+        or prior.provider != scene.execution_plan.draft.provider
+    ):
+        raise ValueError("matching failed Cloudflare draft attempt is required")
+    if (
+        attempt.tier is not GenerationTier.DRAFT
+        or attempt.provider_kind is not ProviderKind.POLLINATIONS
+        or attempt.provider != ProviderKind.POLLINATIONS.value
+        or not attempt.consumes_ai_call
+        or not attempt.consumes_ai_retry
+        or attempt.reference_hashes
+        or attempt.provider_request_hash != attempt.logical_request_hash
+    ):
+        raise ValueError("Pollinations attempt violates overflow accounting or privacy contract")
+    if any(
+        existing.candidate_id == attempt.candidate_id
+        for candidate_scene in state.scenes
+        for existing in candidate_scene.generation_attempts
+    ):
+        raise ValueError("candidate ID is already recorded")
+    if attempt.technical_status is TechnicalStatus.SUCCEEDED:
+        status = ProductionSceneStatus.DRAFT_GENERATED
+        event_type = EventType.DRAFT_GENERATED
+        reasons: list[FailureReason] = []
+    else:
+        status = ProductionSceneStatus.BLOCKED
+        event_type = EventType.DRAFT_GENERATION_FAILED
+        reasons = list(
+            dict.fromkeys([*scene.block_reasons, _failure_reason(attempt.technical_status)])
+        )
+    updated = scene.model_copy(
+        update={
+            "status": status,
+            "generation_attempts": [*scene.generation_attempts, attempt],
+            "block_reasons": reasons,
+        },
+        deep=True,
+    )
+    return _replace_scene(
+        state,
+        index,
+        updated,
+        event_type,
+        {
+            "candidate_id": attempt.candidate_id,
+            "tier": attempt.tier.value,
+            "provider": ProviderKind.POLLINATIONS.value,
+            "consumes_ai_retry": True,
+            "technical_status": attempt.technical_status.value,
+        },
+    )
+
+
 def _apply_generation_attempt(
     state: ExecutionRunState,
     index: int,
@@ -560,12 +637,20 @@ def summarize_call_budget(state: ExecutionRunState) -> CallBudgetSummary:
             item.tier is GenerationTier.ACCEPTANCE and item.consumes_ai_call
             for item in scene.generation_attempts
         )
+        retry_calls = sum(item.consumes_ai_retry for item in scene.generation_attempts)
+        pollinations_eligible = (
+            scene.execution_plan.local_execution is not None
+            and ProviderKind.POLLINATIONS
+            in scene.execution_plan.local_execution.route.eligible_providers
+        )
         budgets.append(
             SceneCallBudget(
                 scene_id=scene.scene_id,
+                draft_max_calls=2 if pollinations_eligible else 1,
                 acceptance_max_calls=1 if scene.promotions else 0,
                 draft_completed_calls=draft_completed,
                 acceptance_completed_calls=acceptance_completed,
+                retry_calls=retry_calls,
             )
         )
     authorized = sum(item.acceptance_max_calls for item in budgets)
@@ -585,6 +670,7 @@ def summarize_call_budget(state: ExecutionRunState) -> CallBudgetSummary:
         currently_authorized_acceptance_calls=authorized,
         completed_calls=completed,
         remaining_authorized_calls=remaining,
+        retry_calls=sum(item.retry_calls for item in budgets),
     )
 
 

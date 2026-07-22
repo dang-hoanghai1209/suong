@@ -127,6 +127,15 @@ class GenerationAttempt(BaseModel):
                 raise ValueError("local compositor cannot consume AI call or retry budget")
             if self.provider_request_hash is not None:
                 raise ValueError("local compositor cannot have external provider request metadata")
+        if self.provider_kind is ProviderKind.POLLINATIONS:
+            if self.provider != ProviderKind.POLLINATIONS.value:
+                raise ValueError("Pollinations provider identity mismatch")
+            if not self.consumes_ai_call:
+                raise ValueError("Pollinations attempts must consume an AI call")
+            if self.reference_hashes:
+                raise ValueError("Pollinations attempts cannot contain reference hashes")
+            if self.provider_request_hash is None:
+                raise ValueError("Pollinations attempt requires a sanitized request hash")
         if self.technical_status is TechnicalStatus.SUCCEEDED:
             if not self.candidate_path or not self.artifact_sha256:
                 raise ValueError("successful generation requires artifact path and SHA-256")
@@ -267,11 +276,11 @@ class SceneCallBudget(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     scene_id: str
-    draft_max_calls: Literal[1] = 1
+    draft_max_calls: int = Field(default=1, ge=0, le=2)
     acceptance_max_calls: int = Field(ge=0, le=1)
-    draft_completed_calls: int = Field(ge=0, le=1)
+    draft_completed_calls: int = Field(ge=0, le=2)
     acceptance_completed_calls: int = Field(ge=0, le=1)
-    retry_calls: Literal[0] = 0
+    retry_calls: int = Field(default=0, ge=0, le=1)
     fallback_calls: Literal[0] = 0
 
 
@@ -283,7 +292,7 @@ class CallBudgetSummary(BaseModel):
     currently_authorized_acceptance_calls: int = Field(ge=0)
     completed_calls: int = Field(ge=0)
     remaining_authorized_calls: int = Field(ge=0)
-    retry_calls: Literal[0] = 0
+    retry_calls: int = Field(default=0, ge=0)
     fallback_calls: Literal[0] = 0
 
 
