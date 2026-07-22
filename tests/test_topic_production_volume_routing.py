@@ -118,6 +118,11 @@ def test_volume_policy_defaults_are_one_shot_and_free_first():
     assert policy.auto_premium_promotion is False
     assert policy.generated_scene_chaining is False
 
+    with pytest.raises(ValueError):
+        VolumeProductionPolicy(hard_fail_retry_per_scene=2)
+    with pytest.raises(ValueError):
+        VolumeProductionPolicy(max_ai_retries_per_run=3)
+
 
 def test_volume_strategy_requires_its_explicit_policy():
     with pytest.raises(ValueError, match="requires an explicit Volume policy"):
@@ -152,7 +157,7 @@ def test_volume_policy_is_threaded_through_state_but_live_execution_fails_closed
 
     assert state.run_plan.production_strategy.strategy is ProductionStrategy.VOLUME
     assert state.run_plan.production_strategy.volume_policy == VolumeProductionPolicy()
-    with pytest.raises(ValueError, match="Volume strategy live execution is not implemented"):
+    with pytest.raises(ValueError, match="explicit non-local Cloudflare route"):
         build_draft_execution_preview(state, scene_id="scene_01")
 
 

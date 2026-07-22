@@ -8,7 +8,6 @@ from tella.visual_generation.providers.kinds import ProviderKind
 from .models import GenerationTier, ProductionSceneStatus, ReadinessResult
 from .pollinations_readiness import (
     PollinationsReadinessSnapshot,
-    pollinations_readiness_decision,
 )
 from .runtime_models import (
     AcceptedCandidateRecord,
@@ -32,6 +31,7 @@ from .runtime_models import (
     SceneRuntimeState,
     TechnicalStatus,
 )
+from .strategy import ProductionStrategy, SceneDataSensitivity
 
 
 def initialize_execution_state(run_plan) -> ExecutionRunState:
@@ -263,6 +263,83 @@ def record_pollinations_generation_attempt(
     )
 
 
+def record_volume_retry_attempt(
+    state: ExecutionRunState,
+    attempt: GenerationAttempt,
+    *,
+    prior_candidate_id: str,
+) -> ExecutionRunState:
+    """Record one policy-authorized Cloudflare retry after a Volume QC hard fail."""
+
+    if state.run_plan.production_strategy.strategy is not ProductionStrategy.VOLUME:
+        raise ValueError("Volume retry recording requires Volume strategy")
+    policy = state.run_plan.production_strategy.volume_policy
+    if policy is None:
+        raise ValueError("Volume retry policy is missing")
+    index = _scene_index(state, attempt.scene_id)
+    scene = state.scenes[index]
+    local_plan = scene.execution_plan.local_execution
+    if local_plan is None:
+        raise ValueError("Volume retry requires a sensitivity-aware scene plan")
+    if scene.status not in {
+        ProductionSceneStatus.DRAFT_QC_FAIL,
+        ProductionSceneStatus.BLOCKED,
+    }:
+        raise ValueError("Volume retry requires a recorded draft QC hard failure")
+    prior = next(
+        (item for item in scene.generation_attempts if item.candidate_id == prior_candidate_id),
+        None,
+    )
+    if prior is None or prior.technical_status is not TechnicalStatus.SUCCEEDED:
+        raise ValueError("Volume retry requires a successful prior candidate")
+    prior_qc = next(
+        (
+            item
+            for item in reversed(scene.qc_records)
+            if item.candidate_id == prior_candidate_id and item.tier is GenerationTier.DRAFT
+        ),
+        None,
+    )
+    if prior_qc is None or not prior_qc.hard_fail_reasons:
+        raise ValueError("Volume retry requires explicit QC hard-failure reasons")
+    used_scene_retries = sum(item.consumes_ai_retry for item in scene.generation_attempts)
+    used_run_retries = sum(
+        item.consumes_ai_retry
+        for runtime_scene in state.scenes
+        for item in runtime_scene.generation_attempts
+    )
+    if used_scene_retries >= policy.hard_fail_retry_per_scene:
+        raise PermissionError("Volume per-scene hard-fail retry ceiling is exhausted")
+    if used_run_retries >= policy.max_ai_retries_per_run:
+        raise PermissionError("Volume run-level AI retry ceiling is exhausted")
+    if local_plan.sensitivity is SceneDataSensitivity.LOCAL_ONLY:
+        raise PermissionError("LOCAL_ONLY hard failures cannot externalize")
+    if prior.provider == ProviderKind.POLLINATIONS.value:
+        raise PermissionError("Pollinations hard failures cannot trigger another provider retry")
+    draft = scene.execution_plan.draft
+    expected_references = [item.sha256 for item in draft.references]
+    if (
+        attempt.tier is not GenerationTier.DRAFT
+        or attempt.provider_kind is not ProviderKind.CLOUDFLARE_KLEIN_4B
+        or attempt.provider != draft.provider
+        or attempt.model != draft.model
+        or attempt.seed != draft.seed
+        or (attempt.planning_request_hash or attempt.logical_request_hash)
+        != draft.logical_visual_request_hash
+        or attempt.reference_hashes != expected_references
+        or not attempt.consumes_ai_call
+        or not attempt.consumes_ai_retry
+    ):
+        raise ValueError("Volume retry attempt does not match the authorized Cloudflare draft")
+    if any(
+        existing.candidate_id == attempt.candidate_id
+        for runtime_scene in state.scenes
+        for existing in runtime_scene.generation_attempts
+    ):
+        raise ValueError("candidate ID is already recorded")
+    return _apply_generation_attempt(state, index, scene, attempt)
+
+
 def _apply_generation_attempt(
     state: ExecutionRunState,
     index: int,
@@ -427,6 +504,8 @@ def promote_scene_to_acceptance(
     authorized_by: str,
     metadata: dict[str, Any] | None = None,
 ) -> ExecutionRunState:
+    if state.run_plan.production_strategy.strategy is ProductionStrategy.VOLUME:
+        raise PermissionError("Volume strategy prohibits premium acceptance-tier promotion")
     index = _scene_index(state, scene_id)
     scene = state.scenes[index]
     if scene.status not in {
@@ -665,24 +744,25 @@ def summarize_call_budget(state: ExecutionRunState) -> CallBudgetSummary:
             for item in scene.generation_attempts
         )
         retry_calls = sum(item.consumes_ai_retry for item in scene.generation_attempts)
-        readiness = pollinations_readiness_decision(
-            state.pollinations_readiness,
-            expected_model=(
-                state.pollinations_readiness.model
-                if state.pollinations_readiness is not None
-                else "klein"
-            ),
+        strategy = state.run_plan.production_strategy
+        local_plan = scene.execution_plan.local_execution
+        initial_is_local = bool(
+            local_plan is not None
+            and local_plan.route.selected_provider is ProviderKind.LOCAL_COMPOSITOR
         )
-        pollinations_eligible = (
-            scene.execution_plan.local_execution is not None
-            and ProviderKind.POLLINATIONS
-            in scene.execution_plan.local_execution.route.eligible_providers
-            and readiness.eligible
+        volume_retry_capacity = (
+            strategy.volume_policy.hard_fail_retry_per_scene
+            if strategy.strategy is ProductionStrategy.VOLUME
+            and strategy.volume_policy is not None
+            else 0
+        )
+        draft_max_calls = 1 + (
+            volume_retry_capacity if not initial_is_local else 0
         )
         budgets.append(
             SceneCallBudget(
                 scene_id=scene.scene_id,
-                draft_max_calls=2 if pollinations_eligible else 1,
+                draft_max_calls=draft_max_calls,
                 acceptance_max_calls=1 if scene.promotions else 0,
                 draft_completed_calls=draft_completed,
                 acceptance_completed_calls=acceptance_completed,
@@ -727,7 +807,44 @@ def plan_resume(state: ExecutionRunState) -> ResumePlan:
     plans: list[SceneResumePlan] = []
     for scene in state.scenes:
         action = action_by_status[scene.status]
-        if (
+        reason = f"persisted status {scene.status.value}; no automatic retry or fallback"
+        if state.run_plan.production_strategy.strategy is ProductionStrategy.VOLUME:
+            if scene.status is ProductionSceneStatus.DRAFT_QC_PASS:
+                action = ResumeAction.COMPLETE_VOLUME_ACCEPTANCE
+                reason = "acceptable Volume QC is recorded; complete authoritative acceptance"
+            elif scene.status is ProductionSceneStatus.DRAFT_QC_FAIL:
+                policy = state.run_plan.production_strategy.volume_policy
+                local_plan = scene.execution_plan.local_execution
+                latest_qc = scene.qc_records[-1] if scene.qc_records else None
+                scene_retries = sum(item.consumes_ai_retry for item in scene.generation_attempts)
+                run_retries = sum(
+                    item.consumes_ai_retry
+                    for runtime_scene in state.scenes
+                    for item in runtime_scene.generation_attempts
+                )
+                prior = scene.generation_attempts[-1] if scene.generation_attempts else None
+                retry_allowed = bool(
+                    policy is not None
+                    and local_plan is not None
+                    and local_plan.sensitivity is not SceneDataSensitivity.LOCAL_ONLY
+                    and latest_qc is not None
+                    and latest_qc.hard_fail_reasons
+                    and prior is not None
+                    and prior.provider != ProviderKind.POLLINATIONS.value
+                    and scene_retries < policy.hard_fail_retry_per_scene
+                    and run_retries < policy.max_ai_retries_per_run
+                )
+                action = (
+                    ResumeAction.RETRY_VOLUME
+                    if retry_allowed
+                    else ResumeAction.REMAIN_BLOCKED
+                )
+                reason = (
+                    "persisted Volume hard fail has one authorized Cloudflare retry"
+                    if retry_allowed
+                    else "persisted Volume hard fail has no safe retry budget or route"
+                )
+        elif (
             scene.status is ProductionSceneStatus.DRAFT_QC_PASS
             and scene.draft_acceptance_authorizations
         ):
@@ -736,7 +853,7 @@ def plan_resume(state: ExecutionRunState) -> ResumePlan:
             SceneResumePlan(
                 scene_id=scene.scene_id,
                 action=action,
-                reason=f"persisted status {scene.status.value}; no automatic retry or fallback",
+                reason=reason,
             )
         )
     return ResumePlan(scenes=plans)

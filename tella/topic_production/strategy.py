@@ -61,8 +61,8 @@ class VolumeProductionPolicy(BaseModel):
 
     initial_candidates_per_scene: Literal[1] = 1
     soft_fail_retry_budget: Literal[0] = 0
-    hard_fail_retry_per_scene: int = Field(default=1, ge=0)
-    max_ai_retries_per_run: int = Field(default=2, ge=0)
+    hard_fail_retry_per_scene: int = Field(default=1, ge=0, le=1)
+    max_ai_retries_per_run: int = Field(default=2, ge=0, le=2)
     auto_premium_promotion: Literal[False] = False
     paid_fallback_allowed: Literal[False] = False
     generated_scene_chaining: Literal[False] = False

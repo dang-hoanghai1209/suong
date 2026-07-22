@@ -16,6 +16,7 @@ from tella.visual_generation.providers.cloudflare_flux import (
     CloudflareFluxError,
     CloudflareFluxSceneImageProvider,
 )
+from tella.visual_generation.providers.kinds import ProviderKind
 from tella.visual_generation.references import sha256_file
 from tella.visual_generation.tiers import VisualQualityTier, resolve_visual_tier
 
@@ -93,16 +94,22 @@ def select_draft_canary_scene(state: ExecutionRunState) -> CanarySelection:
 def build_draft_execution_preview(
     state: ExecutionRunState, *, scene_id: str
 ) -> DraftExecutionPreview:
-    if state.run_plan.production_strategy.strategy is not ProductionStrategy.QUALITY:
-        raise ValueError(
-            "Volume strategy live execution is not implemented; refusing to reuse Quality semantics"
-        )
     scene = next((item for item in state.scenes if item.scene_id == scene_id), None)
     if scene is None:
         raise ValueError(f"unknown scene ID: {scene_id}")
     if scene.status is not ProductionSceneStatus.DRAFT_PENDING:
         raise ValueError(f"draft executor requires DRAFT_PENDING, got {scene.status.value}")
     plan = scene.execution_plan
+    strategy = state.run_plan.production_strategy.strategy
+    if strategy is ProductionStrategy.VOLUME:
+        local_plan = plan.local_execution
+        if (
+            local_plan is None
+            or local_plan.route.selected_provider is not ProviderKind.CLOUDFLARE_KLEIN_4B
+        ):
+            raise ValueError(
+                "Volume Cloudflare execution requires an explicit non-local Cloudflare route"
+            )
     tier = resolve_visual_tier(VisualQualityTier.DRAFT)
     if (plan.draft.provider, plan.draft.model, plan.draft.steps, plan.draft.timeout_seconds) != (
         tier.provider,
@@ -135,7 +142,11 @@ def build_draft_execution_preview(
         topic=state.run_plan.topic,
         planner_mode=state.run_plan.story_plan.planner_metadata.planner_mode.value,
         production_eligible=state.run_plan.story_plan.planner_metadata.production_eligible,
-        execution_purpose="infrastructure_canary",
+        execution_purpose=(
+            "volume_initial_cloudflare"
+            if strategy is ProductionStrategy.VOLUME
+            else "infrastructure_canary"
+        ),
         scene_id=scene_id,
         scene_type=plan.scene_brief.scene_type.value,
         meaning=plan.scene_brief.meaning,
@@ -245,6 +256,7 @@ async def execute_draft_scene(
             scene_id=scene_id,
             tier=GenerationTier.DRAFT,
             provider=provider_metadata.provider,
+            provider_kind=ProviderKind.CLOUDFLARE_KLEIN_4B,
             model=provider_metadata.model,
             seed=provider_metadata.seed or preview.request.seed or 0,
             candidate_id=candidate_id,
@@ -273,6 +285,7 @@ async def execute_draft_scene(
             scene_id=scene_id,
             tier=GenerationTier.DRAFT,
             provider=capabilities.provider_id,
+            provider_kind=ProviderKind.CLOUDFLARE_KLEIN_4B,
             model=capabilities.model,
             seed=preview.request.seed or 0,
             candidate_id=candidate_id,
