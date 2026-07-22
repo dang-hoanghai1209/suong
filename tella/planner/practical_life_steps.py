@@ -403,6 +403,7 @@ def _fit_duration(
     plan.original_total_word_count = original_words
     plan.original_estimated_duration_seconds = original_duration
     plan.duration_target_seconds = _DURATION_TARGET_SECONDS
+    plan.requested_production_duration_seconds = _DURATION_TARGET_SECONDS
     plan.narration_fit_required = not (
         _HARD_DURATION_RANGE[0] <= original_duration <= _HARD_DURATION_RANGE[1]
     )

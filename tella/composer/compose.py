@@ -1,62 +1,64 @@
-"""Compose timing for every scene in a plan.
-
-After Phase 3 (media) + Phase 4 (TTS) populate ``image_filenames`` and per-
-scene ``audio_duration``, ``compose_timing`` walks the scenes and assigns
-``start`` + ``duration`` per scene + sets the plan's ``total_duration``.
-
-Continuous-narration model (CEO 2026-06-29): there is ONE narration audio
-track (``plan.narration_audio_filename``) covering the whole video. Each
-scene's ``audio_duration`` is a slice of that track set by
-:func:`tella.tts.synth_all.synthesize_all` via char-proportional split.
-The render layer plays the single audio over the concatenated video-only
-scenes, so we do NOT add per-scene tail buffers — that would desynchronize
-visuals from the continuous audio.
-"""
+"""Compose one deterministic visual timeline for continuous narration."""
 from __future__ import annotations
 
 import logging
 
+from tella.composer.timing import build_render_timing_plan
 from tella.planner.models import TellaScenePlan
 from tella.subtitles import sanitize_highlight_words, subtitle_text_for_style
 
 logger = logging.getLogger("tella.composer.compose")
 
 
-def compose_timing(plan: TellaScenePlan) -> TellaScenePlan:
-    """Cursor-walk the scenes; set ``start`` + ``duration`` + plan total.
+def compose_timing(
+    plan: TellaScenePlan,
+    *,
+    transition_duration: float = 0.0,
+) -> TellaScenePlan:
+    """Apply the narration-authoritative timing contract to ``plan``.
 
-    Mutates the plan in place. Returns the same plan for chaining.
-
-    Pre-requirement: every body scene already has ``audio_duration``
-    populated (by :func:`tella.tts.synth_all.synthesize_all`).
+    ``Scene.duration`` remains the non-overlapping output timeline slot.
+    ``Scene.render_clip_duration`` includes the outgoing transition overlap,
+    so subtracting all overlaps from the encoded clips yields exactly
+    ``plan.total_duration``.
     """
-    body_scenes = [s for s in plan.scenes if s.kind == "scene"]
+    body_scenes = [scene for scene in plan.scenes if scene.kind == "scene"]
     if not body_scenes:
         plan.total_duration = 0.0
+        plan.render_timing_contract = {}
         return plan
 
-    precision = 6 if plan.recipe_id == "practical_life_steps_callirrhoe_v1" else 2
-    cursor = 0.0
     for scene in body_scenes:
         if scene.audio_duration <= 0:
             logger.warning(
-                "scene %d audio_duration=0 — did TTS run? falling back to 6s",
+                "scene %d audio_duration=0; falling back to 6s weight",
                 scene.scene_index,
             )
             scene.audio_duration = 6.0
-        # Visual duration == audio slice for this scene. No tail buffer —
-        # the continuous narration must not be interrupted by silent visual
-        # padding between scenes.
-        scene.duration = round(scene.audio_duration, precision)
-        scene.start = round(cursor, precision)
-        cursor = round(cursor + scene.duration, precision)
 
-    plan.total_duration = round(cursor, precision)
+    timing = build_render_timing_plan(
+        [scene.audio_duration for scene in body_scenes],
+        requested_duration=plan.requested_production_duration_seconds,
+        narration_duration=plan.narration_duration,
+        configured_transition_duration=transition_duration,
+    )
+    for index, scene in enumerate(body_scenes):
+        scene.duration = timing.scene_timeline_durations[index]
+        scene.render_clip_duration = timing.scene_clip_durations[index]
+        scene.start = timing.scene_starts[index]
+
+    plan.total_duration = timing.expected_final_duration
+    plan.render_timing_contract = timing.metadata()
     plan.scene_timing_map = [
         {
             "scene_index": scene.scene_index,
             "start": scene.start,
             "duration": scene.duration,
+            "timeline_duration": scene.duration,
+            "render_clip_duration": scene.render_clip_duration,
+            "outgoing_transition_overlap": round(
+                scene.render_clip_duration - scene.duration, 6
+            ),
         }
         for scene in body_scenes
     ]
@@ -64,7 +66,7 @@ def compose_timing(plan: TellaScenePlan) -> TellaScenePlan:
         {
             "scene_index": scene.scene_index,
             "start": scene.start,
-            "end": round(scene.start + scene.duration, precision),
+            "end": round(scene.start + scene.duration, 6),
             "text": subtitle_text_for_style(
                 scene.voice_script,
                 plan.subtitle_style,
@@ -77,8 +79,11 @@ def compose_timing(plan: TellaScenePlan) -> TellaScenePlan:
         for scene in body_scenes
     ]
     logger.info(
-        "compose_timing: %d scenes, total=%.2fs",
-        len(body_scenes), plan.total_duration,
+        "compose_timing: %d scenes, authority=%s total=%.2fs overlap=%.2fs",
+        len(body_scenes),
+        timing.authority,
+        plan.total_duration,
+        timing.total_transition_overlap,
     )
     return plan
 

@@ -35,14 +35,15 @@ import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 import sys
 from pathlib import Path
 
 from PIL import Image, ImageEnhance, ImageOps
 
+from tella.atomic_write import atomic_write_json
 from tella.composer.compose import compose_timing
+from tella.composer.timing import validate_actual_render_duration
 from tella.composer.safe_zone import render_dims_for, safe_zone_for
 from tella.composer.text_wrap import chars_per_line, wrap
 from tella.planner.models import TellaScenePlan
@@ -474,27 +475,19 @@ async def _concat_scenes_xfade(
         shutil.copyfile(scene_mp4s[0], out_path)
         return out_path
 
-    min_scene_duration = (
-        min(scene_durations) if scene_durations else transition_duration
-    )
-    xfade_duration = min(transition_duration, max(0.1, min_scene_duration / 3.0))
+    xfade_duration = transition_duration
+    if xfade_duration <= 0:
+        raise ValueError("xfade transition duration must be positive")
 
     cmd = ["ffmpeg", "-y", "-loglevel", "error"]
     for p in scene_mp4s:
         cmd += ["-i", str(p)]
 
-    padded_durations = list(scene_durations)
-    for i in range(len(padded_durations) - 1):
-        padded_durations[i] += xfade_duration
-
     filters: list[str] = []
     for i in range(len(scene_mp4s)):
-        chain = f"[{i}:v]setpts=PTS-STARTPTS"
-        if i < len(scene_mp4s) - 1:
-            chain += f",tpad=stop_mode=clone:stop_duration={xfade_duration:.3f}"
-        filters.append(f"{chain}[v{i}]")
+        filters.append(f"[{i}:v]setpts=PTS-STARTPTS[v{i}]")
 
-    cumulative_duration = padded_durations[0]
+    cumulative_duration = scene_durations[0]
     previous_label = "v0"
     for i in range(1, len(scene_mp4s)):
         offset = max(0.0, cumulative_duration - xfade_duration)
@@ -504,7 +497,7 @@ async def _concat_scenes_xfade(
             f"xfade=transition=fade:duration={xfade_duration:.3f}:offset={offset:.3f}"
             f"[{out_label}]"
         )
-        cumulative_duration = cumulative_duration + padded_durations[i] - xfade_duration
+        cumulative_duration = cumulative_duration + scene_durations[i] - xfade_duration
         previous_label = out_label
 
     cmd += [
@@ -594,9 +587,6 @@ async def render(
     sz = safe_zone_for(plan.aspect_ratio)
     font_file = _resolve_font_file()
 
-    if not preserve_timing:
-        compose_timing(plan)
-
     # Pre-compute the caption/title char budget once.
     title_cpl = chars_per_line(sz.width, TITLE_FONT_SIZE)
     caption_cpl = chars_per_line(sz.width, CAPTION_FONT_SIZE)
@@ -640,6 +630,20 @@ async def render(
             0.25,
         )
     use_crossfade = theme_spec.transition.strip().lower() == "crossfade"
+    if not preserve_timing or not plan.render_timing_contract:
+        compose_timing(
+            plan,
+            transition_duration=xfade_duration if use_crossfade else 0.0,
+        )
+    else:
+        # Resume uses the persisted contract even if environment overrides
+        # changed since the original render.
+        xfade_duration = float(
+            plan.render_timing_contract.get(
+                "effective_transition_duration_seconds", 0.0
+            )
+        )
+        use_crossfade = xfade_duration > 0
     transition_profile = plan.transition_profile_id or (
         "subtle_crossfade" if use_crossfade else "cut"
     )
@@ -815,7 +819,7 @@ async def render(
         await _render_scene(
             asset_path=asset_path,
             out_path=out_mp4,
-            duration=scene.duration,
+            duration=scene.render_clip_duration or scene.duration,
             canvas_w=canvas_w,
             canvas_h=canvas_h,
             safe_top=sz.top,
@@ -847,7 +851,7 @@ async def render(
                 scene.scene_index,
                 execution_order,
                 len(body_scenes),
-                scene.duration,
+                scene.render_clip_duration or scene.duration,
             )
         )
 
@@ -856,7 +860,10 @@ async def render(
     if use_crossfade and len(scene_mp4s) > 1:
         await _concat_scenes_xfade(
             scene_mp4s,
-            [max(0.1, s.duration) for s in body_scenes],
+            [
+                max(0.1, scene.render_clip_duration or scene.duration)
+                for scene in body_scenes
+            ],
             silent_video,
             transition_duration=xfade_duration,
         )
@@ -873,6 +880,7 @@ async def render(
     from tella.music.audio import (
         mix_music_and_narration,
         prepare_music,
+        probe_duration,
         run_audio_qc,
     )
     from tella.music.service import record_music_usage, write_music_metadata
@@ -912,6 +920,25 @@ async def render(
             "output_duration": plan.total_duration,
         }
         write_music_metadata(plan, job_dir)
+
+    actual_duration = await probe_duration(final_path)
+    plan.render_timing_contract = validate_actual_render_duration(
+        plan.render_timing_contract,
+        actual_duration,
+    )
+    plan.actual_final_video_duration_seconds = round(actual_duration, 3)
+    plan.actual_duration_validation_status = str(
+        plan.render_timing_contract["actual_duration_status"]
+    )
+    plan.actual_duration_failure_reason = str(
+        plan.render_timing_contract["actual_duration_failure_reason"]
+    )
+    atomic_write_json(
+        job_dir / "render_timing.json",
+        plan.render_timing_contract,
+    )
+    if plan.actual_duration_validation_status == "failed":
+        raise RuntimeError(plan.actual_duration_failure_reason)
 
     await run_audio_qc(
         plan,

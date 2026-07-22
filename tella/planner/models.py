@@ -662,6 +662,9 @@ class Scene(BaseModel):
     audio_filename: str = ""
     audio_duration: float = 0.0
     duration: float = 0.0
+    # Encoded source-clip duration.  With a crossfade this includes the
+    # outgoing overlap while ``duration`` remains the scene's timeline slot.
+    render_clip_duration: float = 0.0
     start: float = 0.0
 
 
@@ -713,6 +716,9 @@ class TellaScenePlan(BaseModel):
     duration_reduction_seconds: float = 0.0
     duration_reduction_ratio: float = 0.0
     duration_target_seconds: float = 35.0
+    # Explicit render-planning target.  Unlike duration_target_seconds (a
+    # legacy planner field with a 35s default), zero means "not specified".
+    requested_production_duration_seconds: float = Field(default=0.0, ge=0.0)
     narration_fit_status: str = Field("not_evaluated", max_length=40)
     narration_fit_failure_reason: str = Field("", max_length=300)
     seven_scene_fallback_considered: bool = False
@@ -861,6 +867,7 @@ class TellaScenePlan(BaseModel):
     tts_fallback_reason: str = Field("", max_length=500)
     tts_metadata: dict[str, Any] = Field(default_factory=dict)
     scene_timing_map: list[dict[str, float | int]] = Field(default_factory=list)
+    render_timing_contract: dict[str, Any] = Field(default_factory=dict)
     subtitle_style: str = Field("", max_length=80)
     subtitle_segments: list[dict[str, Any]] = Field(default_factory=list)
     total_vision_qc_calls: int = 0

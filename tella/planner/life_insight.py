@@ -356,6 +356,7 @@ def _prepare_and_fit_narration(
     plan.original_total_word_count = original_words
     plan.original_estimated_duration_seconds = original_seconds
     plan.duration_target_seconds = _DURATION_TARGET_SECONDS
+    plan.requested_production_duration_seconds = _DURATION_TARGET_SECONDS
     plan.seven_scene_fallback_considered = False
     plan.seven_scene_fallback_applied = False
 
