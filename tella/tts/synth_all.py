@@ -20,6 +20,7 @@ The continuous-narration model (CEO 2026-06-29):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -28,8 +29,17 @@ import shutil
 from pathlib import Path
 
 from tella._voice_pace import normalize_voice_rate
+from tella.atomic_write import atomic_write_json
+from tella.composer.timing import build_render_timing_plan
 from tella.planner.models import TellaScenePlan
-from tella.tts import edge, gemini, google
+from tella.tts import gemini, google
+from tella.tts.policy import (
+    ProductionTTSPolicy,
+    is_production_emotional,
+    narration_planning_diagnostic,
+    resolve_production_tts_policy,
+    sanitize_tts_error,
+)
 from tella.tts.providers import EdgeTTSProvider, TTSResult, get_tts_provider
 from tella.tts.text import normalize_narration_for_tts
 
@@ -107,8 +117,16 @@ async def _postprocess_narration_audio(raw_path: Path, out_path: Path, *, max_pa
     return {
         "silence_postprocess_applied": True,
         "max_pause_ms": int(max_pause_ms),
-        "original_duration": round(original_duration, 2),
-        "processed_duration": round(processed_duration, 2),
+        "original_duration": round(original_duration, 6),
+        "processed_duration": round(processed_duration, 6),
+        "duration_delta": round(processed_duration - original_duration, 6),
+        "processing_steps": [
+            "remove_leading_silence_over_50ms",
+            f"cap_detected_silence_to_{int(max_pause_ms)}ms",
+            "loudness_normalize_-16lufs",
+            "encode_mp3",
+        ],
+        "duration_change_expected": True,
         "longest_silence_before": longest_before,
         "longest_silence_after": longest_after,
     }
@@ -140,6 +158,13 @@ async def _normalize_gemini_narration(raw_path: Path, out_path: Path) -> dict:
         "max_pause_ms": 0,
         "original_duration": original_duration,
         "processed_duration": processed_duration,
+        "duration_delta": round(processed_duration - original_duration, 6),
+        "processing_steps": [
+            "loudness_normalize_-16lufs",
+            "true_peak_limit_-1dbtp",
+            "mono_24000hz",
+        ],
+        "duration_change_expected": False,
         "longest_silence_before": 0.0,
         "longest_silence_after": 0.0,
         "atempo_applied": False,
@@ -223,7 +248,7 @@ def _distribute_durations(scenes, total_duration: float) -> None:
     """Set ``scene.audio_duration`` for each scene by char-proportion.
 
     Rounding errors are absorbed into the final scene so
-    ``sum(scene.audio_duration) == total_duration`` exactly (to 2 d.p.).
+    ``sum(scene.audio_duration) == total_duration`` exactly (to 6 d.p.).
     """
     chars = [max(1, len((s.voice_script or "").strip())) for s in scenes]
     total_chars = sum(chars)
@@ -231,17 +256,17 @@ def _distribute_durations(scenes, total_duration: float) -> None:
         # Defensive fallback — distribute evenly.
         even = total_duration / max(1, len(scenes))
         for s in scenes:
-            s.audio_duration = round(even, 2)
+            s.audio_duration = round(even, 6)
         return
 
     running = 0.0
     for i, scene in enumerate(scenes):
         if i == len(scenes) - 1:
-            scene.audio_duration = round(total_duration - running, 2)
+            scene.audio_duration = round(total_duration - running, 6)
         else:
-            d = round(total_duration * chars[i] / total_chars, 2)
+            d = round(total_duration * chars[i] / total_chars, 6)
             scene.audio_duration = d
-            running = round(running + d, 2)
+            running = round(running + d, 6)
 
 
 def _env_bool(name: str) -> bool:
@@ -276,11 +301,19 @@ def _edge_rate_to_speed(edge_rate: str) -> float:
     return round(1.0 + int(raw) / 100.0, 3)
 
 
-def _resolve_tts_settings(plan: TellaScenePlan, requested_provider: str) -> dict:
-    provider = requested_provider or "edge"
+def _resolve_tts_settings(
+    plan: TellaScenePlan,
+    policy: ProductionTTSPolicy | str,
+) -> dict:
+    if isinstance(policy, str):
+        policy = resolve_production_tts_policy(
+            plan,
+            explicit_provider=policy,
+        )
+    provider = policy.actual_provider
     env_voice = (os.environ.get("TELLA_TTS_VOICE") or "").strip()
     env_language = (os.environ.get("TELLA_TTS_LANGUAGE") or "").strip().lower()
-    language = plan.language if env_language in {"", "auto"} else env_language
+    language = policy.language if env_language in {"", "auto"} else env_language
     codec = (os.environ.get("TELLA_TTS_CODEC") or ("wav" if provider == "gemini" else "mp3")).strip().lower()
     sample_rate = _env_int("TELLA_TTS_SAMPLE_RATE", 24000)
 
@@ -290,13 +323,21 @@ def _resolve_tts_settings(plan: TellaScenePlan, requested_provider: str) -> dict
     speed, speed_from_env = _env_float("TELLA_TTS_SPEED", default_speed)
 
     if provider == "edge":
-        voice = env_voice or plan.voice_name
+        voice = env_voice or policy.actual_voice or plan.voice_name
     elif provider == "google":
         voice = env_voice or (os.environ.get("GOOGLE_TTS_VOICE") or "").strip() or "vi-VN-Chirp3-HD-Achernar"
     elif provider == "gemini":
-        voice = env_voice
-        model = (os.environ.get("TELLA_TTS_MODEL") or "").strip()
-        style = (os.environ.get("TELLA_TTS_STYLE") or "").strip()
+        voice = env_voice or policy.actual_voice or plan.resolved_voice
+        model = (
+            (os.environ.get("TELLA_TTS_MODEL") or "").strip()
+            or policy.model
+            or plan.resolved_tts_model
+        )
+        style = (
+            (os.environ.get("TELLA_TTS_STYLE") or "").strip()
+            or policy.style
+            or plan.resolved_tts_style
+        )
         if not model or not voice or not style:
             raise RuntimeError("Gemini TTS requires explicit model, voice, and style")
         from tella.tts.gemini_registry import resolve_style, resolve_voice
@@ -314,6 +355,7 @@ def _resolve_tts_settings(plan: TellaScenePlan, requested_provider: str) -> dict
         "codec": codec,
         "sample_rate": sample_rate,
         "model": model if provider == "gemini" else "",
+        "style": style if provider == "gemini" else "",
         "style_instruction": style_instruction if provider == "gemini" else "",
     }
 
@@ -344,11 +386,79 @@ async def _synthesize_edge_fallback(
 
 def _save_tts_metadata(job_dir: Path, metadata: dict) -> Path:
     out = Path(job_dir) / "tts_metadata.json"
-    out.write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    atomic_write_json(out, metadata)
     return out
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _generic_cache_key(
+    *,
+    text: str,
+    settings: dict,
+    policy: ProductionTTSPolicy,
+) -> str:
+    identity = {
+        "schema_version": 1,
+        "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "provider": settings["provider"],
+        "voice": settings["voice"],
+        "language": settings["language"],
+        "model": settings["model"],
+        "style": settings["style"],
+        "codec": settings["codec"],
+        "sample_rate": settings["sample_rate"],
+        "speed": settings["speed"],
+        "policy_id": policy.policy_id,
+    }
+    payload = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _load_job_resume_metadata(
+    job_dir: Path,
+    *,
+    raw_path: Path,
+    processed_path: Path,
+    cache_key: str,
+) -> dict | None:
+    metadata_path = Path(job_dir) / "tts_metadata.json"
+    if not metadata_path.is_file() or not raw_path.is_file() or not processed_path.is_file():
+        return None
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if metadata.get("tts_cache_key") != cache_key:
+        return None
+    if metadata.get("raw_audio_sha256") != _file_sha256(raw_path):
+        return None
+    if metadata.get("processed_audio_sha256") != _file_sha256(processed_path):
+        return None
+    if float(metadata.get("processed_duration") or 0.0) <= 0:
+        return None
+    return metadata
+
+
+def _result_from_resume(metadata: dict, raw_path: Path) -> TTSResult:
+    return TTSResult(
+        audio_path=raw_path,
+        duration=float(metadata.get("processed_duration") or 0.0),
+        provider=str(metadata.get("tts_provider") or ""),
+        voice=str(metadata.get("tts_voice") or ""),
+        language=str(metadata.get("tts_language") or ""),
+        metadata={
+            **dict(metadata.get("provider_metadata") or {}),
+            "request_attempt_count": 0,
+            "resume_reuse": True,
+        },
+    )
 
 
 async def synthesize_all(
@@ -365,9 +475,10 @@ async def synthesize_all(
       * ``scene.audio_duration`` set by char-proportional split
       * ``scene.audio_filename`` left blank (render mixes the single track)
 
-    Voice provider priority:
-      1. Google Cloud TTS Chirp 3 HD (when key + voice set, kill switch off)
-      2. Edge TTS — always-on fallback
+    Provider selection is resolved by the typed TTS policy. Production
+    emotional narration prefers Gemini/Callirrhoe when configured and uses
+    an explicit pre-request Edge fallback when it is unavailable. Legacy and
+    explicitly configured providers retain their existing behavior.
 
     Raises:
         RuntimeError: when both providers fail.
@@ -382,22 +493,42 @@ async def synthesize_all(
 
     raw_scene_text = _scene_text_for_tts(body_scenes)
     tts_continuous = _tts_continuous_enabled(plan)
-    raw_text = (
-        _build_global_narration_text(body_scenes, theme=plan.theme)
-        if tts_continuous else
-        _join_voice_scripts(
+    manual_global_text = (
+        plan.global_narration_text.strip()
+        if plan.tts_text_source == "manual_global_narration_text"
+        else ""
+    )
+    if manual_global_text:
+        raw_text = manual_global_text
+        text_source = "manual_global_narration_text"
+    elif is_production_emotional(plan):
+        raw_text = raw_scene_text
+        text_source = "production_full_narration_text"
+    elif tts_continuous:
+        raw_text = _build_global_narration_text(body_scenes, theme=plan.theme)
+        text_source = "global_narration_text"
+    else:
+        raw_text = _join_voice_scripts(
             body_scenes,
             add_terminal_punctuation=plan.theme not in _CONTINUOUS_NARRATION_THEMES,
         )
-    )
+        text_source = "scene_voice_script_join"
     plan.global_narration_text = raw_text if tts_continuous else ""
     plan.tts_continuous = tts_continuous
-    plan.tts_text_source = "global_narration_text" if tts_continuous else "scene_voice_script_join"
+    plan.tts_text_source = text_source
     default_pause_ms = 700 if plan.theme == "minimalist_symbolic_reel" else 350
     plan.tts_max_pause_ms = _env_int("TELLA_TTS_MAX_PAUSE_MS", default_pause_ms)
-    plan.tts_style = (os.environ.get("TELLA_TTS_STYLE") or "emotional_storytelling").strip() or "emotional_storytelling"
     requested_provider = (os.environ.get("TELLA_TTS_PROVIDER") or "").strip().lower()
-    settings = _resolve_tts_settings(plan, requested_provider)
+    policy = resolve_production_tts_policy(
+        plan,
+        explicit_provider=requested_provider,
+    )
+    settings = _resolve_tts_settings(plan, policy)
+    plan.tts_style = (
+        settings["style"]
+        or (os.environ.get("TELLA_TTS_STYLE") or "emotional_storytelling").strip()
+        or "emotional_storytelling"
+    )
     full_text = normalize_narration_for_tts(
         raw_text,
         settings["provider"],
@@ -411,9 +542,14 @@ async def synthesize_all(
     out = assets_dir / f"narration.{extension}"
     result: TTSResult | None = None
     cache_hit = False
-    cache_key = ""
-    fallback_used = False
-    fallback_reason = ""
+    cache_key = _generic_cache_key(
+        text=full_text,
+        settings=settings,
+        policy=policy,
+    )
+    fallback_used = policy.fallback_used
+    fallback_reason = policy.fallback_reason
+    job_resume_metadata: dict | None = None
     google_tts_api_key = google_tts_api_key or (os.environ.get("GOOGLE_TTS_API_KEY") or "").strip()
     google_tts_voice = google_tts_voice or (os.environ.get("GOOGLE_TTS_VOICE") or "").strip()
     google_enabled = bool(google_tts_api_key) and bool(google_tts_voice)
@@ -433,8 +569,17 @@ async def synthesize_all(
             voice_registry_version=REGISTRY_VERSION,
         )
         cache = LocalTTSCache(job_dir.parent / ".tts_cache")
+        job_resume_metadata = _load_job_resume_metadata(
+            job_dir,
+            raw_path=raw_out,
+            processed_path=out,
+            cache_key=cache_key,
+        )
         resume_raw = Path(os.environ.get("TELLA_TTS_RESUME_RAW") or "")
-        if resume_raw.is_file():
+        if job_resume_metadata is not None:
+            cache_hit = True
+            result = _result_from_resume(job_resume_metadata, raw_out)
+        elif resume_raw.is_file():
             if resume_raw.resolve() != raw_out.resolve():
                 shutil.copyfile(resume_raw, raw_out)
             cache_hit = True
@@ -468,7 +613,18 @@ async def synthesize_all(
         elif max_requests < 1:
             raise RuntimeError("TTS cache miss with zero permitted TTS requests")
 
-    if requested_provider == "google":
+    if settings["provider"] != "gemini":
+        job_resume_metadata = _load_job_resume_metadata(
+            job_dir,
+            raw_path=raw_out,
+            processed_path=out,
+            cache_key=cache_key,
+        )
+        if job_resume_metadata is not None:
+            cache_hit = True
+            result = _result_from_resume(job_resume_metadata, raw_out)
+
+    if result is None and requested_provider == "google":
         ok = await google.synth_google(
             text=full_text,
             voice_name=settings["voice"],
@@ -504,7 +660,15 @@ async def synthesize_all(
                 },
             )
 
-    if result is None and requested_provider and requested_provider != "google":
+    if (
+        result is None
+        and settings["provider"] != "google"
+        and (
+            policy.mode == "production_emotional"
+            or bool(requested_provider)
+            or not google_enabled
+        )
+    ):
         try:
             edge_metadata = {}
             if settings["provider"] == "edge" and not settings["speed_from_env"]:
@@ -528,11 +692,11 @@ async def synthesize_all(
                 },
             )
         except Exception as exc:
-            fallback_reason = str(exc)[:500]
+            fallback_reason = sanitize_tts_error(exc)
             if settings["provider"] in {"edge", "gemini"} or _env_bool("TELLA_STRICT_TTS_PROVIDER"):
                 raise RuntimeError(
-                    f"TTS provider {settings['provider']} failed: {exc}"
-                ) from exc
+                    f"TTS provider {settings['provider']} failed: {fallback_reason}"
+                ) from None
             fallback_used = True
             logger.warning(
                 "TTS provider=%s failed; falling back to Edge TTS: %s",
@@ -591,32 +755,65 @@ async def synthesize_all(
             cache_key, raw_out, {"provider": "gemini", "model": settings["model"],
                                  "voice": settings["voice"], "style": plan.tts_style},
         )
-    postprocess = {
-        "silence_postprocess_applied": False,
-        "max_pause_ms": int(plan.tts_max_pause_ms),
-        "original_duration": round(original_duration, 2),
-        "processed_duration": round(original_duration, 2),
-        "longest_silence_before": 0.0,
-        "longest_silence_after": 0.0,
-    }
-    if result.provider == "gemini":
-        postprocess = await _normalize_gemini_narration(raw_out, out)
+    if job_resume_metadata is not None:
+        postprocess = {
+            "silence_postprocess_applied": bool(
+                job_resume_metadata.get("silence_postprocess_applied")
+            ),
+            "max_pause_ms": int(job_resume_metadata.get("max_pause_ms") or 0),
+            "original_duration": float(job_resume_metadata["raw_duration"]),
+            "processed_duration": float(job_resume_metadata["processed_duration"]),
+            "duration_delta": float(job_resume_metadata.get("duration_delta") or 0.0),
+            "processing_steps": list(job_resume_metadata.get("processing_steps") or []),
+            "duration_change_expected": bool(
+                job_resume_metadata.get("duration_change_expected")
+            ),
+            "longest_silence_before": float(
+                job_resume_metadata.get("longest_silence_before") or 0.0
+            ),
+            "longest_silence_after": float(
+                job_resume_metadata.get("longest_silence_after") or 0.0
+            ),
+        }
     else:
-        try:
-            postprocess = await _postprocess_narration_audio(
-                raw_out,
-                out,
-                max_pause_ms=plan.tts_max_pause_ms,
-            )
-        except Exception as exc:
-            shutil.copyfile(raw_out, out)
-            logger.warning("TTS silence post-process skipped: %s", str(exc)[:180])
-            postprocess["longest_silence_before"] = await _detect_longest_silence(raw_out)
-            postprocess["longest_silence_after"] = postprocess["longest_silence_before"]
+        postprocess = {
+            "silence_postprocess_applied": False,
+            "max_pause_ms": int(plan.tts_max_pause_ms),
+            "original_duration": round(original_duration, 6),
+            "processed_duration": round(original_duration, 6),
+            "duration_delta": 0.0,
+            "processing_steps": [],
+            "duration_change_expected": False,
+            "longest_silence_before": 0.0,
+            "longest_silence_after": 0.0,
+        }
+        if result.provider == "gemini":
+            postprocess = await _normalize_gemini_narration(raw_out, out)
+        else:
+            try:
+                postprocess = await _postprocess_narration_audio(
+                    raw_out,
+                    out,
+                    max_pause_ms=plan.tts_max_pause_ms,
+                )
+            except Exception as exc:
+                shutil.copyfile(raw_out, out)
+                logger.warning("TTS silence post-process skipped: %s", str(exc)[:180])
+                postprocess["longest_silence_before"] = (
+                    await _detect_longest_silence(raw_out)
+                )
+                postprocess["longest_silence_after"] = postprocess[
+                    "longest_silence_before"
+                ]
 
     total_duration = float(postprocess["processed_duration"]) or await _ffprobe_duration(out)
     result.duration = total_duration
     _distribute_durations(body_scenes, total_duration)
+    timing_preview = build_render_timing_plan(
+        [scene.audio_duration for scene in body_scenes],
+        requested_duration=plan.requested_production_duration_seconds,
+        narration_duration=total_duration,
+    )
     effective_speed = (
         _edge_rate_to_speed(str(result.metadata.get("edge_rate", plan.voice_edge_rate)))
         if result.provider == "edge"
@@ -626,7 +823,7 @@ async def synthesize_all(
 
     plan.narration_audio_filename = f"assets/{out.name}"
     plan.narration_audio_path = str(out)
-    plan.narration_duration = round(total_duration, 2)
+    plan.narration_duration = round(total_duration, 6)
     plan.original_narration_duration = float(postprocess["original_duration"])
     plan.processed_narration_duration = float(postprocess["processed_duration"])
     plan.silence_postprocess_applied = bool(postprocess["silence_postprocess_applied"])
@@ -641,8 +838,21 @@ async def synthesize_all(
     plan.tts_fallback_used = fallback_used
     plan.tts_fallback_reason = fallback_reason
 
+    planning_diagnostic = narration_planning_diagnostic(
+        full_text,
+        plan.requested_production_duration_seconds,
+    )
+    policy_metadata = policy.metadata()
+    policy_metadata.update(
+        {
+            "actual_provider": result.provider,
+            "actual_voice": result.voice,
+            "fallback_used": fallback_used,
+            "fallback_reason": fallback_reason,
+        }
+    )
     tts_metadata = {
-        "requested_provider": requested_provider or "edge",
+        "requested_provider": requested_provider or policy.preferred_provider,
         "requested_tts_speed": float(settings["speed"]),
         "tts_provider": result.provider,
         "tts_voice": result.voice,
@@ -651,7 +861,7 @@ async def synthesize_all(
         "tts_codec": effective_codec,
         "tts_sample_rate": int(settings["sample_rate"]),
         "narration_audio_path": str(out),
-        "narration_duration": round(total_duration, 2),
+        "narration_duration": round(total_duration, 6),
         "fallback_used": fallback_used,
         "fallback_reason": fallback_reason,
         "tts_continuous": tts_continuous,
@@ -663,11 +873,26 @@ async def synthesize_all(
         "max_pause_ms": int(plan.tts_max_pause_ms),
         "original_duration": float(postprocess["original_duration"]),
         "processed_duration": float(postprocess["processed_duration"]),
+        "duration_delta": float(
+            postprocess.get(
+                "duration_delta",
+                float(postprocess["processed_duration"])
+                - float(postprocess["original_duration"]),
+            )
+        ),
+        "processing_steps": list(postprocess.get("processing_steps") or []),
+        "duration_change_expected": bool(
+            postprocess.get("duration_change_expected", False)
+        ),
         "longest_silence_before": float(postprocess["longest_silence_before"]),
         "longest_silence_after": float(postprocess["longest_silence_after"]),
         "edge_rate": str(result.metadata.get("edge_rate", plan.voice_edge_rate)),
         "normalized_text_chars": len(full_text),
         "raw_text_chars": len(raw_text),
+        "canonical_narration_text": full_text,
+        "canonical_narration_text_sha256": hashlib.sha256(
+            full_text.encode("utf-8")
+        ).hexdigest(),
         "provider_metadata": result.metadata,
         "tts_model": str(result.metadata.get("model") or ""),
         "voice_registry_version": result.metadata.get("voice_registry_version"),
@@ -678,8 +903,28 @@ async def synthesize_all(
         "raw_duration": float(postprocess["original_duration"]),
         "normalized_duration": float(postprocess["processed_duration"]),
         "request_attempt_count": int(result.metadata.get("request_attempt_count", 1)),
+        "narration_synthesis_count": 0 if cache_hit else 1,
+        "continuous_artifact_count": 1,
         "cache_hit": cache_hit,
         "tts_cache_key": cache_key,
+        "raw_audio_sha256": _file_sha256(raw_out),
+        "processed_audio_sha256": _file_sha256(out),
+        "production_tts_policy": policy_metadata,
+        "narration_planning_diagnostic": planning_diagnostic,
+        "requested_production_duration_seconds": (
+            plan.requested_production_duration_seconds
+        ),
+        "requested_vs_narration_delta_seconds": round(
+            total_duration - plan.requested_production_duration_seconds,
+            6,
+        ) if plan.requested_production_duration_seconds > 0 else None,
+        "authoritative_timeline_duration_seconds": (
+            timing_preview.authoritative_duration
+        ),
+        "timing_authority": timing_preview.authority,
+        "post_tts_scene_timeline_durations_seconds": list(
+            timing_preview.scene_timeline_durations
+        ),
         "post_tts_duration_fit_status": "pending_production_duration_fit",
     }
     plan.tts_metadata = tts_metadata

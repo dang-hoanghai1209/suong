@@ -55,6 +55,12 @@ STYLE_PRESETS = {
         "Do not prolong final syllables, exaggerate pitch changes, giggle, add "
         "non-verbal sounds, or use a radio, advertisement, or virtual-assistant tone."
     ),
+    "gentle_emotional": (
+        "Speak the Vietnamese narration as one continuous, gentle emotional story. "
+        "Use a calm, emotionally soft, slow-natural delivery with clear pronunciation "
+        "and natural pauses. Do not whisper, sound breathy, exaggerate acting, prolong "
+        "syllables, or add non-verbal sounds."
+    ),
 }
 
 

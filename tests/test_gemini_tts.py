@@ -64,7 +64,12 @@ def test_disabled_and_incompatible_voices_are_rejected(monkeypatch):
 
 
 def test_three_styles_resolve_deterministically():
-    assert tuple(STYLE_PRESETS) == ("natural", "vocal_smile", "natural_vocal_smile")
+    assert tuple(STYLE_PRESETS) == (
+        "natural",
+        "vocal_smile",
+        "natural_vocal_smile",
+        "gentle_emotional",
+    )
     for name, instruction in STYLE_PRESETS.items():
         assert resolve_style(name) == instruction == resolve_style(name)
     assert resolve_style("natural_vocal_smile") == EXPECTED_NATURAL_VOCAL_SMILE
@@ -134,7 +139,9 @@ def test_maximum_request_count_and_voice_limit_are_enforced(tmp_path):
 def _write_wav(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(path), "wb") as output:
-        output.setnchannels(1); output.setsampwidth(2); output.setframerate(24000)
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(24000)
         output.writeframes(b"\0\0" * 240)
 
 
@@ -144,7 +151,11 @@ def test_live_runner_is_sequential_one_attempt_per_voice_and_has_metadata(tmp_pa
     async def fake_synth(text, path, *, model, voice, style):
         nonlocal active
         assert active == 0
-        active += 1; order.append(voice); _write_wav(path); await asyncio.sleep(0); active -= 1
+        active += 1
+        order.append(voice)
+        _write_wav(path)
+        await asyncio.sleep(0)
+        active -= 1
         return {"provider": "gemini", "model": model, "voice": voice,
                 "voice_registry_version": 1, "language": "vi-VN",
                 "requested_style": style, "resolved_style_instruction": resolve_style(style),
@@ -176,7 +187,8 @@ def test_partial_failure_stops_without_fallback(tmp_path):
     calls = []
     async def fake_synth(text, path, *, model, voice, style):
         calls.append(voice)
-        if voice == "Autonoe": raise RuntimeError("provider failure")
+        if voice == "Autonoe":
+            raise RuntimeError("provider failure")
         _write_wav(path)
         return {"provider": "gemini", "model": model, "voice": voice, "fallback_used": False}
     async def fake_normalize(raw, normalized): shutil.copyfile(raw, normalized)
@@ -335,7 +347,9 @@ def test_callirrhoe_controlled_render_one_request_metadata_and_failure_stop(monk
     async def fake_duration(path): return 15.48
     async def fake_render(plan, output_dir):
         renders.append(plan)
-        output = output_dir / "video.mp4"; output.write_bytes(b"video"); return output
+        output = output_dir / "video.mp4"
+        output.write_bytes(b"video")
+        return output
     monkeypatch.setattr(production, "configure_music", lambda plan, job, **kwargs: (
         setattr(plan, "music_enabled", True),
         setattr(plan, "selected_music_track_id", "practical_calm_01"),
