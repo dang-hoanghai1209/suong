@@ -11,26 +11,53 @@ import pytest
 from tella.composer.compose import compose_timing
 from tella.planner.models import Scene, TellaScenePlan
 from tella.tts import synth_all
-from tella.tts.policy import (
-    GEMINI_EMOTIONAL_MODEL,
-    narration_planning_diagnostic,
-    resolve_production_tts_policy,
-)
+from tella.tts.duration import narration_planning_diagnostic
+from tella.tts.policy import GEMINI_EMOTIONAL_MODEL, resolve_production_tts_policy
 from tella.tts.providers import GeminiTTSProvider, TTSResult
 
 
 def _plan(count: int = 3, *, requested: float = 12.0) -> TellaScenePlan:
+    if count >= 7:
+        spoken_units_per_scene = 15 if count == 7 else 13
+    else:
+        spoken_units_per_scene = 0
+
+    def voice_script(index: int) -> str:
+        if not spoken_units_per_scene:
+            return f"Khoảnh khắc dịu dàng thứ {index}."
+        units = [
+            "Mình",
+            "chậm",
+            "lại",
+            "và",
+            "dịu",
+            "dàng",
+            "lắng",
+            "nghe",
+            "cơ",
+            "thể",
+            "trong",
+            "nhịp",
+            str(index),
+            "hôm",
+            "nay",
+        ]
+        return " ".join(units[:spoken_units_per_scene]) + "."
+
     return TellaScenePlan(
         title="Production narration",
         language="vi",
         theme="minimalist_emotional",
         planner_id="manual_topic_input",
+        recipe_scene_range=[7, 8] if count >= 7 else [],
+        recipe_duration_range=[32.0, 38.0] if count >= 7 else [],
+        recipe_validation_status="passed" if count >= 7 else "",
         requested_production_duration_seconds=requested,
         voice_name="vi-VN-HoaiMyNeural",
         scenes=[
             Scene(
                 scene_index=index,
-                voice_script=f"Khoảnh khắc dịu dàng thứ {index}.",
+                voice_script=voice_script(index),
             )
             for index in range(1, count + 1)
         ],
@@ -172,6 +199,11 @@ def test_one_continuous_request_drives_authoritative_timing(
     )
     assert plan.tts_metadata["narration_synthesis_count"] == 1
     assert plan.tts_metadata["continuous_artifact_count"] == 1
+    if count >= 7:
+        diagnostic = plan.tts_metadata["narration_planning_diagnostic"]
+        assert diagnostic["provider"] == "gemini"
+        assert diagnostic["speed_applied_to_transport"] is False
+        assert diagnostic["postprocess_assumption"]["pause_cap_applied"] is False
 
 
 def test_raw_processed_duration_and_steps_are_auditable(monkeypatch, tmp_path):

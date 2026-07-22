@@ -33,10 +33,15 @@ from tella.atomic_write import atomic_write_json
 from tella.composer.timing import build_render_timing_plan
 from tella.planner.models import TellaScenePlan
 from tella.tts import gemini, google
+from tella.tts.duration import (
+    ProductionNarrationDurationError,
+    narration_planning_diagnostic,
+    production_narration_target_range,
+    requires_production_narration_duration_validation,
+)
 from tella.tts.policy import (
     ProductionTTSPolicy,
     is_production_emotional,
-    narration_planning_diagnostic,
     resolve_production_tts_policy,
     sanitize_tts_error,
 )
@@ -536,6 +541,30 @@ async def synthesize_all(
     )
     if not full_text.strip():
         return
+    validate_production_duration = requires_production_narration_duration_validation(plan)
+    duration_transport_speed = None
+    if settings["provider"] in {"edge", "xai"}:
+        duration_transport_speed = float(settings["speed"])
+    elif settings["provider"] == "google":
+        duration_transport_speed = _edge_rate_to_speed(plan.voice_edge_rate)
+    planning_diagnostic = narration_planning_diagnostic(
+        full_text,
+        plan.requested_production_duration_seconds,
+        language=settings["language"],
+        provider=settings["provider"],
+        voice=settings["voice"],
+        transport_speed_multiplier=duration_transport_speed,
+        pause_cap_ms=(
+            None if settings["provider"] == "gemini" else plan.tts_max_pause_ms
+        ),
+        production_target_range=(
+            production_narration_target_range(plan)
+            if validate_production_duration
+            else None
+        ),
+    )
+    if validate_production_duration and not planning_diagnostic["production_tts_eligible"]:
+        raise ProductionNarrationDurationError(planning_diagnostic)
 
     extension = "wav" if settings["provider"] == "gemini" else "mp3"
     raw_out = assets_dir / f"narration_raw.{extension}"
@@ -838,10 +867,6 @@ async def synthesize_all(
     plan.tts_fallback_used = fallback_used
     plan.tts_fallback_reason = fallback_reason
 
-    planning_diagnostic = narration_planning_diagnostic(
-        full_text,
-        plan.requested_production_duration_seconds,
-    )
     policy_metadata = policy.metadata()
     policy_metadata.update(
         {

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import re
 from dataclasses import asdict, dataclass
 from typing import Literal
 
@@ -131,36 +130,6 @@ def resolve_production_tts_policy(
     )
 
 
-def narration_planning_diagnostic(
-    text: str,
-    requested_duration: float,
-) -> dict[str, object]:
-    """Estimate only gross text/target mismatch; never claim audio precision."""
-    normalized = re.sub(r"\s+", " ", text).strip()
-    words = len(normalized.split()) if normalized else 0
-    characters = len(normalized)
-    estimated_min = round(words / 3.0, 3) if words else 0.0
-    estimated_max = round(words / 2.0, 3) if words else 0.0
-    requested = max(0.0, float(requested_duration))
-    if requested <= 0 or words == 0:
-        status = "not_evaluated"
-    elif estimated_max < requested * 0.7:
-        status = "likely_too_short"
-    elif estimated_min > requested * 1.3:
-        status = "likely_too_long"
-    else:
-        status = "plausible_for_target"
-    return {
-        "narration_text_characters": characters,
-        "narration_text_words": words,
-        "estimated_duration_range_seconds": [estimated_min, estimated_max],
-        "estimate_basis": "2.0_to_3.0_whitespace_words_per_second",
-        "estimate_is_authoritative": False,
-        "requested_duration_seconds": requested,
-        "planning_duration_status": status,
-    }
-
-
 def sanitize_tts_error(exc: BaseException) -> str:
     value = str(exc)
     for name in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
@@ -177,7 +146,6 @@ __all__ = [
     "GEMINI_EMOTIONAL_VOICE",
     "ProductionTTSPolicy",
     "is_production_emotional",
-    "narration_planning_diagnostic",
     "resolve_production_tts_policy",
     "sanitize_tts_error",
 ]
