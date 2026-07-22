@@ -69,6 +69,7 @@ class CloudflareFluxSceneImageProvider:
         timeout_seconds: float = HTTP_TIMEOUT,
         tier: str | None = None,
         intended_usage_class: str | None = None,
+        allow_text_only: bool = False,
         credential_resolver: Callable[[], list[tuple[str, str]]] = resolve_all_credentials,
         request_sender: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
@@ -94,6 +95,7 @@ class CloudflareFluxSceneImageProvider:
         self.timeout_seconds = timeout_seconds
         self.tier = tier
         self.intended_usage_class = intended_usage_class
+        self.allow_text_only = allow_text_only
         self._credential_resolver = credential_resolver
         self._request_sender = request_sender or _post_once
 
@@ -121,7 +123,7 @@ class CloudflareFluxSceneImageProvider:
             raise RuntimeError("LIVE_VISUAL_ACCEPTANCE_BLOCKED_CREDENTIAL_MISSING")
         if os.environ.get("TELLA_VISUAL_QUALITY_LIVE") != "1":
             raise RuntimeError("LIVE_VISUAL_ACCEPTANCE_NOT_RUN_OPT_IN_REQUIRED")
-        if not request.references:
+        if not request.references and not self.allow_text_only:
             raise RuntimeError("LIVE_VISUAL_ACCEPTANCE_BLOCKED_REFERENCE_MISSING")
         if len(request.references) > 4:
             raise RuntimeError("LIVE_VISUAL_ACCEPTANCE_BLOCKED_PROVIDER_CAPABILITY")
@@ -371,12 +373,17 @@ def provider_request_hash(
 
 
 def _cloudflare_prompt(request: GenerationRequest) -> str:
-    return (
+    guidance = (
         "Use image 0 as guidance for the female character archetype, short dark bob, "
         "dusty-pink long dress, soft hand-drawn editorial illustration style, warm dark "
         "brown visual world, cream halo or vignette, thin imperfect outlines, and muted "
         "palette. Generate a NEW complete illustration; do not copy the source composition "
-        "pixel-for-pixel. All symbolic objects must be naturally drawn into the illustration, "
+        "pixel-for-pixel. "
+        if request.references
+        else "Generate a complete illustration from the generic text brief only. "
+    )
+    return (
+        f"{guidance}All symbolic objects must be naturally drawn into the illustration, "
         "never an icon collage or UI.\n\n"
         f"{request.instruction}\n\nNEGATIVE CONSTRAINTS: {request.negative_instruction}"
     )

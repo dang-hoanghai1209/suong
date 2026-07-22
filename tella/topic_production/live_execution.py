@@ -41,7 +41,11 @@ from .persistence import (
     persist_production_job,
     production_job_paths,
 )
-from .production_prompt import PROMPT_PROFILE, build_topic_production_request
+from .production_prompt import (
+    PROMPT_PROFILE,
+    allows_public_safe_text_only,
+    build_topic_production_request,
+)
 from .runtime import (
     initialize_execution_state,
     record_generation_attempt,
@@ -140,7 +144,7 @@ def build_draft_execution_preview(
             ReferenceDecisionStatus.REFERENCE_BLOCKED_REQUIRED_STYLE,
         }
     ]
-    if blocking:
+    if blocking and not allows_public_safe_text_only(plan):
         raise ValueError("required reference validation blocks provider execution")
     for reference in plan.draft.references:
         path = Path(reference.path)
@@ -239,6 +243,7 @@ async def execute_draft_scene(
         timeout_seconds=120.0,
         tier="draft",
         intended_usage_class="draft",
+        allow_text_only=allows_public_safe_text_only(runtime_scene.execution_plan),
     )
     capabilities = selected_provider.capabilities()
     validate_provider_capabilities(capabilities)
@@ -389,6 +394,7 @@ async def execute_volume_cloudflare_retry(
         timeout_seconds=draft.timeout_seconds,
         tier="draft",
         intended_usage_class="draft",
+        allow_text_only=allows_public_safe_text_only(scene.execution_plan),
     )
     capabilities = selected_provider.capabilities()
     validate_provider_capabilities(capabilities)

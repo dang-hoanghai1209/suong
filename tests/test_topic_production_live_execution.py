@@ -270,6 +270,7 @@ async def test_existing_cloudflare_provider_factory_is_reused(
         "timeout_seconds": 120.0,
         "tier": "draft",
         "intended_usage_class": "draft",
+        "allow_text_only": False,
     }
     assert outcome.provider_invocations == 1
 

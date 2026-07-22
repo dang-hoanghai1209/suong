@@ -7,6 +7,7 @@ from tella.visual_generation.models import GenerationRequest, ReferenceAsset
 from tella.visual_generation.prompt_builder import request_hash
 
 from .execution_models import SceneExecutionPlan
+from .strategy import SceneDataSensitivity
 
 
 PROMPT_PROFILE = "topic_production_v1"
@@ -14,6 +15,21 @@ PROMPT_PROFILE = "topic_production_v1"
 
 def _items(values: list[str]) -> str:
     return "; ".join(values) if values else "none required"
+
+
+def allows_public_safe_text_only(scene: SceneExecutionPlan) -> bool:
+    """Allow reference-free transport only for explicitly generic PUBLIC_SAFE scenes."""
+
+    local_plan = scene.local_execution
+    brief = scene.scene_brief
+    return bool(
+        local_plan is not None
+        and local_plan.sensitivity is SceneDataSensitivity.PUBLIC_SAFE
+        and not scene.draft.references
+        and not brief.identity_requirements
+        and not brief.continuity_requirements
+        and not brief.reference_roles
+    )
 
 
 def build_topic_production_request(scene: SceneExecutionPlan) -> GenerationRequest:
@@ -69,7 +85,7 @@ def build_topic_production_request(scene: SceneExecutionPlan) -> GenerationReque
         )
         for item in scene.draft.references
     ]
-    if not references:
+    if not references and not allows_public_safe_text_only(scene):
         raise ValueError("required approved references are missing")
     return GenerationRequest(
         scene_id=scene.scene_id,
@@ -87,3 +103,11 @@ def build_topic_production_request(scene: SceneExecutionPlan) -> GenerationReque
 
 def topic_production_request_hash(scene: SceneExecutionPlan) -> str:
     return request_hash(build_topic_production_request(scene))
+
+
+__all__ = [
+    "PROMPT_PROFILE",
+    "allows_public_safe_text_only",
+    "build_topic_production_request",
+    "topic_production_request_hash",
+]

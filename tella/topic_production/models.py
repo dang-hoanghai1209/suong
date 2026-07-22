@@ -93,8 +93,8 @@ class StoryPlan(BaseModel):
     topic: str = Field(min_length=1)
     language: str = Field(min_length=2, max_length=12)
     aspect_ratio: Literal["9:16"] = "9:16"
-    target_duration_seconds: float = Field(ge=32.0, le=38.0)
-    requested_scene_count: Literal[7, 8]
+    target_duration_seconds: float = Field(ge=9.0, le=38.0)
+    requested_scene_count: int = Field(ge=3, le=8)
     narration_text: str = Field(min_length=1)
     emotional_arc: list[str] = Field(min_length=3)
     topic_intent: str = Field(min_length=1)
@@ -103,6 +103,22 @@ class StoryPlan(BaseModel):
 
     @model_validator(mode="after")
     def validate_beats(self) -> "StoryPlan":
+        standard_run = (
+            self.requested_scene_count in {7, 8}
+            and 32.0 <= self.target_duration_seconds <= 38.0
+        )
+        manual_short_run = (
+            self.requested_scene_count == 3
+            and 9.0 <= self.target_duration_seconds <= 15.0
+            and self.planner_metadata.planner_mode is PlannerMode.PRODUCTION
+            and self.planner_metadata.production_eligible
+            and self.planner_metadata.planner_id == "manual_topic_input"
+        )
+        if not (standard_run or manual_short_run):
+            raise ValueError(
+                "story plan must be a standard 7-8 scene run or an explicit "
+                "three-scene manual production input"
+            )
         if len(self.semantic_beats) != self.requested_scene_count:
             raise ValueError("semantic beat count must match requested_scene_count")
         expected_orders = list(range(1, self.requested_scene_count + 1))

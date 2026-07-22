@@ -310,6 +310,39 @@ async def test_scene_one_uploads_one_multipart_reference_with_image_zero_prompt(
 
 
 @pytest.mark.asyncio
+async def test_text_only_request_uploads_no_reference_and_calls_transport_once(tmp_path):
+    sender = Sender(_success())
+    request = _request(tmp_path).model_copy(update={"references": []})
+
+    metadata = await _provider(
+        sender,
+        model=KLEIN_4B_MODEL,
+        steps=4,
+        tier="draft",
+        intended_usage_class="draft",
+        allow_text_only=True,
+    ).generate_scene(request, tmp_path / "candidate.png")
+
+    assert len(sender.calls) == 1
+    assert sender.calls[0]["files"] == {}
+    assert "generic text brief only" in sender.calls[0]["data"]["prompt"]
+    assert "Use image 0" not in sender.calls[0]["data"]["prompt"]
+    assert metadata.reference_hashes == []
+    assert metadata.prepared_references == []
+
+
+@pytest.mark.asyncio
+async def test_text_only_request_requires_explicit_provider_authorization(tmp_path):
+    sender = Sender(_success())
+    request = _request(tmp_path).model_copy(update={"references": []})
+
+    with pytest.raises(RuntimeError, match="REFERENCE_MISSING"):
+        await _provider(sender).generate_scene(request, tmp_path / "candidate.png")
+
+    assert sender.calls == []
+
+
+@pytest.mark.asyncio
 async def test_base64_image_is_validated_written_and_recorded(tmp_path):
     metadata = await _provider(Sender(_success(_png(600, 1000)))).generate_scene(
         _request(tmp_path), tmp_path / "candidate.bin"

@@ -128,7 +128,7 @@ class GenerationRequest(StrictModel):
     aspect_ratio: Literal["9:16"]
     instruction: str = Field(min_length=1)
     negative_instruction: str = Field(min_length=1)
-    references: list[ReferenceAsset] = Field(min_length=1)
+    references: list[ReferenceAsset] = Field(default_factory=list)
     seed: int | None = None
     preserve_existing: bool = False
     repair_instructions: list[str] = Field(default_factory=list)

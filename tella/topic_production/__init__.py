@@ -62,7 +62,11 @@ from .persistence import (
     persist_production_job,
     production_job_paths,
 )
-from .production_prompt import PROMPT_PROFILE, build_topic_production_request
+from .production_prompt import (
+    PROMPT_PROFILE,
+    allows_public_safe_text_only,
+    build_topic_production_request,
+)
 from .readiness import evaluate_render_readiness
 from .reference_planning import (
     APPROVED_REFERENCE_DEFINITIONS,
@@ -261,6 +265,7 @@ __all__ = [
     "VolumeQCSeverity",
     "PROMPT_PROFILE",
     "adapt_scene_brief",
+    "allows_public_safe_text_only",
     "assess_semantic_resolution",
     "authorize_draft_acceptance",
     "apply_volume_qc",

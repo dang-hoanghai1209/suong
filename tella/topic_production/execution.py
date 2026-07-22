@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from tella.visual_generation.providers.cloudflare_flux import DEFAULT_HEIGHT, DEFAULT_WIDTH
+from tella.visual_generation.providers.kinds import ProviderKind
 from tella.visual_generation.tiers import VisualQualityTier, resolve_visual_tier
 
 from .execution_models import (
@@ -33,6 +34,7 @@ from .models import (
 from .planner import DeterministicTopicPlanner, build_scene_briefs
 from .reference_planning import load_reference_catalog, resolve_references
 from .strategy import ProductionStrategyConfig
+from .strategy import SceneDataSensitivity
 from .visual_adapter import adapt_scene_brief
 
 
@@ -118,6 +120,16 @@ def build_production_run_plan(
     for brief, timing in zip(scene_briefs, manifest.timings, strict=True):
         adapter = adapt_scene_brief(brief)
         references, decisions = resolve_references(brief, reference_catalog)
+        local_input = local_inputs.get(brief.scene_id)
+        local_execution = (
+            plan_local_scene_execution(
+                brief.scene_id,
+                local_input,
+                local_coverage_resolver,
+            )
+            if local_input is not None and local_coverage_resolver is not None
+            else None
+        )
         blocking_reference_decisions = [
             decision
             for decision in decisions
@@ -127,7 +139,24 @@ def build_production_run_plan(
                 ReferenceDecisionStatus.REFERENCE_BLOCKED_REQUIRED_STYLE,
             }
         ]
-        if execution_mode is ExecutionMode.LIVE_PRODUCTION and blocking_reference_decisions:
+        local_covered = bool(
+            local_execution is not None
+            and local_execution.route.selected_provider is ProviderKind.LOCAL_COMPOSITOR
+        )
+        public_safe_text_only = bool(
+            local_input is not None
+            and local_input.sensitivity is SceneDataSensitivity.PUBLIC_SAFE
+            and not references
+            and not brief.identity_requirements
+            and not brief.continuity_requirements
+            and not brief.reference_roles
+        )
+        if (
+            execution_mode is ExecutionMode.LIVE_PRODUCTION
+            and blocking_reference_decisions
+            and not local_covered
+            and not public_safe_text_only
+        ):
             blocked = ", ".join(
                 f"{decision.role}:{decision.status.value}"
                 for decision in blocking_reference_decisions
@@ -177,15 +206,9 @@ def build_production_run_plan(
             ),
             acceptance_policy=_acceptance_policy(brief),
         )
-        if brief.scene_id in local_inputs:
+        if local_execution is not None:
             scene_execution = scene_execution.model_copy(
-                update={
-                    "local_execution": plan_local_scene_execution(
-                        brief.scene_id,
-                        local_inputs[brief.scene_id],
-                        local_coverage_resolver,
-                    )
-                },
+                update={"local_execution": local_execution},
                 deep=True,
             )
         execution_plans.append(scene_execution)
