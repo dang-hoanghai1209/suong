@@ -108,6 +108,43 @@ def test_shorter_narration_reconciles_without_a_frozen_tail() -> None:
     assert timing.requested_duration_delta == pytest.approx(-3.573312)
 
 
+def test_renderer_uses_capped_effective_crossfade_for_short_scene_slots(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from tella.render import pipeline
+
+    plan = _plan(count=8, requested=35.0, narration=24.827438)
+    weights = [2.766913, 4.112979, 3.888635, 2.61735, 2.019099, 2.168662, 4.561668, 2.692132]
+    for scene, weight in zip(plan.scenes, weights, strict=True):
+        scene.audio_duration = weight
+        scene.image_filenames = [f"assets/scene_{scene.scene_index:02d}.png"]
+    plan.narration_audio_filename = "assets/narration.mp3"
+
+    captured: dict[str, float] = {}
+
+    async def fake_render_scene(*, out_path, duration, **kwargs):
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.touch()
+
+    async def fake_concat(scene_paths, scene_durations, out_path, *, transition_duration):
+        captured["transition_duration"] = transition_duration
+        raise RuntimeError("stop after transition capture")
+
+    monkeypatch.setattr(pipeline, "_prepare_image_asset_for_render", lambda source, output, **kwargs: (source, "a" * 64, False))
+    monkeypatch.setattr(pipeline, "_render_scene", fake_render_scene)
+    monkeypatch.setattr(pipeline, "_concat_scenes_xfade", fake_concat)
+
+    with pytest.raises(RuntimeError, match="stop after transition capture"):
+        import asyncio
+
+        asyncio.run(pipeline.render(plan, tmp_path))
+
+    effective = float(plan.render_timing_contract["effective_transition_duration_seconds"])
+    assert effective < 0.8
+    assert captured["transition_duration"] == pytest.approx(effective)
+
+
 def test_three_scene_compose_persists_explicit_timing_semantics() -> None:
     plan = _plan()
 

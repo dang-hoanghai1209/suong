@@ -644,6 +644,16 @@ async def render(
             )
         )
         use_crossfade = xfade_duration > 0
+    if use_crossfade:
+        # ``compose_timing`` may cap the configured transition for short
+        # narration-weighted scene slots.  The concat stage must consume the
+        # same effective overlap used to compensate encoded clip durations.
+        xfade_duration = float(
+            plan.render_timing_contract.get(
+                "effective_transition_duration_seconds", xfade_duration
+            )
+        )
+        use_crossfade = xfade_duration > 0
     transition_profile = plan.transition_profile_id or (
         "subtle_crossfade" if use_crossfade else "cut"
     )
