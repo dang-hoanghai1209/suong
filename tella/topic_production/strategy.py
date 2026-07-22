@@ -14,6 +14,11 @@ class ProductionStrategy(StrEnum):
     VOLUME = "volume"
 
 
+class VisualExecutionMode(StrEnum):
+    ILLUSTRATED_SCENE = "illustrated_scene"
+    LOCAL_COMPOSITOR = "local_compositor"
+
+
 class SceneDataSensitivity(StrEnum):
     LOCAL_ONLY = "local_only"
     PRIVATE = "private"
@@ -69,11 +74,12 @@ class VolumeProductionPolicy(BaseModel):
 
 
 class ProductionStrategyConfig(BaseModel):
-    """Explicit mode selection; Quality remains the backward-compatible default."""
+    """Independent economic strategy and visual realization configuration."""
 
     model_config = ConfigDict(frozen=True)
 
     strategy: ProductionStrategy = ProductionStrategy.QUALITY
+    visual_mode: VisualExecutionMode = VisualExecutionMode.ILLUSTRATED_SCENE
     volume_policy: VolumeProductionPolicy | None = None
 
     @model_validator(mode="after")
@@ -85,15 +91,23 @@ class ProductionStrategyConfig(BaseModel):
         return self
 
     @classmethod
-    def quality(cls) -> "ProductionStrategyConfig":
-        return cls()
+    def quality(
+        cls,
+        *,
+        visual_mode: VisualExecutionMode = VisualExecutionMode.ILLUSTRATED_SCENE,
+    ) -> "ProductionStrategyConfig":
+        return cls(visual_mode=visual_mode)
 
     @classmethod
     def volume(
-        cls, policy: VolumeProductionPolicy | None = None
+        cls,
+        policy: VolumeProductionPolicy | None = None,
+        *,
+        visual_mode: VisualExecutionMode = VisualExecutionMode.LOCAL_COMPOSITOR,
     ) -> "ProductionStrategyConfig":
         return cls(
             strategy=ProductionStrategy.VOLUME,
+            visual_mode=visual_mode,
             volume_policy=policy or VolumeProductionPolicy(),
         )
 
@@ -328,6 +342,7 @@ __all__ = [
     "SceneGenerationCapability",
     "SceneRoutingRequest",
     "VolumeProductionPolicy",
+    "VisualExecutionMode",
     "VolumeQCAction",
     "VolumeQCDisposition",
     "VolumeQCSeverity",
