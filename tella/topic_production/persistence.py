@@ -98,6 +98,12 @@ def persist_execution_snapshot(
             "readiness": readiness.model_dump(mode="json"),
             "resume_plan": resume.model_dump(mode="json"),
             "external_calls": state.external_calls,
+            "readiness_external_calls": state.readiness_external_calls,
+            "pollinations_readiness": (
+                state.pollinations_readiness.model_dump(mode="json")
+                if state.pollinations_readiness is not None
+                else None
+            ),
         },
     )
     if candidate_metadata is not None:

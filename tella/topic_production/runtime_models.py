@@ -10,6 +10,7 @@ from tella.visual_generation.providers.kinds import ProviderKind
 
 from .execution_models import ProductionRunPlan, SceneExecutionPlan
 from .models import GenerationTier, ProductionSceneStatus, ReadinessResult
+from .pollinations_readiness import PollinationsReadinessSnapshot
 
 
 class TechnicalStatus(StrEnum):
@@ -270,6 +271,8 @@ class ExecutionRunState(BaseModel):
     scenes: list[SceneRuntimeState]
     event_history: list[ExecutionEvent]
     external_calls: int = Field(default=0, ge=0)
+    readiness_external_calls: int = Field(default=0, ge=0)
+    pollinations_readiness: PollinationsReadinessSnapshot | None = None
 
 
 class SceneCallBudget(BaseModel):

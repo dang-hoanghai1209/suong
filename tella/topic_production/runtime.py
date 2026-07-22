@@ -6,6 +6,10 @@ from typing import Any
 from tella.visual_generation.providers.kinds import ProviderKind
 
 from .models import GenerationTier, ProductionSceneStatus, ReadinessResult
+from .pollinations_readiness import (
+    PollinationsReadinessSnapshot,
+    pollinations_readiness_decision,
+)
 from .runtime_models import (
     AcceptedCandidateRecord,
     CallBudgetSummary,
@@ -42,6 +46,29 @@ def initialize_execution_state(run_plan) -> ExecutionRunState:
         for index, scene in enumerate(scenes, start=1)
     ]
     return ExecutionRunState(run_plan=run_plan, scenes=scenes, event_history=events)
+
+
+def record_pollinations_readiness(
+    state: ExecutionRunState,
+    snapshot: PollinationsReadinessSnapshot,
+    *,
+    refresh: bool = False,
+) -> ExecutionRunState:
+    """Attach one reusable run-level snapshot or perform an explicit refresh."""
+
+    current = state.pollinations_readiness
+    if current is not None and not refresh:
+        raise ValueError("Pollinations readiness is already recorded for this run")
+    if current is not None and snapshot.checked_at <= current.checked_at:
+        raise ValueError("refreshed Pollinations readiness must be newer than the prior snapshot")
+    return state.model_copy(
+        update={
+            "pollinations_readiness": snapshot,
+            "readiness_external_calls": state.readiness_external_calls
+            + snapshot.readiness_calls,
+        },
+        deep=True,
+    )
 
 
 def _scene_index(state: ExecutionRunState, scene_id: str) -> int:
@@ -638,10 +665,19 @@ def summarize_call_budget(state: ExecutionRunState) -> CallBudgetSummary:
             for item in scene.generation_attempts
         )
         retry_calls = sum(item.consumes_ai_retry for item in scene.generation_attempts)
+        readiness = pollinations_readiness_decision(
+            state.pollinations_readiness,
+            expected_model=(
+                state.pollinations_readiness.model
+                if state.pollinations_readiness is not None
+                else "klein"
+            ),
+        )
         pollinations_eligible = (
             scene.execution_plan.local_execution is not None
             and ProviderKind.POLLINATIONS
             in scene.execution_plan.local_execution.route.eligible_providers
+            and readiness.eligible
         )
         budgets.append(
             SceneCallBudget(

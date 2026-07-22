@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Literal
-
 from pydantic import BaseModel, ConfigDict, Field
 
 from tella.visual_generation.models import CandidateMetadata
@@ -24,6 +22,7 @@ from tella.visual_generation.references import sha256_file
 from .live_execution_models import ProductionJobPaths
 from .models import GenerationTier, ProductionSceneStatus
 from .persistence import persist_execution_snapshot, production_job_paths
+from .pollinations_readiness import pollinations_readiness_decision
 from .runtime import record_pollinations_generation_attempt
 from .runtime_models import ExecutionRunState, GenerationAttempt, TechnicalStatus
 from .strategy import (
@@ -45,13 +44,15 @@ class PollinationsExecutionOutcome(BaseModel):
 
     state: ExecutionRunState
     paths: ProductionJobPaths
-    attempt: GenerationAttempt
+    attempt: GenerationAttempt | None = None
     provider_metadata: CandidateMetadata | None = None
     provider_reaching_calls: int = Field(ge=0, le=1)
     external_calls: int = Field(ge=0, le=1)
-    ai_calls: Literal[1] = 1
-    ai_retry_calls: Literal[1] = 1
+    ai_calls: int = Field(ge=0, le=1)
+    ai_retry_calls: int = Field(ge=0, le=1)
     latency_ms: int = Field(ge=0)
+    skipped_before_generation: bool = False
+    routing_reason: str = Field(min_length=1)
 
 
 def pollinations_production_job_paths(
@@ -150,6 +151,40 @@ async def execute_pollinations_overflow(
     ):
         raise PermissionError("Volume AI retry budget is exhausted")
 
+    paths = pollinations_production_job_paths(
+        out_root, job_id=state.run_plan.job_id, scene_id=scene_id
+    )
+    readiness = pollinations_readiness_decision(
+        state.pollinations_readiness,
+        expected_model=provider.capabilities().model,
+    )
+    if not readiness.eligible:
+        persist_execution_snapshot(
+            state,
+            paths,
+            execution_purpose="volume_pollinations_skipped_not_ready",
+            selected_scene_id=scene_id,
+            candidate_metadata={
+                "provider": ProviderKind.POLLINATIONS.value,
+                "model": provider.capabilities().model,
+                "eligible_for_generation": False,
+                "readiness_reason": readiness.reason.value,
+                "provider_reaching_calls": 0,
+                "reference_hashes": [],
+            },
+        )
+        return PollinationsExecutionOutcome(
+            state=state,
+            paths=paths,
+            provider_reaching_calls=0,
+            external_calls=0,
+            ai_calls=0,
+            ai_retry_calls=0,
+            latency_ms=0,
+            skipped_before_generation=True,
+            routing_reason=readiness.detail,
+        )
+
     request = _pollinations_request(
         state,
         scene_id=scene_id,
@@ -158,9 +193,6 @@ async def execute_pollinations_overflow(
     )
     public_request = prepare_public_request(request, model=provider.capabilities().model)
     sanitized_hash = public_request_hash(public_request)
-    paths = pollinations_production_job_paths(
-        out_root, job_id=state.run_plan.job_id, scene_id=scene_id
-    )
     persist_execution_snapshot(
         state,
         paths,
@@ -312,7 +344,10 @@ async def execute_pollinations_overflow(
         provider_metadata=provider_metadata,
         provider_reaching_calls=provider_reaching_calls,
         external_calls=provider_reaching_calls,
+        ai_calls=1,
+        ai_retry_calls=1,
         latency_ms=latency_ms,
+        routing_reason=readiness.detail,
     )
 
 

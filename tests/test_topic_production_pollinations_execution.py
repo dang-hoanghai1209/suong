@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from PIL import Image
@@ -15,6 +16,8 @@ from tella.topic_production import (
     LocalCompositionRequest,
     LocalCoverageAssessment,
     LocalCoverageStatus,
+    PollinationsBalanceState,
+    PollinationsHealthState,
     ProductionSceneStatus,
     ProductionStrategyConfig,
     ProviderFailureCategory,
@@ -23,11 +26,13 @@ from tella.topic_production import (
     TechnicalStatus,
     VolumeLocalSceneInput,
     build_fixture_preview_run,
+    build_pollinations_readiness_snapshot,
     build_production_run_plan,
     execute_pollinations_overflow,
     initialize_execution_state,
     pollinations_failover_decision,
     record_generation_attempt,
+    record_pollinations_readiness,
     summarize_call_budget,
 )
 from tella.visual_generation.providers import (
@@ -49,7 +54,13 @@ class UncoveredResolver:
         )
 
 
-def _state(*, sensitivity=SceneDataSensitivity.PUBLIC_SAFE, job_id="pollinations-overflow"):
+def _state(
+    *,
+    sensitivity=SceneDataSensitivity.PUBLIC_SAFE,
+    job_id="pollinations-overflow",
+    balance_state=PollinationsBalanceState.POSITIVE,
+    health_state=PollinationsHealthState.HEALTHY,
+):
     fixture = build_fixture_preview_run(topic="public safe overflow", scene_count=7)
     request = LocalCompositionRequest(
         character_id="female_01",
@@ -75,6 +86,23 @@ def _state(*, sensitivity=SceneDataSensitivity.PUBLIC_SAFE, job_id="pollinations
         local_coverage_resolver=UncoveredResolver(),
     )
     state = initialize_execution_state(run)
+    checked_at = datetime.now(timezone.utc)
+    state = state.model_copy(
+        update={
+            "pollinations_readiness": build_pollinations_readiness_snapshot(
+                enabled=True,
+                credential_present=True,
+                credential_valid=True,
+                model="flux",
+                model_available=True,
+                balance_state=balance_state,
+                health_state=health_state,
+                checked_at=checked_at,
+                valid_for=timedelta(minutes=15),
+            )
+        },
+        deep=True,
+    )
     scene = state.scenes[0]
     draft = scene.execution_plan.draft
     prior = GenerationAttempt(
@@ -199,8 +227,11 @@ async def test_persisted_pollinations_metadata_contains_no_token_or_private_payl
 
 
 @pytest.mark.asyncio
-async def test_private_scene_cannot_invoke_pollinations_overflow(tmp_path):
-    state, prior = _state(sensitivity=SceneDataSensitivity.PRIVATE, job_id="private-block")
+@pytest.mark.parametrize(
+    "sensitivity", [SceneDataSensitivity.PRIVATE, SceneDataSensitivity.LOCAL_ONLY]
+)
+async def test_non_public_scene_cannot_invoke_pollinations_overflow(tmp_path, sensitivity):
+    state, prior = _state(sensitivity=sensitivity, job_id=f"{sensitivity.value}-block")
     sender = Sender()
     with pytest.raises(PermissionError, match="PUBLIC_SAFE"):
         await execute_pollinations_overflow(
@@ -259,6 +290,34 @@ async def test_pollinations_failure_is_one_attempt_and_remains_blocked(tmp_path)
     assert outcome.state.scenes[0].accepted_candidate is None
 
 
+@pytest.mark.asyncio
+async def test_zero_balance_skips_before_attempt_transport_and_retry_accounting(tmp_path):
+    state, prior = _state(job_id="zero-balance", balance_state=PollinationsBalanceState.ZERO)
+    sender = Sender()
+    before_attempts = len(state.scenes[0].generation_attempts)
+
+    outcome = await execute_pollinations_overflow(
+        state,
+        scene_id="scene_01",
+        out_root=tmp_path,
+        authorization=CloudflareOverflowAuthorization(
+            prior_candidate_id=prior.candidate_id,
+            failure_category=ProviderFailureCategory.RATE_LIMITED,
+        ),
+        prompt_source=_prompt(),
+        provider=_provider(sender),
+    )
+
+    assert outcome.skipped_before_generation is True
+    assert outcome.attempt is None
+    assert outcome.provider_reaching_calls == outcome.ai_calls == outcome.ai_retry_calls == 0
+    assert sender.calls == []
+    assert len(outcome.state.scenes[0].generation_attempts) == before_attempts
+    assert summarize_call_budget(outcome.state).retry_calls == 0
+    persisted = outcome.paths.candidate_metadata_path.read_text(encoding="utf-8")
+    assert json.loads(persisted)["readiness_reason"] == "zero_balance"
+
+
 @pytest.mark.parametrize(
     "category",
     [ProviderFailureCategory.SOFT_QC_FAIL, ProviderFailureCategory.QUALITY_INSUFFICIENT],
@@ -279,3 +338,23 @@ def test_request_hash_is_sanitized_semantic_identity_only():
     serialized = state.run_plan.model_dump_json()
     assert prompt_digest not in serialized
     assert ProviderKind.POLLINATIONS in state.scenes[0].execution_plan.local_execution.route.eligible_providers
+
+
+def test_readiness_is_recorded_once_unless_explicitly_refreshed():
+    state, _ = _state(job_id="readiness-refresh")
+    current = state.pollinations_readiness
+    assert current is not None
+    replacement = current.model_copy(
+        update={
+            "checked_at": current.checked_at + timedelta(minutes=1),
+            "valid_until": current.valid_until + timedelta(minutes=1),
+            "readiness_calls": 4,
+        }
+    )
+
+    with pytest.raises(ValueError, match="already recorded"):
+        record_pollinations_readiness(state, replacement)
+
+    refreshed = record_pollinations_readiness(state, replacement, refresh=True)
+    assert refreshed.pollinations_readiness == replacement
+    assert refreshed.readiness_external_calls == 4
