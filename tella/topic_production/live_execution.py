@@ -26,6 +26,8 @@ from .live_execution_models import (
     CanarySelection,
     DraftExecutionOutcome,
     DraftExecutionPreview,
+    ProductionJobPaths,
+    VolumeRetryExecutionOutcome,
 )
 from .models import (
     AcceptancePriority,
@@ -34,11 +36,20 @@ from .models import (
     SceneComplexity,
     SceneType,
 )
-from .persistence import persist_production_job, production_job_paths
+from .persistence import (
+    persist_execution_snapshot,
+    persist_production_job,
+    production_job_paths,
+)
 from .production_prompt import PROMPT_PROFILE, build_topic_production_request
-from .runtime import initialize_execution_state, record_generation_attempt
+from .runtime import (
+    initialize_execution_state,
+    record_generation_attempt,
+    record_volume_retry_attempt,
+)
 from .runtime_models import ExecutionRunState, GenerationAttempt, TechnicalStatus
 from .strategy import ProductionStrategy
+from .volume_execution import volume_retry_decision
 
 
 def build_infrastructure_canary_state(
@@ -325,6 +336,194 @@ async def execute_draft_scene(
         paths=paths,
         dry_run=False,
         provider_invocations=provider_invocations,
+        external_calls=external_calls,
+        provider_latency_ms=latency_ms,
+    )
+
+
+def volume_cloudflare_retry_paths(
+    out_root: Path | str, *, job_id: str, scene_id: str
+) -> ProductionJobPaths:
+    base = production_job_paths(out_root, job_id=job_id, scene_id=scene_id)
+    directory = base.job_dir / "scenes" / scene_id / "draft" / "cloudflare_retry"
+    return base.model_copy(
+        update={
+            "candidate_base_path": directory / "candidate_02.bin",
+            "candidate_metadata_path": directory / "metadata.json",
+        }
+    )
+
+
+async def execute_volume_cloudflare_retry(
+    state: ExecutionRunState,
+    *,
+    scene_id: str,
+    prior_candidate_id: str,
+    out_root: Path | str,
+    live_authorized: bool = False,
+    provider: SceneImageProvider | None = None,
+) -> VolumeRetryExecutionOutcome:
+    """Execute exactly one policy-authorized Cloudflare retry after Volume QC."""
+
+    if state.run_plan.production_strategy.strategy is not ProductionStrategy.VOLUME:
+        raise ValueError("Cloudflare Volume retry requires Volume strategy")
+    scene = next((item for item in state.scenes if item.scene_id == scene_id), None)
+    if scene is None:
+        raise ValueError(f"unknown scene ID: {scene_id}")
+    decision = volume_retry_decision(
+        state, scene_id=scene_id, candidate_id=prior_candidate_id
+    )
+    if not decision.allowed or decision.provider is not ProviderKind.CLOUDFLARE_KLEIN_4B:
+        raise PermissionError(decision.reason)
+    if not live_authorized:
+        raise PermissionError("explicit live authorization is required")
+
+    request = build_topic_production_request(scene.execution_plan)
+    logical_hash = request_hash(request)
+    draft = scene.execution_plan.draft
+    selected_provider = provider or CloudflareFluxSceneImageProvider(
+        model=draft.model,
+        width=request.width,
+        height=request.height,
+        steps=draft.steps,
+        timeout_seconds=draft.timeout_seconds,
+        tier="draft",
+        intended_usage_class="draft",
+    )
+    capabilities = selected_provider.capabilities()
+    validate_provider_capabilities(capabilities)
+    if (capabilities.provider_id, capabilities.model) != (draft.provider, draft.model):
+        raise ValueError("provider does not match authorized Volume retry route")
+    if not selected_provider.credentials_present():
+        raise PermissionError("live provider credentials are missing")
+
+    paths = volume_cloudflare_retry_paths(
+        out_root, job_id=state.run_plan.job_id, scene_id=scene_id
+    )
+    persist_execution_snapshot(
+        state,
+        paths,
+        execution_purpose="volume_cloudflare_hard_fail_retry",
+        selected_scene_id=scene_id,
+    )
+    started = time.monotonic()
+    provider_metadata: CandidateMetadata | None = None
+    provider_returned = False
+    request_reached_provider = False
+    candidate_id = f"{scene_id}-cloudflare-candidate-02"
+    try:
+        provider_metadata = await selected_provider.generate_scene(
+            request, paths.candidate_base_path
+        )
+        provider_returned = True
+        preview = DraftExecutionPreview(
+            job_id=state.run_plan.job_id,
+            topic=state.run_plan.topic,
+            planner_mode=state.run_plan.story_plan.planner_metadata.planner_mode.value,
+            production_eligible=(
+                state.run_plan.story_plan.planner_metadata.production_eligible
+            ),
+            execution_purpose="volume_cloudflare_hard_fail_retry",
+            scene_id=scene_id,
+            scene_type=scene.execution_plan.scene_brief.scene_type.value,
+            meaning=scene.execution_plan.scene_brief.meaning,
+            duration_seconds=scene.execution_plan.timing.duration_seconds,
+            prompt_profile=PROMPT_PROFILE,
+            request=request,
+            planning_request_hash=draft.logical_visual_request_hash,
+            logical_request_hash=logical_hash,
+        )
+        artifact_path, width, height, artifact_sha = _validate_success(
+            provider_metadata,
+            preview,
+            expected_provider=draft.provider,
+            expected_model=draft.model,
+        )
+        attempt = GenerationAttempt(
+            scene_id=scene_id,
+            tier=GenerationTier.DRAFT,
+            provider=provider_metadata.provider,
+            provider_kind=ProviderKind.CLOUDFLARE_KLEIN_4B,
+            model=provider_metadata.model,
+            seed=provider_metadata.seed or request.seed or 0,
+            candidate_id=candidate_id,
+            candidate_path=artifact_path,
+            artifact_sha256=artifact_sha,
+            planning_request_hash=draft.logical_visual_request_hash,
+            logical_request_hash=logical_hash,
+            provider_request_hash=provider_metadata.provider_request_hash,
+            reference_hashes=provider_metadata.reference_hashes,
+            technical_status=TechnicalStatus.SUCCEEDED,
+            consumes_ai_call=True,
+            consumes_ai_retry=True,
+            metadata={
+                "mime_type": provider_metadata.mime_type,
+                "actual_width": width,
+                "actual_height": height,
+                "prompt_profile": PROMPT_PROFILE,
+            },
+        )
+    except Exception as exc:
+        quota = isinstance(exc, CloudflareFluxError) and exc.stage == "quota_exceeded"
+        request_reached_provider = isinstance(exc, CloudflareFluxError) and (
+            exc.request_reached_provider
+        )
+        attempt = GenerationAttempt(
+            scene_id=scene_id,
+            tier=GenerationTier.DRAFT,
+            provider=capabilities.provider_id,
+            provider_kind=ProviderKind.CLOUDFLARE_KLEIN_4B,
+            model=capabilities.model,
+            seed=request.seed or 0,
+            candidate_id=candidate_id,
+            planning_request_hash=draft.logical_visual_request_hash,
+            logical_request_hash=logical_hash,
+            reference_hashes=[item.sha256 for item in request.references],
+            technical_status=(
+                TechnicalStatus.PROVIDER_QUOTA_BLOCKED
+                if quota
+                else TechnicalStatus.TECHNICAL_GENERATION_FAIL
+            ),
+            technical_failure_reason=str(exc),
+            consumes_ai_call=True,
+            consumes_ai_retry=True,
+            metadata={"prompt_profile": PROMPT_PROFILE},
+        )
+    latency_ms = round((time.monotonic() - started) * 1000)
+    attempt = attempt.model_copy(
+        update={"metadata": {**attempt.metadata, "provider_latency_ms": latency_ms}},
+        deep=True,
+    )
+    updated = record_volume_retry_attempt(
+        state, attempt, prior_candidate_id=prior_candidate_id
+    )
+    injected = provider is not None
+    external_calls = 0 if injected else int(provider_returned or request_reached_provider)
+    updated = updated.model_copy(
+        update={"external_calls": state.external_calls + external_calls}, deep=True
+    )
+    if provider_metadata is not None:
+        provider_metadata = provider_metadata.model_copy(update={"latency_ms": latency_ms})
+    persist_execution_snapshot(
+        updated,
+        paths,
+        execution_purpose="volume_cloudflare_hard_fail_retry",
+        selected_scene_id=scene_id,
+        candidate_metadata=(
+            provider_metadata.model_dump(mode="json")
+            if provider_metadata is not None
+            else {
+                "provider": capabilities.provider_id,
+                "model": capabilities.model,
+                "technical_status": attempt.technical_status.value,
+            }
+        ),
+    )
+    return VolumeRetryExecutionOutcome(
+        state=updated,
+        attempt=attempt,
+        paths=paths,
+        provider_metadata=provider_metadata,
         external_calls=external_calls,
         provider_latency_ms=latency_ms,
     )

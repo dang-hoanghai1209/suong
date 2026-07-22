@@ -60,6 +60,18 @@ class DraftExecutionOutcome(BaseModel):
     provider_latency_ms: int | None = Field(default=None, ge=0)
 
 
+class VolumeRetryExecutionOutcome(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    state: ExecutionRunState
+    attempt: GenerationAttempt
+    paths: ProductionJobPaths
+    provider_metadata: CandidateMetadata | None = None
+    provider_invocations: int = Field(default=1, ge=1, le=1)
+    external_calls: int = Field(default=0, ge=0, le=1)
+    provider_latency_ms: int = Field(ge=0)
+
+
 class CanarySelection(BaseModel):
     model_config = ConfigDict(frozen=True)
 
