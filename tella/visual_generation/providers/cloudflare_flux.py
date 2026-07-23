@@ -116,7 +116,11 @@ class CloudflareFluxSceneImageProvider:
         return bool(self._credential_resolver())
 
     async def generate_scene(
-        self, request: GenerationRequest, output_path: Path
+        self,
+        request: GenerationRequest,
+        output_path: Path,
+        *,
+        logical_request_hash: str | None = None,
     ) -> CandidateMetadata:
         credentials = self._credential_resolver()
         if not credentials:
@@ -130,6 +134,9 @@ class CloudflareFluxSceneImageProvider:
 
         try:
             prompt = cloudflare_prompt(request)
+            effective_logical_request_hash = logical_request_hash or request_hash(request)
+            if re.fullmatch(r"[0-9a-f]{64}", effective_logical_request_hash) is None:
+                raise ValueError("logical request hash must be lowercase SHA-256")
             fields = {
                 "prompt": prompt,
                 "width": str(self.width),
@@ -146,6 +153,7 @@ class CloudflareFluxSceneImageProvider:
                 width=self.width,
                 height=self.height,
                 steps=self.steps,
+                logical_request_hash=effective_logical_request_hash,
             )
         except Exception as exc:
             raise _error("request_build", exc) from exc
@@ -276,7 +284,7 @@ class CloudflareFluxSceneImageProvider:
             provider="cloudflare-flux",
             model=self.model,
             request_hash=request_hash(request),
-            logical_request_hash=request_hash(request),
+            logical_request_hash=effective_logical_request_hash,
             reference_hashes=[item.sha256 for item in request.references],
             reference_roles=[item.semantic_roles or [item.role] for item in request.references],
             instruction_hash=instruction_hash(request),

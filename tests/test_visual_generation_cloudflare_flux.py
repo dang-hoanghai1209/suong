@@ -156,6 +156,46 @@ async def test_klein_4b_uses_fixed_steps_seed_and_multipart_references(tmp_path)
     assert metadata.request_timeout_seconds == HTTP_TIMEOUT
 
 
+@pytest.mark.asyncio
+async def test_live_request_accepts_upstream_logical_identity_without_changing_transport(
+    tmp_path,
+):
+    sender = Sender(_success())
+    provider = _provider(
+        sender,
+        model=KLEIN_4B_MODEL,
+        steps=4,
+        tier="draft",
+        intended_usage_class="draft",
+    )
+    request = _request(tmp_path).model_copy(
+        update={"reference_authority_contract": "illustrated_scene_v1"}
+    )
+    logical_identity = "f" * 64
+    prompt = cloudflare_module.cloudflare_prompt(request)
+    expected_provider_hash = provider_request_hash(
+        request=request,
+        prompt=prompt,
+        model=KLEIN_4B_MODEL,
+        width=576,
+        height=1024,
+        steps=KLEIN_4B_FIXED_STEPS,
+        logical_request_hash=logical_identity,
+    )
+
+    metadata = await provider.generate_scene(
+        request,
+        tmp_path / "candidate.png",
+        logical_request_hash=logical_identity,
+    )
+
+    assert len(sender.calls) == 1
+    assert sender.calls[0]["data"]["prompt"] == prompt
+    assert metadata.logical_request_hash == logical_identity
+    assert metadata.provider_request_hash == expected_provider_hash
+    assert metadata.request_hash == request_hash(request)
+
+
 def test_klein_4b_defaults_to_fixed_steps_and_rejects_dev_steps():
     assert _provider(Sender(_success()), model=KLEIN_4B_MODEL).steps == 4
     with pytest.raises(ValueError, match="fixed 4-step"):
