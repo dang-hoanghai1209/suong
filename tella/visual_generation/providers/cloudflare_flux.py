@@ -129,7 +129,7 @@ class CloudflareFluxSceneImageProvider:
             raise RuntimeError("LIVE_VISUAL_ACCEPTANCE_BLOCKED_PROVIDER_CAPABILITY")
 
         try:
-            prompt = _cloudflare_prompt(request)
+            prompt = cloudflare_prompt(request)
             fields = {
                 "prompt": prompt,
                 "width": str(self.width),
@@ -347,13 +347,14 @@ def provider_request_hash(
     width: int,
     height: int,
     steps: int | None,
+    logical_request_hash: str | None = None,
 ) -> str:
     """Hash the exact non-secret Cloudflare invocation identity."""
     material = {
         "provider": "cloudflare-flux",
         "model": model,
         "prompt": prompt,
-        "logical_request_hash": request_hash(request),
+        "logical_request_hash": logical_request_hash or request_hash(request),
         "seed": request.seed,
         "width": width,
         "height": height,
@@ -372,16 +373,23 @@ def provider_request_hash(
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _cloudflare_prompt(request: GenerationRequest) -> str:
-    guidance = (
-        "Use image 0 as guidance for the female character archetype, short dark bob, "
-        "dusty-pink long dress, soft hand-drawn editorial illustration style, warm dark "
-        "brown visual world, cream halo or vignette, thin imperfect outlines, and muted "
-        "palette. Generate a NEW complete illustration; do not copy the source composition "
-        "pixel-for-pixel. "
-        if request.references
-        else "Generate a complete illustration from the generic text brief only. "
-    )
+def cloudflare_prompt(request: GenerationRequest) -> str:
+    if request.references and request.reference_authority_contract == "illustrated_scene_v1":
+        guidance = (
+            "Use each supplied reference only according to its explicitly declared reference "
+            "authority in the brief. Generate a NEW complete illustration; do not copy any "
+            "source composition pixel-for-pixel. "
+        )
+    elif request.references:
+        guidance = (
+            "Use image 0 as guidance for the female character archetype, short dark bob, "
+            "dusty-pink long dress, soft hand-drawn editorial illustration style, warm dark "
+            "brown visual world, cream halo or vignette, thin imperfect outlines, and muted "
+            "palette. Generate a NEW complete illustration; do not copy the source composition "
+            "pixel-for-pixel. "
+        )
+    else:
+        guidance = "Generate a complete illustration from the generic text brief only. "
     return (
         f"{guidance}All symbolic objects must be naturally drawn into the illustration, "
         "never an icon collage or UI.\n\n"
@@ -449,6 +457,7 @@ __all__ = [
     "DEV_MODEL",
     "KLEIN_4B_FIXED_STEPS",
     "KLEIN_4B_MODEL",
+    "cloudflare_prompt",
     "prepare_reference",
     "provider_request_hash",
 ]

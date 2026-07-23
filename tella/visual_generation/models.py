@@ -132,6 +132,10 @@ class GenerationRequest(StrictModel):
     seed: int | None = None
     preserve_existing: bool = False
     repair_instructions: list[str] = Field(default_factory=list)
+    reference_authority_contract: Literal["illustrated_scene_v1"] | None = Field(
+        default=None,
+        exclude=True,
+    )
 
 
 class CandidateMetadata(StrictModel):
