@@ -46,6 +46,7 @@ class ApprovedReference(BaseModel):
     path: str = Field(min_length=1)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     roles: list[str] = Field(min_length=1)
+    sensitivity: SceneDataSensitivity = SceneDataSensitivity.PRIVATE
     supported_scene_types: list[str] = Field(default_factory=list)
     identity_scope: str | None = None
     style_scope: str | None = None
