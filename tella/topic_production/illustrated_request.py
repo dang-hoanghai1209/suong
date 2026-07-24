@@ -24,6 +24,11 @@ class IllustratedReferenceAuthority(StrEnum):
     COMPOSITION = "composition"
 
 
+class IllustratedPromptProfile(StrEnum):
+    STANDARD = "standard_illustrated_v1"
+    LEGACY_ACCEPTED = "legacy_accepted_visual_target_v1"
+
+
 def reference_authority_for_role(role: str) -> IllustratedReferenceAuthority:
     if role == "style_anchor":
         return IllustratedReferenceAuthority.STYLE
@@ -67,6 +72,7 @@ class IllustratedSceneRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     request_profile: Literal["illustrated_scene_v1"] = "illustrated_scene_v1"
+    prompt_profile: IllustratedPromptProfile = IllustratedPromptProfile.STANDARD
     scene_id: str = Field(pattern=r"^scene_[0-9]{2}$")
     semantic_scene: ProductionSceneBrief
     sensitivity: SceneDataSensitivity
@@ -239,6 +245,10 @@ def illustrated_scene_request_hash(request: IllustratedSceneRequest) -> str:
         ],
         "accepted_scene_chaining": request.accepted_scene_chaining,
     }
+    # Preserve established V3 identities for the pre-existing standard profile.
+    # Explicit parity profiles are material visual semantics and therefore participate.
+    if request.prompt_profile is not IllustratedPromptProfile.STANDARD:
+        payload["prompt_profile"] = request.prompt_profile.value
     encoded = json.dumps(
         payload,
         ensure_ascii=False,
@@ -249,6 +259,7 @@ def illustrated_scene_request_hash(request: IllustratedSceneRequest) -> str:
 
 
 __all__ = [
+    "IllustratedPromptProfile",
     "IllustratedReferenceAuthority",
     "IllustratedReferenceBinding",
     "IllustratedSceneRequest",

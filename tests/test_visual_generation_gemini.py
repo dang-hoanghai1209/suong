@@ -19,6 +19,7 @@ from tella.visual_generation.prompt_builder import build_generation_request
 from tella.visual_generation.providers.gemini import (
     GeminiProviderError,
     GeminiSceneImageProvider,
+    gemini_prompt,
 )
 from tella.visual_generation.models import QCDecision, VisualQCResult
 from tella.visual_generation.references import REFERENCE_FILES, resolve_reference_catalog
@@ -100,7 +101,7 @@ def test_capabilities_are_truthful_and_edit_is_disabled():
     assert caps.provider_id == "gemini"
     assert caps.model == "gemini-3.1-flash-image"
     assert caps.supports_reference_images and caps.supports_multiple_references
-    assert caps.supports_9_16 and caps.max_reference_images == 10
+    assert caps.supports_9_16 and caps.max_reference_images == 14
     assert caps.supports_image_edit is False
     assert caps.supports_seed is False
 
@@ -114,6 +115,21 @@ def test_credentials_detected_without_exposing_value(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", secret)
     assert provider.credentials_present() is True
     assert secret not in repr(provider.__dict__)
+
+
+def test_markerless_legacy_prompt_wrapper_is_exactly_unchanged(tmp_path):
+    request = _request(tmp_path)
+
+    assert request.reference_authority_contract is None
+    assert gemini_prompt(request) == (
+        f"{request.instruction}\n\nREFERENCE GUIDANCE: Use the supplied images as actual "
+        "visual guidance for character archetype, illustration family, line quality, "
+        "palette, emotional language, and composition grammar. Create a new complete "
+        "coherent scene; do not copy source pixels or reproduce a reference composition. "
+        "Generate character, pose, interactions, props, environment, texture, lighting, "
+        "and symbolism together.\n\n"
+        f"NEGATIVE CONSTRAINTS: {request.negative_instruction}"
+    )
 
 
 def test_dedup_preserves_roles_and_scene_reference_strategy(tmp_path):
@@ -163,6 +179,22 @@ async def test_multiple_references_serialize_with_9_16_and_1k(tmp_path):
     assert metadata.mime_type == "image/jpeg"
     assert metadata.output_path.suffix == ".jpg"
     assert metadata.reference_roles[1] == ["female_identity_anchor", "style_anchor"]
+
+
+@pytest.mark.asyncio
+async def test_reference_hash_mismatch_blocks_before_transport(tmp_path):
+    interactions = RecordingInteractions(_jpeg_response())
+    provider = _provider(interactions)
+    request = _request(tmp_path)
+    request.references[0].path.write_bytes(b"changed-after-approval")
+
+    with pytest.raises(
+        GeminiProviderError,
+        match="exception_class=ReferenceHashMismatchError",
+    ):
+        await provider.generate_scene(request, tmp_path / "candidate.png")
+
+    assert interactions.calls == []
 
 
 @pytest.mark.asyncio

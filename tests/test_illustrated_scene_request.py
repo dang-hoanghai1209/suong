@@ -16,11 +16,15 @@ from tella.topic_production.execution_models import (
     VolumeLocalSceneInput,
 )
 from tella.topic_production.illustrated_request import (
+    IllustratedPromptProfile,
     IllustratedReferenceAuthority,
     IllustratedReferenceBinding,
     IllustratedSceneRequest,
     build_illustrated_scene_request,
     illustrated_scene_request_hash,
+)
+from tella.topic_production.illustrated_preparation import (
+    build_illustrated_prompt_contract,
 )
 from tella.topic_production.planner import (
     DeterministicTopicPlanner,
@@ -237,6 +241,98 @@ def test_style_identity_and_scene_changes_each_change_request_hash() -> None:
     assert illustrated_scene_request_hash(changed_style) != baseline_hash
     assert illustrated_scene_request_hash(changed_identity) != baseline_hash
     assert illustrated_scene_request_hash(changed_semantics) != baseline_hash
+
+
+def test_prompt_profile_preserves_implicit_and_explicit_standard_identity() -> None:
+    request = _request(
+        style=_reference("style_master", ["style_anchor"], "a" * 64),
+        identity=_reference(
+            "female_master",
+            ["female_identity_anchor"],
+            "b" * 64,
+        ),
+    )
+    old_payload = request.model_dump(mode="json")
+    old_payload.pop("prompt_profile")
+    reconstructed_old = IllustratedSceneRequest.model_validate(old_payload)
+    explicit_standard = request.model_copy(
+        update={"prompt_profile": IllustratedPromptProfile.STANDARD}
+    )
+    established_v3_hash = (
+        "98d3339bcc0851392a88ab03ef41a2c0876c76d986ec66a5c0c24725bc661178"
+    )
+
+    assert request.prompt_profile is IllustratedPromptProfile.STANDARD
+    assert reconstructed_old.prompt_profile is IllustratedPromptProfile.STANDARD
+    assert illustrated_scene_request_hash(request) == established_v3_hash
+    assert illustrated_scene_request_hash(explicit_standard) == established_v3_hash
+    assert illustrated_scene_request_hash(reconstructed_old) == established_v3_hash
+
+
+def test_accepted_visual_profile_changes_identity_and_round_trips() -> None:
+    standard = _request(
+        style=_reference("style_master", ["style_anchor"], "a" * 64),
+        identity=_reference(
+            "female_master",
+            ["female_identity_anchor"],
+            "b" * 64,
+        ),
+    )
+    accepted = standard.model_copy(
+        update={"prompt_profile": IllustratedPromptProfile.LEGACY_ACCEPTED}
+    )
+    restored = IllustratedSceneRequest.model_validate(
+        accepted.model_dump(mode="json")
+    )
+    standard_prompt = build_illustrated_prompt_contract(standard)
+    accepted_prompt = build_illustrated_prompt_contract(accepted)
+    restored_prompt = build_illustrated_prompt_contract(restored)
+
+    assert illustrated_scene_request_hash(standard) == (
+        "98d3339bcc0851392a88ab03ef41a2c0876c76d986ec66a5c0c24725bc661178"
+    )
+    assert illustrated_scene_request_hash(accepted) == (
+        "6ff5563a9db31eeab81fb94e2850c907ca09e329ea2ba3aa09384a444ae57582"
+    )
+    assert illustrated_scene_request_hash(accepted) != illustrated_scene_request_hash(
+        standard
+    )
+    assert accepted_prompt != standard_prompt
+    assert restored.prompt_profile is IllustratedPromptProfile.LEGACY_ACCEPTED
+    assert illustrated_scene_request_hash(restored) == illustrated_scene_request_hash(
+        accepted
+    )
+    assert restored_prompt == accepted_prompt
+
+
+def test_accepted_visual_profile_defers_scene_specific_composition() -> None:
+    request = _request(
+        style=_reference("style_master", ["style_anchor"], "a" * 64),
+        identity=_reference(
+            "female_master",
+            ["female_identity_anchor"],
+            "b" * 64,
+        ),
+    )
+    scene = request.semantic_scene.model_copy(
+        update={
+            "action": ["two people share a quiet conversation"],
+            "composition": ["two-character asymmetric arrangement"],
+        }
+    )
+    accepted = request.model_copy(
+        update={
+            "prompt_profile": IllustratedPromptProfile.LEGACY_ACCEPTED,
+            "semantic_scene": scene,
+        }
+    )
+
+    prompt = build_illustrated_prompt_contract(accepted).instruction
+
+    assert "two people share a quiet conversation" in prompt
+    assert "two-character asymmetric arrangement" in prompt
+    assert "primary character small" not in prompt
+    assert "lower-middle" not in prompt
 
 
 def test_request_hash_uses_reference_content_identity_not_local_path() -> None:

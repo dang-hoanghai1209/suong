@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import io
 import os
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,7 @@ from ..models import CandidateMetadata, GenerationRequest, ProviderCapabilities
 from ..prompt_builder import instruction_hash, request_hash
 
 DEFAULT_MODEL = "gemini-3.1-flash-image"
+PRO_IMAGE_MODEL = "gemini-3-pro-image"
 DEFAULT_RESOLUTION = "1K"
 SUPPORTED_REFERENCE_MIMES = {
     ".png": "image/png",
@@ -30,6 +33,55 @@ _SECRET_ASSIGNMENT = re.compile(
 )
 _BEARER_TOKEN = re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+")
 _LONG_BASE64 = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{24,}={0,2}")
+
+
+@dataclass(frozen=True)
+class GeminiImageModelContract:
+    """Documented model-specific image and reference limits."""
+
+    model: str
+    supported_resolutions: tuple[str, ...]
+    max_reference_images: int
+    max_character_references: int
+    max_style_references: int
+    max_context_references: int
+    supports_seed: bool = False
+
+
+_MODEL_CONTRACTS = {
+    DEFAULT_MODEL: GeminiImageModelContract(
+        model=DEFAULT_MODEL,
+        supported_resolutions=("0.5K", "1K", "2K", "4K"),
+        max_reference_images=14,
+        max_character_references=4,
+        max_style_references=0,
+        max_context_references=10,
+    ),
+    PRO_IMAGE_MODEL: GeminiImageModelContract(
+        model=PRO_IMAGE_MODEL,
+        supported_resolutions=("1K", "2K", "4K"),
+        max_reference_images=14,
+        max_character_references=5,
+        max_style_references=3,
+        max_context_references=6,
+    ),
+}
+
+
+def gemini_image_model_contract(model: str) -> GeminiImageModelContract:
+    try:
+        return _MODEL_CONTRACTS[model]
+    except KeyError as exc:
+        raise ValueError(f"unsupported Gemini image model contract: {model}") from exc
+
+
+def gemini_reference_mime_type(path: Path) -> str:
+    """Return the normalized MIME value submitted for an inline reference."""
+
+    mime_type = SUPPORTED_REFERENCE_MIMES.get(path.suffix.lower())
+    if mime_type is None:
+        raise ValueError("reference image has unsupported MIME type")
+    return mime_type
 
 
 class GeminiProviderError(RuntimeError):
@@ -73,11 +125,17 @@ class GeminiSceneImageProvider:
     ) -> None:
         if resolution not in {"0.5K", "1K", "2K", "4K"}:
             raise ValueError("Gemini image resolution must be 0.5K, 1K, 2K, or 4K")
+        contract = _MODEL_CONTRACTS.get(model)
+        if contract is not None and resolution not in contract.supported_resolutions:
+            raise ValueError(
+                f"Gemini image model {model} does not support resolution {resolution}"
+            )
         self.model = model
         self.resolution = resolution
         self._client_factory = client_factory
 
     def capabilities(self) -> ProviderCapabilities:
+        contract = _MODEL_CONTRACTS.get(self.model)
         return ProviderCapabilities(
             provider_id="gemini",
             model=self.model,
@@ -85,9 +143,11 @@ class GeminiSceneImageProvider:
             supports_reference_images=True,
             supports_multiple_references=True,
             supports_image_edit=False,
-            supports_seed=False,
+            supports_seed=contract.supports_seed if contract is not None else False,
             supports_9_16=True,
-            max_reference_images=10,
+            max_reference_images=(
+                contract.max_reference_images if contract is not None else 10
+            ),
         )
 
     def credentials_present(self) -> bool:
@@ -109,7 +169,7 @@ class GeminiSceneImageProvider:
             raise RuntimeError("LIVE_VISUAL_ACCEPTANCE_BLOCKED_PROVIDER_CAPABILITY")
 
         try:
-            instruction = _provider_instruction(request)
+            instruction = gemini_prompt(request)
             request_digest = request_hash(request)
             instruction_digest = instruction_hash(request)
             response_format = {
@@ -126,8 +186,9 @@ class GeminiSceneImageProvider:
         for reference in request.references:
             if not reference.path.is_file():
                 raise RuntimeError("LIVE_VISUAL_ACCEPTANCE_BLOCKED_REFERENCE_MISSING")
-            mime = SUPPORTED_REFERENCE_MIMES.get(reference.path.suffix.lower())
-            if mime is None:
+            try:
+                mime = gemini_reference_mime_type(reference.path)
+            except ValueError:
                 raise GeminiProviderError(
                     stage="reference_image_load_encode",
                     exception_class="UnsupportedReferenceMimeError",
@@ -138,9 +199,20 @@ class GeminiSceneImageProvider:
                     image_bytes_present=False,
                 )
             try:
-                encoded = base64.b64encode(reference.path.read_bytes()).decode("ascii")
+                reference_bytes = reference.path.read_bytes()
             except Exception as exc:
                 raise _provider_error("reference_image_load_encode", exc) from exc
+            if hashlib.sha256(reference_bytes).hexdigest() != reference.sha256:
+                raise GeminiProviderError(
+                    stage="reference_image_load_encode",
+                    exception_class="ReferenceHashMismatchError",
+                    message="reference image SHA-256 does not match approved request",
+                    request_reached_gemini=False,
+                    response_received=False,
+                    response_shape_matched=False,
+                    image_bytes_present=False,
+                )
+            encoded = base64.b64encode(reference_bytes).decode("ascii")
             parts.append({"type": "image", "data": encoded, "mime_type": mime})
             roles.append(reference.semantic_roles or [reference.role])
 
@@ -276,7 +348,9 @@ class GeminiSceneImageProvider:
         raise RuntimeError("Gemini image-edit capability is not enabled in this adapter")
 
 
-def _provider_instruction(request: GenerationRequest) -> str:
+def gemini_prompt(request: GenerationRequest) -> str:
+    if request.reference_authority_contract == "illustrated_scene_v1":
+        return request.instruction
     return (
         f"{request.instruction}\n\nREFERENCE GUIDANCE: Use the supplied images as actual "
         "visual guidance for character archetype, illustration family, line quality, "
@@ -342,6 +416,11 @@ def _sanitize(message: str) -> str:
 __all__ = [
     "DEFAULT_MODEL",
     "DEFAULT_RESOLUTION",
+    "PRO_IMAGE_MODEL",
+    "GeminiImageModelContract",
     "GeminiProviderError",
     "GeminiSceneImageProvider",
+    "gemini_prompt",
+    "gemini_image_model_contract",
+    "gemini_reference_mime_type",
 ]

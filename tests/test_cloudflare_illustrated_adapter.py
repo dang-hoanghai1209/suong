@@ -1,6 +1,8 @@
 """Network-free IllustratedSceneRequest to Cloudflare preview mapping."""
 from __future__ import annotations
 
+import hashlib
+
 from pydantic import ValidationError
 import pytest
 
@@ -143,6 +145,27 @@ def test_private_female_request_maps_to_deterministic_klein_preview() -> None:
     assert first.privacy_authorized_for_cloudflare is True
     assert first.external_calls == first.provider_reaching_calls == 0
     assert first.transport_authorized is False
+
+
+def test_shared_preparation_preserves_locked_cloudflare_identities() -> None:
+    preview = build_cloudflare_illustrated_preview(_separate_request())
+
+    assert preview.illustrated_request_hash == (
+        "7fa4bb1d16edeed13a0d9a2aa4fb962d9cf8390dde289c7593f40a53a8e6b504"
+    )
+    assert preview.provider_request_hash == (
+        "fa9f588853ab4088dbaa1b75fa51a445af3d87c27557dd9bdf57b454800e14ad"
+    )
+    assert hashlib.sha256(preview.prompt.encode("utf-8")).hexdigest() == (
+        "ae431d57abbfe6ec9598e8d0681c7e41b5c5228038793101b67f63f8786daa96"
+    )
+    assert [
+        (upload.slot, upload.sha256, upload.declared_roles)
+        for upload in preview.reference_uploads
+    ] == [
+        (0, "b" * 64, ["female_identity_anchor"]),
+        (1, "a" * 64, ["style_anchor"]),
+    ]
 
 
 def test_reference_order_is_identity_then_style() -> None:
