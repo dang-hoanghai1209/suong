@@ -68,6 +68,16 @@ from .production_prompt import (
     build_topic_production_request,
 )
 from .readiness import evaluate_render_readiness
+from .renderer_bridge import (
+    AcceptedCandidateRendererBridge,
+    AuthoritativeNarrationTimeline,
+    AuthorizedCandidateRequest,
+    RendererAcceptedCandidateInput,
+    RendererBridgeAuthorization,
+    RendererPlanProfile,
+    RendererSceneTimingInput,
+    build_renderer_plan_from_accepted_candidates,
+)
 from .reference_planning import (
     APPROVED_REFERENCE_DEFINITIONS,
     ApprovedReferenceValidationError,
@@ -180,6 +190,9 @@ from .volume_orchestration import execute_volume_initial_scene
 __all__ = [
     "AcceptancePriority",
     "AcceptedCandidateRecord",
+    "AcceptedCandidateRendererBridge",
+    "AuthoritativeNarrationTimeline",
+    "AuthorizedCandidateRequest",
     "ApprovedReference",
     "ApprovedReferenceValidationError",
     "APPROVED_REFERENCE_DEFINITIONS",
@@ -228,6 +241,10 @@ __all__ = [
     "ReferenceCatalog",
     "ReferenceDecision",
     "ReferenceDecisionStatus",
+    "RendererAcceptedCandidateInput",
+    "RendererBridgeAuthorization",
+    "RendererPlanProfile",
+    "RendererSceneTimingInput",
     "ProviderAvailability",
     "ProviderRoute",
     "PollinationsExecutionOutcome",
@@ -277,6 +294,7 @@ __all__ = [
     "build_production_run_plan",
     "build_scene_briefs",
     "build_topic_production_request",
+    "build_renderer_plan_from_accepted_candidates",
     "build_pollinations_readiness_snapshot",
     "classify_scene_capability",
     "classify_volume_qc",
