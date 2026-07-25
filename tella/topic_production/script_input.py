@@ -247,7 +247,7 @@ class SceneHint(_ValidatedFrozenModel):
 
 
 class StoryPlanHintValidator(Protocol):
-    """Stage-2 boundary; no StoryPlan-aware implementation exists yet."""
+    """Stage-2 semantic boundary; target-only binding is intentionally separate."""
 
     def validate(self, *, hints: tuple[SceneHint, ...], story_plan: StoryPlan) -> None: ...
 

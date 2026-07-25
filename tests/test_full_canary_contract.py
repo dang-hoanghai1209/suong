@@ -11,8 +11,8 @@ from tella.topic_production.models import (
 from tella.topic_production.full_canary import (
     FULL_CANARY_STORY_PLAN_SHA256,
     build_full_canary_scene_briefs,
-    story_plan_sha256,
 )
+from tella.topic_production.story_plan_identity import canonical_story_plan_sha256
 
 
 _TOPIC = "Học cách dịu dàng với chính mình sau những ngày mệt mỏi."
@@ -96,7 +96,7 @@ def _story_plan() -> StoryPlan:
 
 def test_canary_staging_requires_exact_authoritative_story_identity_and_hash() -> None:
     story = _story_plan()
-    assert story_plan_sha256(story) == FULL_CANARY_STORY_PLAN_SHA256
+    assert canonical_story_plan_sha256(story) == FULL_CANARY_STORY_PLAN_SHA256
     assert len(build_full_canary_scene_briefs(story)) == 8
 
     wrong_identity = story.model_copy(
@@ -118,9 +118,7 @@ def test_visual_overlay_preserves_every_authoritative_story_field() -> None:
     story = _story_plan()
     briefs = build_full_canary_scene_briefs(story)
 
-    assert [brief.scene_id for brief in briefs] == [
-        f"scene_{order:02d}" for order in range(1, 9)
-    ]
+    assert [brief.scene_id for brief in briefs] == [f"scene_{order:02d}" for order in range(1, 9)]
     assert [brief.order for brief in briefs] == list(range(1, 9))
     assert [brief.source_beat_id for brief in briefs] == [
         beat.beat_id for beat in story.semantic_beats
@@ -131,9 +129,7 @@ def test_visual_overlay_preserves_every_authoritative_story_field() -> None:
     assert [brief.meaning for brief in briefs] == [
         beat.semantic_purpose for beat in story.semantic_beats
     ]
-    assert [brief.topic_intent for brief in briefs] == [
-        story.topic_intent
-    ] * 8
+    assert [brief.topic_intent for brief in briefs] == [story.topic_intent] * 8
     assert [brief.duration_seconds for brief in briefs] == [
         beat.duration_seconds for beat in story.semantic_beats
     ]
@@ -149,9 +145,7 @@ def test_story_semantic_mutation_is_rejected(mutation: str) -> None:
         beats[0] = beats[0].model_copy(update={"semantic_purpose": "changed meaning"})
         changed = story.model_copy(update={"semantic_beats": beats})
     elif mutation == "order":
-        changed = story.model_copy(
-            update={"semantic_beats": list(reversed(story.semantic_beats))}
-        )
+        changed = story.model_copy(update={"semantic_beats": list(reversed(story.semantic_beats))})
     else:
         changed = story.model_copy(update={"topic_intent": "changed topic intent"})
 
@@ -181,9 +175,7 @@ def test_canary_fixture_has_quantitative_visual_diversity() -> None:
         for scene_id, action in actions.items()
         if "standing" in action or "pausing halfway up" in action
     }
-    moving = {
-        scene_id for scene_id, action in actions.items() if "walking" in action
-    }
+    moving = {scene_id for scene_id, action in actions.items() if "walking" in action}
 
     assert len(seated_or_reclined) <= 3
     assert len(clear_standing) >= 3

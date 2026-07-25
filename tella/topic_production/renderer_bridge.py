@@ -1,4 +1,5 @@
 """Fail-closed mapping from authorized accepted images to the existing renderer."""
+
 from __future__ import annotations
 
 import hashlib
@@ -15,6 +16,7 @@ from tella.visual_generation.providers.kinds import ProviderKind
 from .models import GenerationTier
 from .runtime import evaluate_execution_readiness
 from .runtime_models import ExecutionRunState
+from .story_plan_identity import canonical_story_plan_sha256
 from .strategy import VisualExecutionMode
 
 
@@ -120,14 +122,10 @@ class RendererSceneTimingInput(BaseModel):
 
     @model_validator(mode="after")
     def validate_interval(self) -> "RendererSceneTimingInput":
-        if round(self.start_seconds + self.duration_seconds, 6) != round(
-            self.end_seconds, 6
-        ):
+        if round(self.start_seconds + self.duration_seconds, 6) != round(self.end_seconds, 6):
             raise ValueError("renderer timeline end must equal start plus duration")
         if self.render_clip_duration_seconds < self.duration_seconds:
-            raise ValueError(
-                "renderer clip duration cannot be shorter than its timeline slot"
-            )
+            raise ValueError("renderer clip duration cannot be shorter than its timeline slot")
         return self
 
 
@@ -203,19 +201,13 @@ def _canonical_hash(payload: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _story_plan_hash(state: ExecutionRunState) -> str:
-    return _canonical_hash(state.run_plan.story_plan.model_dump(mode="json"))
-
-
 def _planning_hash(state: ExecutionRunState) -> str:
     run = state.run_plan
     payload = {
         "job_id": run.job_id,
         "topic": run.story_plan.topic,
         "story_plan": run.story_plan.model_dump(mode="json"),
-        "executions": [
-            item.model_dump(mode="json") for item in run.scene_execution_plans
-        ],
+        "executions": [item.model_dump(mode="json") for item in run.scene_execution_plans],
         "manifest": run.manifest.model_dump(mode="json"),
         "production_strategy": run.production_strategy.model_dump(mode="json"),
     }
@@ -233,9 +225,7 @@ def _sha256_file(path: Path) -> str:
 def _renderer_primary_text(values: list[str], *, maximum: int) -> str:
     value = next((item.strip() for item in values if item.strip()), "")
     if len(value) > maximum:
-        raise ValueError(
-            f"renderer compatibility field exceeds {maximum} characters: {value}"
-        )
+        raise ValueError(f"renderer compatibility field exceeds {maximum} characters: {value}")
     return value
 
 
@@ -243,9 +233,7 @@ def _artifact_path(value: str, artifact_root: Path | None) -> Path:
     path = Path(value)
     if not path.is_absolute():
         if artifact_root is None:
-            raise ValueError(
-                "relative accepted artifact paths require an explicit artifact_root"
-            )
+            raise ValueError("relative accepted artifact paths require an explicit artifact_root")
         path = artifact_root / path
     return path.resolve()
 
@@ -270,9 +258,7 @@ def _validate_image(
     if image_format not in supported_formats:
         raise ValueError(f"accepted artifact format is unsupported: {image_format}")
     if (width, height) != (expected_width, expected_height):
-        raise ValueError(
-            "accepted artifact dimensions do not match the authorized request"
-        )
+        raise ValueError("accepted artifact dimensions do not match the authorized request")
     if require_portrait and height <= width:
         raise ValueError("accepted artifact does not have required portrait geometry")
     return image_format, width, height
@@ -289,16 +275,14 @@ def _validate_authorized_run(
         raise ValueError("renderer authorization planning hash does not match")
     if _planning_hash(state) != run.planning_hash:
         raise ValueError("run planning identity does not match its authorized contents")
-    story_hash = _story_plan_hash(state)
+    story_hash = canonical_story_plan_sha256(state.run_plan.story_plan)
     if story_hash != authorization.story_plan_sha256:
         raise ValueError("renderer authorization StoryPlan SHA-256 does not match")
     if run.production_strategy.visual_mode is not authorization.required_visual_mode:
         raise ValueError("authorized run is not illustrated-scene execution")
 
     expected = run.scene_execution_plans
-    actual_identity = [
-        (item.scene_id, item.execution_plan.order) for item in state.scenes
-    ]
+    actual_identity = [(item.scene_id, item.execution_plan.order) for item in state.scenes]
     expected_identity = [(item.scene_id, item.order) for item in expected]
     if actual_identity != expected_identity:
         raise ValueError(
@@ -309,13 +293,9 @@ def _validate_authorized_run(
         for runtime, planned in zip(state.scenes, expected, strict=True)
     ):
         raise ValueError("runtime scene execution differs from the authorized plan")
-    request_identity = [
-        (item.scene_id, item.order) for item in authorization.scene_requests
-    ]
+    request_identity = [(item.scene_id, item.order) for item in authorization.scene_requests]
     if request_identity != expected_identity:
-        raise ValueError(
-            "authorized request scene set/order does not match the execution plan"
-        )
+        raise ValueError("authorized request scene set/order does not match the execution plan")
 
 
 def _validate_timeline(
@@ -323,7 +303,7 @@ def _validate_timeline(
     timeline: AuthoritativeNarrationTimeline,
 ) -> dict[str, RendererSceneTimingInput]:
     story = state.run_plan.story_plan
-    if timeline.story_plan_sha256 != _story_plan_hash(state):
+    if timeline.story_plan_sha256 != canonical_story_plan_sha256(story):
         raise ValueError("narration timeline StoryPlan SHA-256 does not match")
     if timeline.narration_text != story.narration_text:
         raise ValueError("narration timeline text does not match authoritative StoryPlan")
@@ -349,17 +329,11 @@ def _validate_timeline(
         expected_clip_duration = timing.duration_seconds + (
             transition if index < last_index else 0.0
         )
-        if round(timing.render_clip_duration_seconds, 6) != round(
-            expected_clip_duration, 6
-        ):
-            raise ValueError(
-                "renderer clip duration does not preserve effective transition timing"
-            )
+        if round(timing.render_clip_duration_seconds, 6) != round(expected_clip_duration, 6):
+            raise ValueError("renderer clip duration does not preserve effective transition timing")
         prior_end = timing.end_seconds
     if round(prior_end, 6) != round(timeline.processed_duration_seconds, 6):
-        raise ValueError(
-            "narration timeline does not end at processed narration duration"
-        )
+        raise ValueError("narration timeline does not end at processed narration duration")
     return {item.scene_id: item for item in timeline.scene_timings}
 
 
@@ -382,16 +356,11 @@ def _validate_attempt(
     assert attempt is not None
     execution = runtime_scene.execution_plan
     authorized_request = (
-        execution.draft
-        if accepted.source_tier is GenerationTier.DRAFT
-        else execution.acceptance
+        execution.draft if accepted.source_tier is GenerationTier.DRAFT else execution.acceptance
     )
     if accepted.source_tier is not authorized_identity.source_tier:
         raise ValueError("accepted candidate source tier is unauthorized")
-    if (
-        forbid_local_compositor
-        and attempt.provider_kind is ProviderKind.LOCAL_COMPOSITOR
-    ):
+    if forbid_local_compositor and attempt.provider_kind is ProviderKind.LOCAL_COMPOSITOR:
         raise ValueError("local-compositor candidates are forbidden by authorization")
     if attempt.provider_kind is not authorized_identity.provider_kind:
         raise ValueError("accepted candidate provider kind is unauthorized")
@@ -465,8 +434,7 @@ def build_renderer_plan_from_accepted_candidates(
     readiness = evaluate_execution_readiness(state)
     if not readiness.ready:
         raise ValueError(
-            "accepted candidates are not renderer-ready: "
-            + readiness.model_dump_json()
+            "accepted candidates are not renderer-ready: " + readiness.model_dump_json()
         )
     timings = _validate_timeline(state, narration_timeline)
 
@@ -488,9 +456,7 @@ def build_renderer_plan_from_accepted_candidates(
             raise ValueError(f"accepted artifact is missing for {brief.scene_id}: {path}")
         actual_sha256 = _sha256_file(path)
         if actual_sha256 != accepted.artifact_sha256:
-            raise ValueError(
-                f"accepted artifact SHA-256 mismatch for {brief.scene_id}"
-            )
+            raise ValueError(f"accepted artifact SHA-256 mismatch for {brief.scene_id}")
         image_format, width, height = _validate_image(
             path,
             expected_width=authorized_request.width,
@@ -607,9 +573,7 @@ def build_renderer_plan_from_accepted_candidates(
         resolved_tts_language=profile.resolved_tts_language,
         resolved_voice=profile.resolved_voice,
         resolved_voice_rate=profile.resolved_voice_rate,
-        requested_production_duration_seconds=(
-            profile.requested_production_duration_seconds
-        ),
+        requested_production_duration_seconds=(profile.requested_production_duration_seconds),
         duration_target_seconds=profile.duration_target_seconds,
         scenes=renderer_scenes,
         demo_mode=profile.demo_mode,
@@ -638,9 +602,7 @@ def build_renderer_plan_from_accepted_candidates(
         subtitle_style=profile.subtitle_style,
         music_enabled=profile.music_enabled,
         image_request_budget_max=profile.image_request_budget_max,
-        image_request_budget_used_at_finish=(
-            profile.image_request_budget_used_at_finish
-        ),
+        image_request_budget_used_at_finish=(profile.image_request_budget_used_at_finish),
         ai_images_requested=profile.ai_images_requested,
         ai_images_generated=profile.ai_images_generated,
         ai_images_reused=profile.ai_images_reused,

@@ -1,4 +1,5 @@
 """Typed contracts for topic-aware, dual-tier emotional-video production."""
+
 from __future__ import annotations
 
 from enum import StrEnum
@@ -55,12 +56,12 @@ class ProductionSceneStatus(StrEnum):
 
 
 class PlannerMetadata(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, revalidate_instances="always")
 
     planner_id: str = "deterministic_topic_fixture"
     planner_version: str = "topic_fixture_v1"
     normalized_topic: str = Field(min_length=1)
-    topic_concepts: list[str] = Field(min_length=1)
+    topic_concepts: tuple[str, ...] = Field(min_length=1)
     deterministic_key: str = Field(pattern=r"^[0-9a-f]{16}$")
     semantic_evaluator: str = "deterministic_structural_v1"
     planner_mode: PlannerMode = PlannerMode.FIXTURE
@@ -75,7 +76,7 @@ class PlannerMetadata(BaseModel):
 
 
 class SemanticBeat(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, revalidate_instances="always")
 
     beat_id: str = Field(pattern=r"^beat_[0-9]{2}$")
     order: int = Field(ge=1, le=8)
@@ -88,7 +89,7 @@ class SemanticBeat(BaseModel):
 
 
 class StoryPlan(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, revalidate_instances="always")
 
     topic: str = Field(min_length=1)
     language: str = Field(min_length=2, max_length=12)
@@ -96,16 +97,15 @@ class StoryPlan(BaseModel):
     target_duration_seconds: float = Field(ge=9.0, le=38.0)
     requested_scene_count: int = Field(ge=3, le=8)
     narration_text: str = Field(min_length=1)
-    emotional_arc: list[str] = Field(min_length=3)
+    emotional_arc: tuple[str, ...] = Field(min_length=3)
     topic_intent: str = Field(min_length=1)
-    semantic_beats: list[SemanticBeat]
+    semantic_beats: tuple[SemanticBeat, ...]
     planner_metadata: PlannerMetadata
 
     @model_validator(mode="after")
     def validate_beats(self) -> "StoryPlan":
         standard_run = (
-            self.requested_scene_count in {7, 8}
-            and 32.0 <= self.target_duration_seconds <= 38.0
+            self.requested_scene_count in {7, 8} and 32.0 <= self.target_duration_seconds <= 38.0
         )
         manual_short_run = (
             self.requested_scene_count == 3
@@ -129,7 +129,9 @@ class StoryPlan(BaseModel):
             raise ValueError("semantic beat IDs must be unique")
         expected_narration = " ".join(beat.narration_segment for beat in self.semantic_beats)
         if self.narration_text != expected_narration:
-            raise ValueError("narration_text must be the continuous concatenation of beat narration")
+            raise ValueError(
+                "narration_text must be the continuous concatenation of beat narration"
+            )
         duration = round(sum(beat.duration_seconds for beat in self.semantic_beats), 3)
         if duration != round(self.target_duration_seconds, 3):
             raise ValueError("semantic beat durations must total target_duration_seconds")
@@ -190,7 +192,10 @@ class CandidateArtifact(BaseModel):
     @field_validator("reference_hashes")
     @classmethod
     def validate_reference_hashes(cls, value: list[str]) -> list[str]:
-        if any(len(item) != 64 or any(char not in "0123456789abcdef" for char in item) for item in value):
+        if any(
+            len(item) != 64 or any(char not in "0123456789abcdef" for char in item)
+            for item in value
+        ):
             raise ValueError("reference hashes must be lowercase SHA-256 digests")
         return value
 

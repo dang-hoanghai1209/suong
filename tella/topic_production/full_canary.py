@@ -1,9 +1,8 @@
 """Authoritative visual-only scene design for the first full Klein 4B canary."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
-import json
 
 from .models import (
     AcceptancePriority,
@@ -13,11 +12,10 @@ from .models import (
     SceneType,
     StoryPlan,
 )
+from .story_plan_identity import canonical_story_plan_sha256
 
 FULL_CANARY_STORY_ID = "supplied_eligible_acceptance_story:82d876cb5ef79698"
-FULL_CANARY_STORY_PLAN_SHA256 = (
-    "5316d0fc18b9936039f104712219e248ddf7eb76c2b0c14ceb3b3a311441a66a"
-)
+FULL_CANARY_STORY_PLAN_SHA256 = "5316d0fc18b9936039f104712219e248ddf7eb76c2b0c14ceb3b3a311441a66a"
 _FULL_CANARY_BEAT_IDS = tuple(f"beat_{order:02d}" for order in range(1, 9))
 
 
@@ -55,9 +53,7 @@ _VISUAL_SPECS = (
     ),
     _VisualSpec(
         scene_type=SceneType.ORGANIC_DAILY_VIGNETTE,
-        action=(
-            "sitting on the edge of an unmade bed while setting a dark phone face-down",
-        ),
+        action=("sitting on the edge of an unmade bed while setting a dark phone face-down",),
         environment=(
             "quiet early-morning bedroom",
             "soft bedside light and rumpled blanket",
@@ -73,9 +69,7 @@ _VISUAL_SPECS = (
     ),
     _VisualSpec(
         scene_type=SceneType.JOURNEY_TRANSITION,
-        action=(
-            "pausing halfway up a quiet stair landing with one hand resting on the rail",
-        ),
+        action=("pausing halfway up a quiet stair landing with one hand resting on the rail",),
         environment=(
             "minimal apartment stairwell",
             "one soft cream doorway glow behind the landing",
@@ -113,9 +107,7 @@ _VISUAL_SPECS = (
     ),
     _VisualSpec(
         scene_type=SceneType.SOLO_EMOTIONAL_VIGNETTE,
-        action=(
-            "gently wiping one tear with a tissue while leaning beside a washbasin",
-        ),
+        action=("gently wiping one tear with a tissue while leaning beside a washbasin",),
         environment=(
             "small quiet bathroom with no visible mirror reflection",
             "matte tiled wall reduced to a few hand-drawn lines",
@@ -152,12 +144,8 @@ _VISUAL_SPECS = (
     ),
     _VisualSpec(
         scene_type=SceneType.JOURNEY_TRANSITION,
-        action=(
-            "walking slowly along a warm garden path with one hand near her chest",
-        ),
-        environment=(
-            "simple path between low plants and a cream-lit doorway in the distance",
-        ),
+        action=("walking slowly along a warm garden path with one hand near her chest",),
+        environment=("simple path between low plants and a cream-lit doorway in the distance",),
         objects=("small cloth bag moving naturally with her step",),
         symbols=("a few new leaves appear along the path without becoming icons",),
         composition=(
@@ -200,13 +188,10 @@ def build_full_canary_scene_briefs(plan: StoryPlan) -> list[ProductionSceneBrief
         raise ValueError("full Klein canary visual design requires exactly eight beats")
     if plan.language != "vi":
         raise ValueError("full Klein canary visual design requires Vietnamese narration")
-    story_id = (
-        f"{plan.planner_metadata.planner_id}:"
-        f"{plan.planner_metadata.deterministic_key}"
-    )
+    story_id = f"{plan.planner_metadata.planner_id}:{plan.planner_metadata.deterministic_key}"
     if story_id != FULL_CANARY_STORY_ID:
         raise ValueError("full Klein canary visual design is locked to one StoryPlan")
-    if story_plan_sha256(plan) != FULL_CANARY_STORY_PLAN_SHA256:
+    if canonical_story_plan_sha256(plan) != FULL_CANARY_STORY_PLAN_SHA256:
         raise ValueError("full Klein canary StoryPlan SHA-256 does not match")
     if tuple(beat.beat_id for beat in plan.semantic_beats) != _FULL_CANARY_BEAT_IDS:
         raise ValueError("full Klein canary beat IDs do not match")
@@ -227,9 +212,7 @@ def build_full_canary_scene_briefs(plan: StoryPlan) -> list[ProductionSceneBrief
                 scene_type=spec.scene_type,
                 narrative_text=beat.narration_segment,
                 meaning=beat.semantic_purpose,
-                emotional_tone=list(
-                    dict.fromkeys([beat.emotional_state, "gentle"])
-                ),
+                emotional_tone=list(dict.fromkeys([beat.emotional_state, "gentle"])),
                 topic_intent=plan.topic_intent,
                 characters=["recurring_woman"],
                 identity_requirements=identity_requirements,
@@ -272,21 +255,8 @@ def build_full_canary_scene_briefs(plan: StoryPlan) -> list[ProductionSceneBrief
     return briefs
 
 
-def story_plan_sha256(plan: StoryPlan) -> str:
-    """Return a stable identity hash without interpreting story semantics."""
-
-    encoded = json.dumps(
-        plan.model_dump(mode="json"),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
 __all__ = [
     "FULL_CANARY_STORY_ID",
     "FULL_CANARY_STORY_PLAN_SHA256",
     "build_full_canary_scene_briefs",
-    "story_plan_sha256",
 ]

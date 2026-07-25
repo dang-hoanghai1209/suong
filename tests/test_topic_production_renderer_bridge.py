@@ -28,7 +28,7 @@ from tella.topic_production import (
     record_human_qc,
     register_accepted_candidate,
 )
-from tella.topic_production.full_canary import story_plan_sha256
+from tella.topic_production.story_plan_identity import canonical_story_plan_sha256
 from tella.visual_generation.providers.kinds import ProviderKind
 
 
@@ -54,12 +54,8 @@ def _accepted_state_with_valid_images(tmp_path: Path):
     for runtime_scene in state.scenes:
         execution = runtime_scene.execution_plan
         draft = execution.draft
-        logical_hash = hashlib.sha256(
-            f"logical:{runtime_scene.scene_id}".encode()
-        ).hexdigest()
-        provider_hash = hashlib.sha256(
-            f"provider:{runtime_scene.scene_id}".encode()
-        ).hexdigest()
+        logical_hash = hashlib.sha256(f"logical:{runtime_scene.scene_id}".encode()).hexdigest()
+        provider_hash = hashlib.sha256(f"provider:{runtime_scene.scene_id}".encode()).hexdigest()
         artifact = tmp_path / f"{runtime_scene.scene_id}.png"
         Image.new("RGB", (draft.width, draft.height), "#a58f82").save(
             artifact,
@@ -133,7 +129,7 @@ def _accepted_state_with_valid_images(tmp_path: Path):
     authorization = RendererBridgeAuthorization(
         job_id=run.job_id,
         planning_hash=run.planning_hash,
-        story_plan_sha256=story_plan_sha256(run.story_plan),
+        story_plan_sha256=canonical_story_plan_sha256(run.story_plan),
         scene_requests=authorized_requests,
         forbid_local_compositor=True,
         supported_image_formats=("PNG", "JPEG"),
@@ -210,15 +206,14 @@ def _timeline(state) -> AuthoritativeNarrationTimeline:
             duration_seconds=timing_plan.scene_timeline_durations[index],
             render_clip_duration_seconds=timing_plan.scene_clip_durations[index],
             end_seconds=round(
-                timing_plan.scene_starts[index]
-                + timing_plan.scene_timeline_durations[index],
+                timing_plan.scene_starts[index] + timing_plan.scene_timeline_durations[index],
                 6,
             ),
         )
         for index, item in enumerate(execution_plans)
     ]
     return AuthoritativeNarrationTimeline(
-        story_plan_sha256=story_plan_sha256(state.run_plan.story_plan),
+        story_plan_sha256=canonical_story_plan_sha256(state.run_plan.story_plan),
         narration_text=state.run_plan.story_plan.narration_text,
         processed_duration_seconds=timing_plan.authoritative_duration,
         scene_timings=timings,
@@ -293,9 +288,7 @@ def test_bridge_maps_validated_images_without_side_effects(tmp_path: Path) -> No
     assert bridge.renderer_plan.global_narration_text == state.run_plan.story_plan.narration_text
     assert bridge.renderer_plan.processed_narration_duration == 35.0
     assert bridge.renderer_plan.total_duration == 35.0
-    assert bridge.renderer_plan.render_timing_contract[
-        "renderer_stretch_authorized"
-    ] is False
+    assert bridge.renderer_plan.render_timing_contract["renderer_stretch_authorized"] is False
     assert bridge.renderer_plan.ai_images_requested == 0
     assert bridge.renderer_plan.ai_images_generated == 0
     assert bridge.renderer_plan.ai_images_reused == 8
@@ -441,9 +434,7 @@ def test_bridge_rejects_local_compositor_or_fallback_provenance(
     attempt = state.scenes[0].generation_attempts[0]
     fallback = _mutate_candidate(
         state,
-        attempt_updates={
-            "metadata": {**attempt.metadata, "used_local_fallback": True}
-        },
+        attempt_updates={"metadata": {**attempt.metadata, "used_local_fallback": True}},
     )
     with pytest.raises(ValueError, match="fallback provenance"):
         _bridge(fallback, authorization)
