@@ -5,7 +5,9 @@ from pathlib import Path
 
 from PIL import Image
 import pytest
+from pydantic import ValidationError
 
+from tella.composer.timing import build_render_timing_plan
 from tella.topic_production import (
     AuthoritativeNarrationTimeline,
     AuthorizedCandidateRequest,
@@ -182,35 +184,60 @@ def _profile(scene_count: int = 8) -> RendererPlanProfile:
     )
 
 
+def test_renderer_profile_rejects_noncanonical_media_source() -> None:
+    with pytest.raises(ValidationError, match="media_source"):
+        RendererPlanProfile.model_validate(
+            {
+                **_profile().model_dump(),
+                "media_source": "accepted_ai_images",
+            }
+        )
+
+
 def _timeline(state) -> AuthoritativeNarrationTimeline:
     effective_transition = 0.8
     execution_plans = state.run_plan.scene_execution_plans
+    timing_plan = build_render_timing_plan(
+        [item.timing.duration_seconds for item in execution_plans],
+        narration_duration=execution_plans[-1].timing.end_seconds,
+        configured_transition_duration=effective_transition,
+    )
     timings = [
         RendererSceneTimingInput(
             scene_id=item.scene_id,
             order=item.order,
-            start_seconds=item.timing.start_seconds,
-            duration_seconds=item.timing.duration_seconds,
-            render_clip_duration_seconds=(
-                item.timing.duration_seconds + effective_transition
-                if item.order < len(execution_plans)
-                else item.timing.duration_seconds
+            start_seconds=timing_plan.scene_starts[index],
+            duration_seconds=timing_plan.scene_timeline_durations[index],
+            render_clip_duration_seconds=timing_plan.scene_clip_durations[index],
+            end_seconds=round(
+                timing_plan.scene_starts[index]
+                + timing_plan.scene_timeline_durations[index],
+                6,
             ),
-            end_seconds=item.timing.end_seconds,
         )
-        for item in execution_plans
+        for index, item in enumerate(execution_plans)
     ]
     return AuthoritativeNarrationTimeline(
         story_plan_sha256=story_plan_sha256(state.run_plan.story_plan),
         narration_text=state.run_plan.story_plan.narration_text,
-        processed_duration_seconds=timings[-1].end_seconds,
+        processed_duration_seconds=timing_plan.authoritative_duration,
         scene_timings=timings,
         render_timing_contract={
-            "authority": "caller_supplied_processed_narration",
+            **timing_plan.metadata(),
             "renderer_stretch_authorized": False,
-            "effective_transition_duration_seconds": effective_transition,
         },
     )
+
+
+def test_timeline_rejects_missing_postmux_tolerance(tmp_path: Path) -> None:
+    state, _ = _accepted_state_with_valid_images(tmp_path)
+    payload = _timeline(state).model_dump()
+    contract = dict(payload["render_timing_contract"])
+    contract.pop("timing_tolerance_seconds")
+    payload["render_timing_contract"] = contract
+
+    with pytest.raises(ValidationError, match="timing_tolerance_seconds"):
+        AuthoritativeNarrationTimeline.model_validate(payload)
 
 
 def _bridge(state, authorization):

@@ -9,7 +9,7 @@ from typing import Literal
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from tella.planner.models import Scene, TellaScenePlan
+from tella.planner.models import MediaSource, Scene, TellaScenePlan
 from tella.visual_generation.providers.kinds import ProviderKind
 
 from .models import GenerationTier
@@ -60,7 +60,7 @@ class RendererPlanProfile(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     title: str = Field(min_length=2, max_length=160)
-    media_source: str = Field(min_length=1)
+    media_source: MediaSource
     theme: str = Field(min_length=1)
     recipe_id: str = Field(min_length=1)
     recipe_version: int = Field(ge=1)
@@ -142,6 +142,23 @@ class AuthoritativeNarrationTimeline(BaseModel):
     scene_timings: list[RendererSceneTimingInput] = Field(min_length=1)
     render_timing_contract: dict[str, object]
     renderer_stretch_authorized: Literal[False] = False
+
+    @model_validator(mode="after")
+    def validate_render_timing_contract(self) -> "AuthoritativeNarrationTimeline":
+        required = {
+            "expected_final_timeline_duration_seconds",
+            "timing_tolerance_seconds",
+        }
+        missing = sorted(required - self.render_timing_contract.keys())
+        if missing:
+            raise ValueError(
+                "authoritative narration timeline is missing required render "
+                f"timing fields: {missing}"
+            )
+        tolerance = float(self.render_timing_contract["timing_tolerance_seconds"])
+        if tolerance < 0:
+            raise ValueError("render timing tolerance cannot be negative")
+        return self
 
 
 class RendererAcceptedCandidateInput(BaseModel):
