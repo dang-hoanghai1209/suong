@@ -179,9 +179,12 @@ def test_manifest_timings_are_positive_contiguous_and_total_target(
 
 @pytest.mark.parametrize(
     ("scene_count", "duration"),
-    [(6, 35.0), (9, 35.0), (7, 31.9), (8, 38.1), (7, 38.0)],
+    [(6, 35.0), (9, 35.0)],
 )
-def test_incompatible_timing_requests_fail_closed(scene_count: int, duration: float) -> None:
+def test_unsupported_scene_counts_remain_rejected(
+    scene_count: int,
+    duration: float,
+) -> None:
     with pytest.raises(ValueError):
         allocate_durations(scene_count, duration)
 

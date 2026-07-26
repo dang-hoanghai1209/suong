@@ -2,6 +2,15 @@ from __future__ import annotations
 
 import pytest
 
+from tella.composer.timing import (
+    build_render_timing_plan,
+    validate_actual_render_duration,
+)
+from tella.topic_production.duration_policy import (
+    DurationAssessmentStatus,
+    DurationValueAuthority,
+    assess_mvp_duration_target,
+)
 from tella.topic_production.models import (
     PlannerMetadata,
     PlannerMode,
@@ -120,6 +129,33 @@ def test_canary_staging_requires_exact_authoritative_story_identity_and_hash() -
     wrong_hash = story.model_copy(update={"topic_intent": "mutated intent"})
     with pytest.raises(ValueError, match="SHA-256 does not match"):
         build_full_canary_scene_briefs(wrong_hash)
+
+
+def test_full_canary_planned_and_measured_duration_authorities_remain_separate() -> None:
+    story = _story_plan()
+    planned = assess_mvp_duration_target(
+        story.target_duration_seconds,
+        value_authority=DurationValueAuthority.PLANNED,
+    )
+    measured = assess_mvp_duration_target(
+        29.796417,
+        value_authority=DurationValueAuthority.MEASURED,
+    )
+    timing = build_render_timing_plan(
+        list(_DURATIONS),
+        requested_duration=story.target_duration_seconds,
+        narration_duration=29.796417,
+        configured_transition_duration=0.8,
+    )
+    technical = validate_actual_render_duration(timing.metadata(), 29.800)
+
+    assert planned.status is DurationAssessmentStatus.IN_TARGET
+    assert measured.status is DurationAssessmentStatus.OUTSIDE_TARGET_WARNING
+    assert canonical_story_plan_sha256(story) == FULL_CANARY_STORY_PLAN_SHA256
+    assert timing.authority == "continuous_narration"
+    assert technical["timing_tolerance_seconds"] == 0.15
+    assert technical["actual_duration_status"] == "passed"
+    assert abs(technical["actual_duration_delta_seconds"]) <= 0.15
 
 
 def test_visual_overlay_preserves_every_authoritative_story_field() -> None:

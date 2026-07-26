@@ -3,10 +3,33 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from decimal import Decimal, ROUND_HALF_UP
 from enum import StrEnum
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictFloat,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
+
+_MILLISECONDS_PER_SECOND = Decimal("1000")
+
+
+def _canonical_milliseconds(value: float) -> int:
+    """Convert a validated duration's stable decimal string to integer milliseconds.
+
+    Exact half-millisecond ties round upward. Structural timing comparison and
+    allocation use this rule while StoryPlan retains the raw duration intent.
+    """
+
+    return int(
+        (Decimal(str(value)) * _MILLISECONDS_PER_SECOND).to_integral_value(rounding=ROUND_HALF_UP)
+    )
 
 
 class SceneType(StrEnum):
@@ -129,14 +152,14 @@ class SemanticBeat(_ValidatedFrozenStoryModel):
     emotional_state: str = Field(min_length=1)
     transition_intent: str = Field(min_length=1)
     visual_intent: str = Field(min_length=1)
-    duration_seconds: float = Field(gt=0, ge=3.0, le=5.0)
+    duration_seconds: StrictFloat = Field(gt=0, allow_inf_nan=False)
 
 
 class StoryPlan(_ValidatedFrozenStoryModel):
     topic: str = Field(min_length=1)
     language: str = Field(min_length=2, max_length=12)
     aspect_ratio: Literal["9:16"] = "9:16"
-    target_duration_seconds: float = Field(ge=9.0, le=38.0)
+    target_duration_seconds: StrictFloat = Field(gt=0, allow_inf_nan=False)
     requested_scene_count: int = Field(ge=3, le=8)
     narration_text: str = Field(min_length=1)
     emotional_arc: tuple[str, ...] = Field(min_length=3)
@@ -172,12 +195,9 @@ class StoryPlan(_ValidatedFrozenStoryModel):
 
     @model_validator(mode="after")
     def validate_beats(self) -> "StoryPlan":
-        standard_run = (
-            self.requested_scene_count in {7, 8} and 32.0 <= self.target_duration_seconds <= 38.0
-        )
+        standard_run = self.requested_scene_count in {7, 8}
         manual_short_run = (
             self.requested_scene_count == 3
-            and 9.0 <= self.target_duration_seconds <= 15.0
             and self.planner_metadata.planner_mode is PlannerMode.PRODUCTION
             and self.planner_metadata.production_eligible
             and self.planner_metadata.planner_id == "manual_topic_input"
@@ -195,8 +215,10 @@ class StoryPlan(_ValidatedFrozenStoryModel):
         ids = [beat.beat_id for beat in self.semantic_beats]
         if len(ids) != len(set(ids)):
             raise ValueError("semantic beat IDs must be unique")
-        duration = round(sum(beat.duration_seconds for beat in self.semantic_beats), 3)
-        if duration != round(self.target_duration_seconds, 3):
+        duration_ms = _canonical_milliseconds(
+            sum(beat.duration_seconds for beat in self.semantic_beats)
+        )
+        if duration_ms != _canonical_milliseconds(self.target_duration_seconds):
             raise ValueError("semantic beat durations must total target_duration_seconds")
         return self
 
@@ -209,9 +231,7 @@ class ReferenceStrategy(BaseModel):
     notes: str = ""
 
 
-class ProductionSceneBrief(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class ProductionSceneBrief(_ValidatedFrozenStoryModel):
     scene_id: str = Field(pattern=r"^scene_[0-9]{2}$")
     order: int = Field(ge=1, le=8)
     scene_type: SceneType
@@ -236,7 +256,7 @@ class ProductionSceneBrief(BaseModel):
     complexity: SceneComplexity = SceneComplexity.MODERATE
     acceptance_priority: AcceptancePriority = AcceptancePriority.STANDARD
     source_beat_id: str = Field(pattern=r"^beat_[0-9]{2}$")
-    duration_seconds: float = Field(gt=0, ge=3.0, le=5.0)
+    duration_seconds: StrictFloat = Field(gt=0, allow_inf_nan=False)
 
 
 class CandidateArtifact(BaseModel):
@@ -311,18 +331,33 @@ class ProductionScene(BaseModel):
     block_reasons: list[str] = Field(default_factory=list)
 
 
-class SceneTiming(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class SceneTiming(_ValidatedFrozenStoryModel):
     scene_id: str = Field(pattern=r"^scene_[0-9]{2}$")
     order: int = Field(ge=1, le=8)
-    start_seconds: float = Field(ge=0)
-    duration_seconds: float = Field(ge=3.0, le=5.0)
-    end_seconds: float = Field(gt=0)
+    start_seconds: StrictFloat = Field(ge=0, allow_inf_nan=False)
+    duration_seconds: StrictFloat = Field(gt=0, allow_inf_nan=False)
+    end_seconds: StrictFloat = Field(gt=0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_interval(self) -> "SceneTiming":
-        if round(self.start_seconds + self.duration_seconds, 3) != round(self.end_seconds, 3):
+        if self.end_seconds <= self.start_seconds:
+            raise ValueError("scene timing end must be greater than start")
+        start_ms = _canonical_milliseconds(self.start_seconds)
+        duration_ms = _canonical_milliseconds(self.duration_seconds)
+        end_ms = _canonical_milliseconds(self.end_seconds)
+        canonical_values = (
+            (self.start_seconds, start_ms),
+            (self.duration_seconds, duration_ms),
+            (self.end_seconds, end_ms),
+        )
+        if any(
+            Decimal(str(value)) != Decimal(milliseconds) / _MILLISECONDS_PER_SECOND
+            for value, milliseconds in canonical_values
+        ):
+            raise ValueError("scene timing values must be aligned to integer milliseconds")
+        if duration_ms <= 0 or end_ms <= start_ms:
+            raise ValueError("scene timing interval must remain positive at millisecond precision")
+        if end_ms - start_ms != duration_ms:
             raise ValueError("scene timing end must equal start plus duration")
         return self
 
