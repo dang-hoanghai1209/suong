@@ -57,8 +57,8 @@ def _checks() -> QCChecks:
     )
 
 
-def _accepted_state_with_valid_images(tmp_path: Path):
-    run = build_fixture_preview_run(
+def _accepted_state_with_valid_images(tmp_path: Path, *, run=None):
+    run = run or build_fixture_preview_run(
         topic="offline accepted-candidate renderer bridge",
         job_id="renderer-bridge-test",
     )
