@@ -1,4 +1,5 @@
 """Preflight contracts for the three-scene manual live Volume canary."""
+
 from __future__ import annotations
 
 import pytest
@@ -34,6 +35,7 @@ from tella.topic_production.models import (
     StoryPlan,
 )
 from tella.visual_generation.providers import ProviderKind
+from tella.topic_production.story_plan_coverage import assign_fixture_source_spans
 
 
 class ThreeSceneCoverageResolver:
@@ -41,9 +43,7 @@ class ThreeSceneCoverageResolver:
         covered = request.action.startswith("local_")
         return LocalCoverageAssessment(
             status=(
-                LocalCoverageStatus.SATISFIED
-                if covered
-                else LocalCoverageStatus.NOT_SATISFIED
+                LocalCoverageStatus.SATISFIED if covered else LocalCoverageStatus.NOT_SATISFIED
             ),
             reason="manual three-scene production coverage",
             selected_semantic_id="sit_hug_knees_sad" if covered else None,
@@ -51,15 +51,17 @@ class ThreeSceneCoverageResolver:
 
 
 def _story(*, production=True) -> StoryPlan:
-    segments = [
+    raw_segments = [
         "A quiet evening begins with a pause.",
         "A small grounded action creates room to breathe.",
         "The final moment opens toward calm possibility.",
     ]
+    narration_text, segments, spans = assign_fixture_source_spans(raw_segments)
     beats = [
         SemanticBeat(
             beat_id=f"beat_{index:02d}",
             order=index,
+            source_span=spans[index - 1],
             narration_segment=segment,
             semantic_purpose=f"generic emotional beat {index}",
             emotional_state="calm",
@@ -74,7 +76,7 @@ def _story(*, production=True) -> StoryPlan:
         language="en",
         target_duration_seconds=12.0,
         requested_scene_count=3,
-        narration_text=" ".join(segments),
+        narration_text=narration_text,
         emotional_arc=["quiet", "grounded", "hopeful"],
         topic_intent="show a simple movement from pause toward calm",
         semantic_beats=beats,
@@ -103,7 +105,7 @@ def _briefs() -> list[ProductionSceneBrief]:
             scene_id=f"scene_{index:02d}",
             order=index,
             scene_type=scene_types[index - 1],
-            narrative_text=_story().semantic_beats[index - 1].narration_segment,
+            narrative_text=_story().semantic_beats[index - 1].narration_segment.strip(),
             meaning=f"generic safe emotional moment {index}",
             emotional_tone=["calm"],
             topic_intent="show a simple movement from pause toward calm",
@@ -193,9 +195,7 @@ def test_manual_three_scene_volume_plan_validates_and_persists(tmp_path):
 
     assert len(run.scene_execution_plans) == len(state.scenes) == 3
     assert run.story_plan.planner_metadata.production_eligible is True
-    assert [
-        item.routing.route.selected_provider for item in run.scene_execution_plans
-    ] == [
+    assert [item.routing.route.selected_provider for item in run.scene_execution_plans] == [
         ProviderKind.LOCAL_COMPOSITOR,
         ProviderKind.LOCAL_COMPOSITOR,
         ProviderKind.CLOUDFLARE_KLEIN_4B,

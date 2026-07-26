@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 
 class SceneType(StrEnum):
@@ -55,6 +56,25 @@ class ProductionSceneStatus(StrEnum):
     BLOCKED = "BLOCKED"
 
 
+class _ValidatedFrozenStoryModel(BaseModel):
+    """Frozen StoryPlan authority model with validated copy semantics."""
+
+    model_config = ConfigDict(frozen=True, revalidate_instances="always")
+
+    def model_copy(
+        self,
+        *,
+        update: dict[str, Any] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        payload = self.model_dump(mode="python")
+        if deep:
+            payload = deepcopy(payload)
+        if update:
+            payload.update(update)
+        return type(self).model_validate(payload)
+
+
 class PlannerMetadata(BaseModel):
     model_config = ConfigDict(frozen=True, revalidate_instances="always")
 
@@ -75,12 +95,36 @@ class PlannerMetadata(BaseModel):
         return self
 
 
-class SemanticBeat(BaseModel):
-    model_config = ConfigDict(frozen=True, revalidate_instances="always")
+class NarrationSourceSpan(_ValidatedFrozenStoryModel):
+    """Half-open Python Unicode code-point offsets into StoryPlan.narration_text."""
 
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+    )
+
+    start: StrictInt = Field(ge=0)
+    end: StrictInt = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> "NarrationSourceSpan":
+        if self.end <= self.start:
+            raise ValueError("narration source span end must be greater than start")
+        return self
+
+
+class SemanticBeat(_ValidatedFrozenStoryModel):
     beat_id: str = Field(pattern=r"^beat_[0-9]{2}$")
     order: int = Field(ge=1, le=8)
-    narration_segment: str = Field(min_length=1)
+    source_span: NarrationSourceSpan
+    narration_segment: str = Field(
+        min_length=1,
+        description=(
+            "Compatibility-only exact slice verified against StoryPlan.narration_text; "
+            "not independent narration authority."
+        ),
+    )
     semantic_purpose: str = Field(min_length=1)
     emotional_state: str = Field(min_length=1)
     transition_intent: str = Field(min_length=1)
@@ -88,9 +132,7 @@ class SemanticBeat(BaseModel):
     duration_seconds: float = Field(gt=0, ge=3.0, le=5.0)
 
 
-class StoryPlan(BaseModel):
-    model_config = ConfigDict(frozen=True, revalidate_instances="always")
-
+class StoryPlan(_ValidatedFrozenStoryModel):
     topic: str = Field(min_length=1)
     language: str = Field(min_length=2, max_length=12)
     aspect_ratio: Literal["9:16"] = "9:16"
@@ -101,6 +143,32 @@ class StoryPlan(BaseModel):
     topic_intent: str = Field(min_length=1)
     semantic_beats: tuple[SemanticBeat, ...]
     planner_metadata: PlannerMetadata
+
+    @model_validator(mode="after")
+    def validate_narration_coverage(self) -> "StoryPlan":
+        """Verify one exact, continuous partition of the narration authority."""
+
+        if not self.semantic_beats:
+            raise ValueError("story plan must contain at least one semantic beat")
+        narration_length = len(self.narration_text)
+        previous_end = 0
+        for beat in self.semantic_beats:
+            span = beat.source_span
+            if span.start != previous_end:
+                raise ValueError("semantic beat source spans must be gap-free and non-overlapping")
+            if span.end > narration_length:
+                raise ValueError("semantic beat source span exceeds narration_text")
+            source_slice = self.narration_text[span.start : span.end]
+            if not source_slice.strip():
+                raise ValueError("semantic beat source span must contain non-whitespace text")
+            if beat.narration_segment != source_slice:
+                raise ValueError(
+                    "narration_segment must equal its exact narration_text source slice"
+                )
+            previous_end = span.end
+        if previous_end != narration_length:
+            raise ValueError("semantic beat source spans must cover all narration_text")
+        return self
 
     @model_validator(mode="after")
     def validate_beats(self) -> "StoryPlan":
@@ -127,11 +195,6 @@ class StoryPlan(BaseModel):
         ids = [beat.beat_id for beat in self.semantic_beats]
         if len(ids) != len(set(ids)):
             raise ValueError("semantic beat IDs must be unique")
-        expected_narration = " ".join(beat.narration_segment for beat in self.semantic_beats)
-        if self.narration_text != expected_narration:
-            raise ValueError(
-                "narration_text must be the continuous concatenation of beat narration"
-            )
         duration = round(sum(beat.duration_seconds for beat in self.semantic_beats), 3)
         if duration != round(self.target_duration_seconds, 3):
             raise ValueError("semantic beat durations must total target_duration_seconds")

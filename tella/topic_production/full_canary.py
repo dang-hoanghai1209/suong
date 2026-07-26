@@ -12,10 +12,11 @@ from .models import (
     SceneType,
     StoryPlan,
 )
+from .story_plan_coverage import semantic_beat_display_text
 from .story_plan_identity import canonical_story_plan_sha256
 
 FULL_CANARY_STORY_ID = "supplied_eligible_acceptance_story:82d876cb5ef79698"
-FULL_CANARY_STORY_PLAN_SHA256 = "5316d0fc18b9936039f104712219e248ddf7eb76c2b0c14ceb3b3a311441a66a"
+FULL_CANARY_STORY_PLAN_SHA256 = "574107f4e20eea802b9eaedaac092354987a930bbc3f1a117b46f531fbbd6811"
 _FULL_CANARY_BEAT_IDS = tuple(f"beat_{order:02d}" for order in range(1, 9))
 
 
@@ -210,7 +211,7 @@ def build_full_canary_scene_briefs(plan: StoryPlan) -> list[ProductionSceneBrief
                 scene_id=f"scene_{beat.order:02d}",
                 order=beat.order,
                 scene_type=spec.scene_type,
-                narrative_text=beat.narration_segment,
+                narrative_text=semantic_beat_display_text(beat),
                 meaning=beat.semantic_purpose,
                 emotional_tone=list(dict.fromkeys([beat.emotional_state, "gentle"])),
                 topic_intent=plan.topic_intent,

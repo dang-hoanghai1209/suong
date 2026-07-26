@@ -5,6 +5,7 @@ an executable contract test, not a claim of model-level semantic reasoning.
 Future planners can implement :class:`TopicStoryPlanner` and return the same
 validated models.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -23,6 +24,7 @@ from .models import (
     StoryPlan,
     TopicFidelityReport,
 )
+from .story_plan_coverage import assign_fixture_source_spans, semantic_beat_display_text
 from .timing import allocate_durations
 
 _FIXED_DEMO_MARKERS = {
@@ -32,19 +34,57 @@ _FIXED_DEMO_MARKERS = {
     "daily-life self-company can become quietly content and nourishing",
 }
 _STOPWORDS = {
-    "a", "an", "and", "are", "be", "for", "in", "is", "of", "the", "to",
-    "có", "của", "không", "là", "một", "người", "những", "và", "với",
+    "a",
+    "an",
+    "and",
+    "are",
+    "be",
+    "for",
+    "in",
+    "is",
+    "of",
+    "the",
+    "to",
+    "có",
+    "của",
+    "không",
+    "là",
+    "một",
+    "người",
+    "những",
+    "và",
+    "với",
 }
 
 _STAGES = (
     ("recognize", "nhận ra điều đang thật sự chạm vào mình", "quiet awareness", "pause and notice"),
     ("tension", "nhìn thẳng vào phần khó khăn thay vì né tránh", "tender ache", "move inward"),
     ("name", "gọi tên nhu cầu và cảm xúc cốt lõi", "honest sadness", "clarify meaning"),
-    ("daily", "đưa chủ đề vào một khoảnh khắc đời thường cụ thể", "grounded calm", "make it tangible"),
+    (
+        "daily",
+        "đưa chủ đề vào một khoảnh khắc đời thường cụ thể",
+        "grounded calm",
+        "make it tangible",
+    ),
     ("choice", "thể hiện một lựa chọn nhỏ nhưng có chủ ý", "gentle resolve", "turn toward agency"),
-    ("transition", "cho thấy sự dịch chuyển mà không phủ nhận nỗi buồn", "soft release", "open forward motion"),
-    ("compassion", "đối xử với bản thân bằng sự dịu dàng", "self compassion", "settle and integrate"),
-    ("closure", "khép lại bằng một ý nghĩa chữa lành gắn với chủ đề", "quiet hope", "resolve without certainty"),
+    (
+        "transition",
+        "cho thấy sự dịch chuyển mà không phủ nhận nỗi buồn",
+        "soft release",
+        "open forward motion",
+    ),
+    (
+        "compassion",
+        "đối xử với bản thân bằng sự dịu dàng",
+        "self compassion",
+        "settle and integrate",
+    ),
+    (
+        "closure",
+        "khép lại bằng một ý nghĩa chữa lành gắn với chủ đề",
+        "quiet hope",
+        "resolve without certainty",
+    ),
 )
 _TYPE_POOLS: dict[str, tuple[SceneType, ...]] = {
     "recognize": (SceneType.SOLO_EMOTIONAL_VIGNETTE, SceneType.EMOTIONAL_METAPHOR),
@@ -106,8 +146,14 @@ def _scene_type(stage_id: str, digest: bytes, order: int) -> SceneType:
 def _narration(topic: str, purpose: str, order: int, language: str) -> str:
     if language == "vi":
         openings = (
-            "Với", "Khi nghĩ về", "Có lúc", "Rồi ta học cách",
-            "Trong một khoảnh khắc nhỏ,", "Dần dần,", "Ta có thể", "Cuối cùng,",
+            "Với",
+            "Khi nghĩ về",
+            "Có lúc",
+            "Rồi ta học cách",
+            "Trong một khoảnh khắc nhỏ,",
+            "Dần dần,",
+            "Ta có thể",
+            "Cuối cùng,",
         )
         return f"{openings[order - 1]} {topic}, ta {purpose}."
     return f"Beat {order} explores {topic}: {purpose}."
@@ -130,10 +176,21 @@ class DeterministicTopicPlanner:
         concepts = topic_concepts(normalized)
         digest = hashlib.sha256(normalized.casefold().encode("utf-8")).digest()
         durations = allocate_durations(scene_count, target_duration_seconds)
+        stages = _selected_stages(scene_count)
+        raw_segments = tuple(
+            _narration(normalized, purpose, order, language)
+            for order, (_, purpose, _, _) in enumerate(stages, start=1)
+        )
+        narration_text, narration_segments, source_spans = assign_fixture_source_spans(raw_segments)
         beats: list[SemanticBeat] = []
         arc: list[str] = []
-        for order, (stage_id, purpose, emotion, transition) in enumerate(
-            _selected_stages(scene_count), start=1
+        for order, (
+            (stage_id, purpose, emotion, transition),
+            narration_segment,
+            source_span,
+        ) in enumerate(
+            zip(stages, narration_segments, source_spans, strict=True),
+            start=1,
         ):
             focus = concepts[(order - 1) % len(concepts)]
             scene_type = _scene_type(stage_id, digest, order)
@@ -142,7 +199,8 @@ class DeterministicTopicPlanner:
                 SemanticBeat(
                     beat_id=f"beat_{order:02d}",
                     order=order,
-                    narration_segment=_narration(normalized, purpose, order, language),
+                    source_span=source_span,
+                    narration_segment=narration_segment,
                     semantic_purpose=semantic_purpose,
                     emotional_state=emotion,
                     transition_intent=transition,
@@ -164,7 +222,7 @@ class DeterministicTopicPlanner:
             language=language,
             target_duration_seconds=target_duration_seconds,
             requested_scene_count=scene_count,
-            narration_text=" ".join(beat.narration_segment for beat in beats),
+            narration_text=narration_text,
             emotional_arc=arc,
             topic_intent=intent,
             semantic_beats=beats,
@@ -181,9 +239,13 @@ def _brief_shape(scene_type: SceneType) -> dict[str, object]:
     relationship = scene_type is SceneType.RELATIONSHIP_VIGNETTE
     complex_scene = symbolic or relationship
     return {
-        "characters": ["recurring_woman", "supporting_person"] if relationship else ["recurring_woman"],
+        "characters": ["recurring_woman", "supporting_person"]
+        if relationship
+        else ["recurring_woman"],
         "action": ["one readable emotionally grounded action"],
-        "interaction": {"primary": "characters, action, and objects form one coherent relationship"},
+        "interaction": {
+            "primary": "characters, action, and objects form one coherent relationship"
+        },
         "environment": ["minimal warm dark editorial environment"],
         "objects": ["one topic-specific integrated object"],
         "symbols": ["one restrained topic-specific metaphor"] if symbolic else [],
@@ -199,14 +261,16 @@ def build_scene_briefs(plan: StoryPlan) -> list[ProductionSceneBrief]:
     briefs: list[ProductionSceneBrief] = []
     digest = bytes.fromhex(plan.planner_metadata.deterministic_key)
     for beat in plan.semantic_beats:
-        scene_type = _scene_type(_selected_stages(plan.requested_scene_count)[beat.order - 1][0], digest, beat.order)
+        scene_type = _scene_type(
+            _selected_stages(plan.requested_scene_count)[beat.order - 1][0], digest, beat.order
+        )
         shape = _brief_shape(scene_type)
         briefs.append(
             ProductionSceneBrief(
                 scene_id=f"scene_{beat.order:02d}",
                 order=beat.order,
                 scene_type=scene_type,
-                narrative_text=beat.narration_segment,
+                narrative_text=semantic_beat_display_text(beat),
                 meaning=beat.semantic_purpose,
                 emotional_tone=[beat.emotional_state],
                 topic_intent=plan.topic_intent,
@@ -242,12 +306,14 @@ def validate_topic_fidelity(
     corpus = " ".join(
         [plan.topic_intent]
         + [
-            f"{beat.narration_segment} {beat.semantic_purpose} {beat.visual_intent}"
+            f"{semantic_beat_display_text(beat)} {beat.semantic_purpose} {beat.visual_intent}"
             for beat in plan.semantic_beats
         ]
     ).casefold()
     concepts = plan.planner_metadata.topic_concepts
-    concept_propagation = bool(concepts) and all(concept.casefold() in corpus for concept in concepts)
+    concept_propagation = bool(concepts) and all(
+        concept.casefold() in corpus for concept in concepts
+    )
     beat_semantics_present = all(
         beat.semantic_purpose.strip() and beat.visual_intent.strip() for beat in plan.semantic_beats
     )

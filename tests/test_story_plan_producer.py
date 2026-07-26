@@ -24,6 +24,7 @@ from tella.topic_production.script_input import (
     normalize_script_input,
 )
 from tella.topic_production.story_plan_identity import canonical_story_plan_sha256
+from tella.topic_production.story_plan_coverage import assign_fixture_source_spans
 from tella.topic_production.story_plan_producer import (
     ApprovedStoryPlanProducer,
     ApprovedStoryPlanProduction,
@@ -37,11 +38,15 @@ def _story_plan(
     producer_id: str = "test_only.topic_storyplan",
     producer_version: str = "fixture_v1",
 ) -> StoryPlan:
+    narration_text, segments, spans = assign_fixture_source_spans(
+        tuple(f"segment {order}" for order in range(1, 8))
+    )
     beats = tuple(
         SemanticBeat(
             beat_id=f"beat_{order:02d}",
             order=order,
-            narration_segment=f"segment {order}",
+            source_span=spans[order - 1],
+            narration_segment=segments[order - 1],
             semantic_purpose=f"meaning {order}",
             emotional_state=f"state {order}",
             transition_intent=f"transition {order}",
@@ -55,7 +60,7 @@ def _story_plan(
         language="en",
         target_duration_seconds=35.0,
         requested_scene_count=7,
-        narration_text=" ".join(beat.narration_segment for beat in beats),
+        narration_text=narration_text,
         emotional_arc=tuple(f"state {order}" for order in range(1, 8)),
         topic_intent="test-only semantic fixture",
         semantic_beats=beats,
@@ -204,11 +209,9 @@ def test_non_storyplan_output_is_rejected():
     assert raised.value.code is StoryPlanProducerErrorCode.STORYPLAN_PRODUCER_OUTPUT_INVALID
 
 
-def test_invalid_storyplan_copy_is_revalidated_and_rejected():
-    with pytest.raises(StoryPlanProducerError) as raised:
+def test_invalid_storyplan_copy_is_rejected_by_validated_copy_semantics():
+    with pytest.raises(ValidationError):
         _InvalidCopyProducer().produce(_topic_input())
-
-    assert raised.value.code is StoryPlanProducerErrorCode.STORYPLAN_PRODUCER_OUTPUT_INVALID
 
 
 def test_storyplan_metadata_must_match_implementation_identity():
@@ -605,6 +608,28 @@ def test_unsafe_storyplan_construct_is_revalidated_and_rejected():
 
     with pytest.raises(StoryPlanProducerError) as raised:
         _UnsafeOutputProducer().produce(_topic_input())
+
+    assert raised.value.code is StoryPlanProducerErrorCode.STORYPLAN_PRODUCER_OUTPUT_INVALID
+
+
+def test_approved_producer_rejects_legacy_storyplan_without_source_spans():
+    class _LegacyOutputProducer(ApprovedStoryPlanProducer):
+        PRODUCER_ID = "test_only.legacy_output"
+        PRODUCER_VERSION = "fixture_v1"
+        SUPPORTED_INPUT_MODES = frozenset({ScriptInputMode.TOPIC})
+
+        def _produce(self, normalized_input: NormalizedScriptInput) -> StoryPlan:
+            del normalized_input
+            payload = _story_plan(
+                producer_id=self.producer_id,
+                producer_version=self.producer_version,
+            ).model_dump(mode="python")
+            for beat in payload["semantic_beats"]:
+                beat.pop("source_span")
+            return StoryPlan.model_construct(**payload)
+
+    with pytest.raises(StoryPlanProducerError) as raised:
+        _LegacyOutputProducer().produce(_topic_input())
 
     assert raised.value.code is StoryPlanProducerErrorCode.STORYPLAN_PRODUCER_OUTPUT_INVALID
 

@@ -1,4 +1,5 @@
 """Contract tests for the offline topic-aware production foundation."""
+
 from __future__ import annotations
 
 import json
@@ -77,9 +78,7 @@ def test_valid_story_plans_have_ordered_unique_semantic_beats(
         f"beat_{order:02d}" for order in range(1, scene_count + 1)
     ]
     assert len({beat.beat_id for beat in plan.semantic_beats}) == scene_count
-    assert plan.narration_text == " ".join(
-        beat.narration_segment for beat in plan.semantic_beats
-    )
+    assert plan.narration_text == "".join(beat.narration_segment for beat in plan.semantic_beats)
     assert sum(beat.duration_seconds for beat in plan.semantic_beats) == pytest.approx(duration)
     assert all(3.0 <= beat.duration_seconds <= 5.0 for beat in plan.semantic_beats)
 
@@ -118,7 +117,7 @@ def test_each_beat_maps_one_to_one_to_a_structured_scene_brief() -> None:
     for beat, brief in zip(plan.semantic_beats, briefs, strict=True):
         assert brief.order == beat.order
         assert brief.source_beat_id == beat.beat_id
-        assert brief.narrative_text == beat.narration_segment
+        assert brief.narrative_text == beat.narration_segment.strip()
         assert brief.meaning == beat.semantic_purpose
         assert brief.topic_intent == plan.topic_intent
         assert brief.duration_seconds == beat.duration_seconds
@@ -131,7 +130,10 @@ def test_topic_fidelity_passes_and_fixed_demo_content_does_not_leak() -> None:
     briefs = build_scene_briefs(plan)
     report = validate_topic_fidelity(plan, briefs)
     serialized = json.dumps(
-        {"plan": plan.model_dump(mode="json"), "briefs": [b.model_dump(mode="json") for b in briefs]},
+        {
+            "plan": plan.model_dump(mode="json"),
+            "briefs": [b.model_dump(mode="json") for b in briefs],
+        },
         ensure_ascii=False,
     ).casefold()
 
@@ -278,14 +280,10 @@ def test_seven_of_eight_accepted_scenes_still_block_render() -> None:
 
 def test_all_eight_accepted_artifacts_allow_render_and_preserve_tier_source() -> None:
     plan = _plan()
-    manifest = build_initial_manifest(
-        job_id="ready", plan=plan, briefs=build_scene_briefs(plan)
-    )
+    manifest = build_initial_manifest(job_id="ready", plan=plan, briefs=build_scene_briefs(plan))
     for index, scene in enumerate(manifest.scenes):
         artifact = _candidate(scene.brief.scene_id, GenerationTier.ACCEPTANCE)
-        manifest.scenes[index] = accept_candidate(
-            scene, artifact, _qc(GenerationTier.ACCEPTANCE)
-        )
+        manifest.scenes[index] = accept_candidate(scene, artifact, _qc(GenerationTier.ACCEPTANCE))
 
     refreshed = refresh_manifest_readiness(manifest)
 
@@ -310,9 +308,7 @@ def test_accepted_status_without_artifact_record_remains_blocked() -> None:
     readiness = evaluate_render_readiness([inconsistent])
 
     assert not readiness.ready
-    assert readiness.reasons[scene.brief.scene_id] == [
-        "accepted candidate artifact is missing"
-    ]
+    assert readiness.reasons[scene.brief.scene_id] == ["accepted candidate artifact is missing"]
 
 
 def test_preview_cli_is_offline_and_emits_contract_json(capsys: pytest.CaptureFixture[str]) -> None:

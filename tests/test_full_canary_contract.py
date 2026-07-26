@@ -13,6 +13,7 @@ from tella.topic_production.full_canary import (
     build_full_canary_scene_briefs,
 )
 from tella.topic_production.story_plan_identity import canonical_story_plan_sha256
+from tella.topic_production.story_plan_coverage import assign_fixture_source_spans
 
 
 _TOPIC = "Học cách dịu dàng với chính mình sau những ngày mệt mỏi."
@@ -50,10 +51,12 @@ _DURATIONS = (4.0, 5.0, 4.5, 4.0, 4.0, 4.0, 5.0, 4.5)
 
 
 def _story_plan() -> StoryPlan:
+    narration_text, narration_segments, source_spans = assign_fixture_source_spans(_SEGMENTS)
     beats = [
         SemanticBeat(
             beat_id=f"beat_{order:02d}",
             order=order,
+            source_span=source_span,
             narration_segment=segment,
             semantic_purpose=purpose,
             emotional_state=emotion,
@@ -61,9 +64,10 @@ def _story_plan() -> StoryPlan:
             visual_intent=purpose,
             duration_seconds=duration,
         )
-        for order, (segment, purpose, emotion, duration) in enumerate(
+        for order, (segment, source_span, purpose, emotion, duration) in enumerate(
             zip(
-                _SEGMENTS,
+                narration_segments,
+                source_spans,
                 _PURPOSES,
                 _EMOTIONAL_STATES,
                 _DURATIONS,
@@ -77,7 +81,7 @@ def _story_plan() -> StoryPlan:
         language="vi",
         target_duration_seconds=35.0,
         requested_scene_count=8,
-        narration_text=" ".join(_SEGMENTS),
+        narration_text=narration_text,
         emotional_arc=["exhausted", "paused", "recovering", "gentle"],
         topic_intent="show self-compassion after emotionally exhausting days",
         semantic_beats=beats,
@@ -96,6 +100,10 @@ def _story_plan() -> StoryPlan:
 
 def test_canary_staging_requires_exact_authoritative_story_identity_and_hash() -> None:
     story = _story_plan()
+    previous_historical_story_plan_sha256 = (
+        "5316d0fc18b9936039f104712219e248ddf7eb76c2b0c14ceb3b3a311441a66a"
+    )
+    assert FULL_CANARY_STORY_PLAN_SHA256 != previous_historical_story_plan_sha256
     assert canonical_story_plan_sha256(story) == FULL_CANARY_STORY_PLAN_SHA256
     assert len(build_full_canary_scene_briefs(story)) == 8
 
@@ -118,13 +126,17 @@ def test_visual_overlay_preserves_every_authoritative_story_field() -> None:
     story = _story_plan()
     briefs = build_full_canary_scene_briefs(story)
 
+    assert "".join(beat.narration_segment for beat in story.semantic_beats) == (
+        story.narration_text
+    )
+    assert all(beat.narration_segment.endswith(" ") for beat in story.semantic_beats[:-1])
     assert [brief.scene_id for brief in briefs] == [f"scene_{order:02d}" for order in range(1, 9)]
     assert [brief.order for brief in briefs] == list(range(1, 9))
     assert [brief.source_beat_id for brief in briefs] == [
         beat.beat_id for beat in story.semantic_beats
     ]
     assert [brief.narrative_text for brief in briefs] == [
-        beat.narration_segment for beat in story.semantic_beats
+        beat.narration_segment.strip() for beat in story.semantic_beats
     ]
     assert [brief.meaning for brief in briefs] == [
         beat.semantic_purpose for beat in story.semantic_beats
@@ -138,18 +150,19 @@ def test_visual_overlay_preserves_every_authoritative_story_field() -> None:
 @pytest.mark.parametrize("mutation", ["narration", "meaning", "order", "topic_intent"])
 def test_story_semantic_mutation_is_rejected(mutation: str) -> None:
     story = _story_plan()
-    if mutation == "narration":
-        changed = story.model_copy(update={"narration_text": f"{story.narration_text}!"})
-    elif mutation == "meaning":
-        beats = list(story.semantic_beats)
-        beats[0] = beats[0].model_copy(update={"semantic_purpose": "changed meaning"})
-        changed = story.model_copy(update={"semantic_beats": beats})
-    elif mutation == "order":
-        changed = story.model_copy(update={"semantic_beats": list(reversed(story.semantic_beats))})
-    else:
-        changed = story.model_copy(update={"topic_intent": "changed topic intent"})
-
     with pytest.raises(ValueError):
+        if mutation == "narration":
+            changed = story.model_copy(update={"narration_text": f"{story.narration_text}!"})
+        elif mutation == "meaning":
+            beats = list(story.semantic_beats)
+            beats[0] = beats[0].model_copy(update={"semantic_purpose": "changed meaning"})
+            changed = story.model_copy(update={"semantic_beats": beats})
+        elif mutation == "order":
+            changed = story.model_copy(
+                update={"semantic_beats": list(reversed(story.semantic_beats))}
+            )
+        else:
+            changed = story.model_copy(update={"topic_intent": "changed topic intent"})
         build_full_canary_scene_briefs(changed)
 
 

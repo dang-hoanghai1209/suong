@@ -20,6 +20,8 @@ from tella.topic_production import (
     RendererPlanProfile,
     RendererSceneTimingInput,
     TechnicalStatus,
+    ExecutionRunState,
+    ProductionRunPlan,
     authorize_draft_acceptance,
     build_fixture_preview_run,
     build_renderer_plan_from_accepted_candidates,
@@ -188,6 +190,27 @@ def test_renderer_profile_rejects_noncanonical_media_source() -> None:
                 "media_source": "accepted_ai_images",
             }
         )
+
+
+def test_legacy_story_without_source_spans_cannot_build_runtime_authority() -> None:
+    run = build_fixture_preview_run(
+        topic="legacy payload authority rejection",
+        job_id="legacy-source-span-test",
+    )
+    run_payload = run.model_dump(mode="python")
+    for beat in run_payload["story_plan"]["semantic_beats"]:
+        beat.pop("source_span")
+
+    with pytest.raises(ValidationError):
+        ProductionRunPlan.model_validate(run_payload)
+
+    state = initialize_execution_state(run)
+    state_payload = state.model_dump(mode="python")
+    for beat in state_payload["run_plan"]["story_plan"]["semantic_beats"]:
+        beat.pop("source_span")
+
+    with pytest.raises(ValidationError):
+        ExecutionRunState.model_validate(state_payload)
 
 
 def _timeline(state) -> AuthoritativeNarrationTimeline:
