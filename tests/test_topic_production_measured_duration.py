@@ -456,8 +456,8 @@ def test_persistence_round_trips_null_and_bound_measurement(tmp_path: Path) -> N
     assert absent_payload["schema_version"] == 2
     assert absent_payload["processed_narration_measurement"] is None
     assert load_runtime_state(paths.runtime_state_path) == state
-    assert absent_manifest["duration_policy"]["schema_version"] == 1
-    assert "measured_duration_assessment" not in absent_manifest["duration_policy"]
+    assert absent_manifest["duration_policy"]["schema_version"] == 2
+    assert absent_manifest["duration_policy"]["measured_duration_assessment"] is None
 
     bound = bind_processed_narration_measurement(state, _measurement(state))
     persist_execution_snapshot(
@@ -467,6 +467,13 @@ def test_persistence_round_trips_null_and_bound_measurement(tmp_path: Path) -> N
         selected_scene_id="scene_01",
     )
     assert load_runtime_state(paths.runtime_state_path) == bound
-    assert build_duration_policy_report(bound.run_plan) == DurationPolicyReport.model_validate(
-        absent_manifest["duration_policy"]
+    bound_manifest = json.loads(paths.manifest_path.read_text(encoding="utf-8"))
+    assert bound_manifest["duration_policy"] == build_duration_policy_report(bound).model_dump(
+        mode="json"
+    )
+    assert (
+        DurationPolicyReport.model_validate(
+            bound_manifest["duration_policy"]
+        ).measured_duration_assessment
+        == bound.processed_narration_measurement.measured_duration_assessment
     )

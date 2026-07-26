@@ -303,10 +303,10 @@ def test_runtime_manifest_contains_exact_canonical_duration_policy_projection(
     )
 
     manifest = json.loads(paths.manifest_path.read_text(encoding="utf-8"))
-    expected = build_duration_policy_report(state.run_plan).model_dump(mode="json")
+    expected = build_duration_policy_report(state).model_dump(mode="json")
     assert manifest["schema_version"] == 1
     assert manifest["duration_policy"] == expected
-    assert manifest["duration_policy"]["schema_version"] == 1
+    assert manifest["duration_policy"]["schema_version"] == 2
     assert manifest["duration_policy"]["planned_duration_assessment"] == (
         state.run_plan.planned_duration_assessment.model_dump(mode="json")
     )
@@ -314,7 +314,7 @@ def test_runtime_manifest_contains_exact_canonical_duration_policy_projection(
         warning.model_dump(mode="json") for warning in state.run_plan.planned_beat_pacing_warnings
     ]
     assert manifest["duration_policy"]["warning_count"] == expected["warning_count"]
-    assert "measured_duration_assessment" not in manifest["duration_policy"]
+    assert manifest["duration_policy"]["measured_duration_assessment"] is None
     assert "estimated_duration_assessment" not in manifest["duration_policy"]
     assert "has_warnings" not in manifest["duration_policy"]
     assert "duration_policy" not in type(state).model_fields
@@ -450,9 +450,9 @@ def test_utf8_encoding_failure_precedes_every_filesystem_side_effect(
             indent=2,
         ).encode("utf-8")
         manifest = json.loads(paths.manifest_path.read_text(encoding="utf-8"))
-        assert manifest["duration_policy"] == build_duration_policy_report(
-            state.run_plan
-        ).model_dump(mode="json")
+        assert manifest["duration_policy"] == build_duration_policy_report(state).model_dump(
+            mode="json"
+        )
 
     with pytest.raises(UnicodeEncodeError):
         persist_execution_snapshot(
@@ -507,7 +507,15 @@ def test_persistence_rejects_stale_planning_hash_before_filesystem_effects(
 
 @pytest.mark.parametrize(
     "manifest_variant",
-    ["missing", "malformed", "forged", "invalid-json"],
+    [
+        "missing",
+        "raw-schema-one",
+        "stale-measured",
+        "malformed-measured",
+        "forged-warning-count",
+        "malformed",
+        "invalid-json",
+    ],
 )
 def test_runtime_load_and_resume_ignore_manifest_duration_policy(
     tmp_path,
@@ -533,15 +541,21 @@ def test_runtime_load_and_resume_ignore_manifest_duration_policy(
         manifest = json.loads(paths.manifest_path.read_text(encoding="utf-8"))
         if manifest_variant == "missing":
             manifest.pop("duration_policy")
+        elif manifest_variant == "raw-schema-one":
+            manifest["duration_policy"].pop("measured_duration_assessment")
+            manifest["duration_policy"]["schema_version"] = 1
+        elif manifest_variant == "stale-measured":
+            measured = dict(manifest["duration_policy"]["planned_duration_assessment"])
+            measured["value_authority"] = "MEASURED"
+            manifest["duration_policy"]["measured_duration_assessment"] = measured
+        elif manifest_variant == "malformed-measured":
+            manifest["duration_policy"]["measured_duration_assessment"] = {"status": "IN_TARGET"}
+        elif manifest_variant == "forged-warning-count":
+            manifest["duration_policy"]["warning_count"] = 999
         elif manifest_variant == "malformed":
             manifest["duration_policy"] = "not-a-report"
         else:
-            manifest["duration_policy"] = {
-                "schema_version": 99,
-                "planned_duration_assessment": None,
-                "planned_beat_pacing_warnings": [],
-                "warning_count": -1,
-            }
+            raise AssertionError(f"unexpected manifest variant: {manifest_variant}")
         paths.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     restored = load_runtime_state(paths.runtime_state_path)
@@ -554,8 +568,18 @@ def test_runtime_load_and_resume_ignore_manifest_duration_policy(
     )
 
 
+@pytest.mark.parametrize(
+    "stale_variant",
+    [
+        "raw-schema-one",
+        "stale-measured",
+        "malformed-measured",
+        "forged-warning-count",
+    ],
+)
 def test_persistence_rebuilds_and_overwrites_stale_duration_policy(
     tmp_path,
+    stale_variant: str,
 ) -> None:
     state = _state_with_durations((2.5, 6.25, 4.375, 4.375, 4.375, 4.375, 4.375, 4.375))
     paths = production_job_paths(
@@ -570,15 +594,20 @@ def test_persistence_rebuilds_and_overwrites_stale_duration_policy(
         selected_scene_id="scene_01",
     )
     manifest = json.loads(paths.manifest_path.read_text(encoding="utf-8"))
-    copied = build_duration_policy_report(_state_with_durations((4.0,) * 7).run_plan).model_dump(
-        mode="json"
-    )
-    copied["schema_version"] = 99
-    copied["warning_count"] = 999
-    copied["planned_duration_assessment"]["policy_id"] = "forged-policy"
-    copied["planned_beat_pacing_warnings"] = list(
-        reversed(manifest["duration_policy"]["planned_beat_pacing_warnings"])
-    )
+    copied = manifest["duration_policy"]
+    if stale_variant == "raw-schema-one":
+        copied.pop("measured_duration_assessment")
+        copied["schema_version"] = 1
+    elif stale_variant == "stale-measured":
+        measured = dict(copied["planned_duration_assessment"])
+        measured["value_authority"] = "MEASURED"
+        copied["measured_duration_assessment"] = measured
+    elif stale_variant == "malformed-measured":
+        copied["measured_duration_assessment"] = {"status": "IN_TARGET"}
+    elif stale_variant == "forged-warning-count":
+        copied["warning_count"] = 999
+    else:
+        raise AssertionError(f"unexpected stale variant: {stale_variant}")
     manifest["duration_policy"] = copied
     paths.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
@@ -590,7 +619,7 @@ def test_persistence_rebuilds_and_overwrites_stale_duration_policy(
     )
 
     rebuilt = json.loads(paths.manifest_path.read_text(encoding="utf-8"))
-    expected = build_duration_policy_report(state.run_plan).model_dump(mode="json")
+    expected = build_duration_policy_report(state).model_dump(mode="json")
     assert rebuilt["duration_policy"] == expected
 
 

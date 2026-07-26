@@ -72,7 +72,7 @@ def persist_execution_snapshot(
     """Persist provider-neutral execution state and optional candidate metadata atomically."""
 
     validated_state = _revalidate_execution_state(state)
-    duration_policy_report = build_duration_policy_report(validated_state.run_plan)
+    duration_policy_report = build_duration_policy_report(validated_state)
     readiness = evaluate_execution_readiness(validated_state)
     budget = summarize_call_budget(validated_state)
     resume = plan_resume(validated_state)

@@ -191,9 +191,9 @@ def test_dry_run_persists_state_and_makes_zero_provider_calls(
     assert outcome.paths.runtime_state_path.is_file()
     assert outcome.paths.manifest_path.is_file()
     manifest = json.loads(outcome.paths.manifest_path.read_text(encoding="utf-8"))
-    assert manifest["duration_policy"] == build_duration_policy_report(
-        outcome.state.run_plan
-    ).model_dump(mode="json")
+    assert manifest["duration_policy"] == build_duration_policy_report(outcome.state).model_dump(
+        mode="json"
+    )
     restored = load_runtime_state(outcome.paths.runtime_state_path)
     assert (
         restored.run_plan.planned_duration_assessment
