@@ -7,7 +7,10 @@ from PIL import Image
 import pytest
 from pydantic import ValidationError
 
-from tella.composer.timing import build_render_timing_plan
+from tella.composer.timing import (
+    DEFAULT_TIMING_TOLERANCE_SECONDS,
+    build_render_timing_plan,
+)
 from tella.topic_production import (
     AuthoritativeNarrationTimeline,
     AuthorizedCandidateRequest,
@@ -21,16 +24,23 @@ from tella.topic_production import (
     RendererSceneTimingInput,
     TechnicalStatus,
     ExecutionRunState,
+    ProcessedNarrationDurationMeasurement,
     ProductionRunPlan,
     authorize_draft_acceptance,
     build_fixture_preview_run,
     build_renderer_plan_from_accepted_candidates,
+    clear_processed_narration_measurement,
     initialize_execution_state,
+    bind_processed_narration_measurement,
     record_generation_attempt,
     record_human_qc,
     register_accepted_candidate,
 )
 from tella.topic_production.duration_policy import DurationAssessmentStatus
+from tella.topic_production.duration_policy import (
+    DurationValueAuthority,
+    assess_mvp_duration_target,
+)
 from tella.topic_production.story_plan_identity import canonical_story_plan_sha256
 from tella.visual_generation.providers.kinds import ProviderKind
 
@@ -137,6 +147,23 @@ def _accepted_state_with_valid_images(tmp_path: Path):
         forbid_local_compositor=True,
         supported_image_formats=("PNG", "JPEG"),
         require_portrait_geometry=True,
+    )
+    narration = tmp_path / "narration" / "final.mp3"
+    narration.parent.mkdir(parents=True, exist_ok=True)
+    narration.write_bytes(b"final processed narration")
+    state = bind_processed_narration_measurement(
+        state,
+        ProcessedNarrationDurationMeasurement(
+            schema_version=1,
+            artifact_relative_path="narration/final.mp3",
+            artifact_sha256=hashlib.sha256(narration.read_bytes()).hexdigest(),
+            story_plan_sha256=canonical_story_plan_sha256(run.story_plan),
+            measurement_method="ffprobe_single_audio_stream_v1",
+            measured_duration_assessment=assess_mvp_duration_target(
+                35.0,
+                value_authority=DurationValueAuthority.MEASURED,
+            ),
+        ),
     )
     return state, authorization
 
@@ -259,12 +286,18 @@ def test_timeline_rejects_missing_postmux_tolerance(tmp_path: Path) -> None:
         AuthoritativeNarrationTimeline.model_validate(payload)
 
 
-def _bridge(state, authorization):
+def _bridge(state, authorization, *, artifact_root: Path | None = None):
+    if artifact_root is None:
+        accepted = state.scenes[0].accepted_candidate
+        assert accepted is not None
+        artifact_root = Path(accepted.artifact_path).parent
     return build_renderer_plan_from_accepted_candidates(
         state,
         authorization=authorization,
         profile=_profile(),
         narration_timeline=_timeline(state),
+        narration_artifact_path=artifact_root / "narration" / "final.mp3",
+        artifact_root=artifact_root,
     )
 
 
@@ -435,6 +468,8 @@ def test_bridge_rejects_narration_or_timeline_identity_mismatch(
             authorization=authorization,
             profile=_profile(),
             narration_timeline=timeline,
+            narration_artifact_path=tmp_path / "narration" / "final.mp3",
+            artifact_root=tmp_path,
         )
 
     timings = list(_timeline(state).scene_timings)
@@ -446,6 +481,8 @@ def test_bridge_rejects_narration_or_timeline_identity_mismatch(
             authorization=authorization,
             profile=_profile(),
             narration_timeline=timeline,
+            narration_artifact_path=tmp_path / "narration" / "final.mp3",
+            artifact_root=tmp_path,
         )
 
 
@@ -476,8 +513,12 @@ def test_bridge_rejects_provider_model_or_seed_mismatch(
 def test_bridge_rejects_unaccepted_or_nonpassing_qc_state(tmp_path: Path) -> None:
     state, authorization = _accepted_state_with_valid_images(tmp_path)
     unaccepted = initialize_execution_state(state.run_plan)
+    unaccepted = bind_processed_narration_measurement(
+        unaccepted,
+        state.processed_narration_measurement,
+    )
     with pytest.raises(ValueError, match="not renderer-ready"):
-        _bridge(unaccepted, authorization)
+        _bridge(unaccepted, authorization, artifact_root=tmp_path)
 
     scenes = list(state.scenes)
     scenes[0] = scenes[0].model_copy(update={"qc_records": []}, deep=True)
@@ -496,10 +537,13 @@ def test_bridge_rejects_local_compositor_or_fallback_provenance(
             "provider_kind": ProviderKind.LOCAL_COMPOSITOR,
             "provider": ProviderKind.LOCAL_COMPOSITOR.value,
             "model": "semantic_asset_compositor_v2",
+            "provider_request_hash": None,
+            "consumes_ai_call": False,
         },
         accepted_updates={
             "provider": ProviderKind.LOCAL_COMPOSITOR.value,
             "model": "semantic_asset_compositor_v2",
+            "provider_request_hash": None,
         },
     )
     with pytest.raises(ValueError, match="local-compositor"):
@@ -564,3 +608,83 @@ def test_bridge_rejects_wrong_image_dimensions(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="dimensions"):
         _bridge(changed, authorization)
+
+
+def test_bridge_requires_bound_processed_narration_measurement(tmp_path: Path) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    unbound = clear_processed_narration_measurement(state)
+
+    with pytest.raises(ValueError, match="processed narration measurement is required"):
+        _bridge(unbound, authorization, artifact_root=tmp_path)
+
+
+def test_bridge_rejects_narration_artifact_path_or_current_hash_mismatch(
+    tmp_path: Path,
+) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    expected = tmp_path / "narration" / "final.mp3"
+    other = tmp_path / "narration" / "other.mp3"
+    other.write_bytes(expected.read_bytes())
+
+    with pytest.raises(ValueError, match="artifact path"):
+        build_renderer_plan_from_accepted_candidates(
+            state,
+            authorization=authorization,
+            profile=_profile(),
+            narration_timeline=_timeline(state),
+            narration_artifact_path=other,
+            artifact_root=tmp_path,
+        )
+
+    expected.write_bytes(b"changed processed narration")
+    with pytest.raises(ValueError, match="SHA-256"):
+        _bridge(state, authorization, artifact_root=tmp_path)
+
+
+def test_bridge_rejects_stale_measurement_story_identity(tmp_path: Path) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    measurement = state.processed_narration_measurement
+    assert measurement is not None
+    wrong_measurement = measurement.model_copy(update={"story_plan_sha256": "0" * 64})
+    fields = {
+        field_name: getattr(state, field_name) for field_name in ExecutionRunState.model_fields
+    }
+    fields["processed_narration_measurement"] = wrong_measurement
+    unsafe_state = ExecutionRunState.model_construct(**fields)
+
+    with pytest.raises(ValidationError, match="StoryPlan SHA-256 does not match"):
+        _bridge(unsafe_state, authorization, artifact_root=tmp_path)
+
+
+def test_bridge_rejects_free_duration_before_image_or_media_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    timeline = _timeline(state).model_copy(update={"processed_duration_seconds": 35.5})
+    monkeypatch.setattr(
+        Image,
+        "open",
+        lambda *_args, **_kwargs: pytest.fail("image work started before narration validation"),
+    )
+
+    with pytest.raises(ValueError, match="duration does not match bound measurement"):
+        build_renderer_plan_from_accepted_candidates(
+            state,
+            authorization=authorization,
+            profile=_profile(),
+            narration_timeline=timeline,
+            narration_artifact_path=tmp_path / "narration" / "final.mp3",
+            artifact_root=tmp_path,
+        )
+
+
+def test_renderer_bridge_preserves_postmux_sync_tolerance(tmp_path: Path) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+
+    bridge = _bridge(state, authorization)
+
+    assert (
+        bridge.renderer_plan.render_timing_contract["timing_tolerance_seconds"]
+        == DEFAULT_TIMING_TOLERANCE_SECONDS
+    )

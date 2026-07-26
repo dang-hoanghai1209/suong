@@ -22,6 +22,11 @@ from .duration_policy_projection import (
     build_duration_policy_report,
 )
 from .manifest import build_initial_manifest, refresh_manifest_readiness
+from .narration_measurement import (
+    ProcessedNarrationArtifactBindingError,
+    ProcessedNarrationArtifactBindingFailure,
+    measure_and_bind_processed_narration_artifact,
+)
 from .identity_eligibility import (
     IdentityAuthorityDecision,
     IdentityAuthorityErrorCode,
@@ -272,6 +277,8 @@ __all__ = [
     "ProductionManifest",
     "ProductionJobPaths",
     "ProductionRunPlan",
+    "ProcessedNarrationArtifactBindingError",
+    "ProcessedNarrationArtifactBindingFailure",
     "ProcessedNarrationDurationMeasurement",
     "ProductionScene",
     "ProductionSceneBrief",
@@ -371,6 +378,7 @@ __all__ = [
     "load_runtime_state",
     "load_reference_catalog",
     "local_production_job_paths",
+    "measure_and_bind_processed_narration_artifact",
     "normalize_script_input",
     "refresh_manifest_readiness",
     "plan_resume",

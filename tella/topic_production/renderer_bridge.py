@@ -17,7 +17,8 @@ from .execution_models import (
     _revalidate_current_production_run_plan,
 )
 from .models import GenerationTier
-from .runtime import evaluate_execution_readiness
+from .narration_measurement import _resolve_artifact_within_root, _stream_sha256
+from .runtime import _revalidate_execution_state, evaluate_execution_readiness
 from .runtime_models import ExecutionRunState
 from .story_plan_identity import canonical_story_plan_sha256
 from .strategy import VisualExecutionMode
@@ -324,6 +325,35 @@ def _validate_timeline(
     return {item.scene_id: item for item in timeline.scene_timings}
 
 
+def _validate_processed_narration_artifact(
+    state: ExecutionRunState,
+    timeline: AuthoritativeNarrationTimeline,
+    *,
+    artifact_path: Path,
+    artifact_root: Path,
+) -> ExecutionRunState:
+    validated_state = _revalidate_execution_state(state)
+    measurement = validated_state.processed_narration_measurement
+    if measurement is None:
+        raise ValueError("processed narration measurement is required for renderer preparation")
+    _, resolved_path, relative_path = _resolve_artifact_within_root(
+        artifact_path,
+        artifact_root,
+    )
+    if relative_path != measurement.artifact_relative_path:
+        raise ValueError("renderer narration artifact path does not match bound measurement")
+    if _stream_sha256(resolved_path) != measurement.artifact_sha256:
+        raise ValueError("renderer narration artifact SHA-256 does not match bound measurement")
+    if measurement.story_plan_sha256 != canonical_story_plan_sha256(
+        validated_state.run_plan.story_plan
+    ):
+        raise ValueError("renderer narration measurement StoryPlan SHA-256 does not match")
+    measured_duration = measurement.measured_duration_assessment.actual_duration_seconds
+    if timeline.processed_duration_seconds != measured_duration:
+        raise ValueError("renderer narration duration does not match bound measurement")
+    return validated_state
+
+
 def _validate_attempt(
     runtime_scene,
     authorized_identity: AuthorizedCandidateRequest,
@@ -408,7 +438,8 @@ def build_renderer_plan_from_accepted_candidates(
     authorization: RendererBridgeAuthorization,
     profile: RendererPlanProfile,
     narration_timeline: AuthoritativeNarrationTimeline,
-    artifact_root: Path | None = None,
+    narration_artifact_path: Path,
+    artifact_root: Path,
 ) -> AcceptedCandidateRendererBridge:
     """Validate exact accepted provenance and construct a renderer input plan.
 
@@ -417,14 +448,19 @@ def build_renderer_plan_from_accepted_candidates(
     validated inputs.
     """
 
+    state = _validate_processed_narration_artifact(
+        state,
+        narration_timeline,
+        artifact_path=narration_artifact_path,
+        artifact_root=artifact_root,
+    )
     _validate_authorized_run(state, authorization)
+    timings = _validate_timeline(state, narration_timeline)
     readiness = evaluate_execution_readiness(state)
     if not readiness.ready:
         raise ValueError(
             "accepted candidates are not renderer-ready: " + readiness.model_dump_json()
         )
-    timings = _validate_timeline(state, narration_timeline)
-
     inputs: list[RendererAcceptedCandidateInput] = []
     renderer_scenes: list[Scene] = []
     for runtime_scene, authorized_identity in zip(
