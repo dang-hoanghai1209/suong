@@ -1,4 +1,5 @@
 """Pure orchestration for deterministic pre-generation production run plans."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -10,6 +11,7 @@ from tella.visual_generation.providers.cloudflare_flux import DEFAULT_HEIGHT, DE
 from tella.visual_generation.providers.kinds import ProviderKind
 from tella.visual_generation.tiers import VisualQualityTier, resolve_visual_tier
 
+from .duration_policy import _derive_planned_duration_policy
 from .execution_models import (
     AcceptancePolicyDecision,
     AcceptanceRequestTemplate,
@@ -21,6 +23,7 @@ from .execution_models import (
     SceneExecutionPlan,
     SceneRoutingPlan,
     VolumeLocalSceneInput,
+    _canonical_production_run_planning_hash,
 )
 from .local_coverage import LocalSceneCoverageResolver, plan_local_scene_execution
 from .manifest import build_initial_manifest
@@ -53,9 +56,9 @@ def deterministic_scene_seed(order: int) -> int:
 
 
 def _canonical_hash(payload: object) -> str:
-    encoded = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -75,10 +78,15 @@ def _acceptance_policy(brief: ProductionSceneBrief) -> AcceptancePolicyDecision:
         reasons.append("narratively important closure continuity")
     if brief.complexity is SceneComplexity.COMPLEX:
         reasons.append("scene is marked visually complex")
-    high = high_type or brief.complexity is SceneComplexity.COMPLEX or brief.acceptance_priority in {
-        AcceptancePriority.HIGH,
-        AcceptancePriority.CONTINUITY_CRITICAL,
-    }
+    high = (
+        high_type
+        or brief.complexity is SceneComplexity.COMPLEX
+        or brief.acceptance_priority
+        in {
+            AcceptancePriority.HIGH,
+            AcceptancePriority.CONTINUITY_CRITICAL,
+        }
+    )
     if not reasons:
         reasons.append("standard visual complexity; explicit QC still required")
     return AcceptancePolicyDecision(
@@ -164,8 +172,7 @@ def build_production_run_plan(
             }
         ]
         local_covered = bool(
-            routing is not None
-            and routing.route.selected_provider is ProviderKind.LOCAL_COMPOSITOR
+            routing is not None and routing.route.selected_provider is ProviderKind.LOCAL_COMPOSITOR
         )
         public_safe_text_only = bool(
             local_input is not None
@@ -185,7 +192,9 @@ def build_production_run_plan(
                 f"{decision.role}:{decision.status.value}"
                 for decision in blocking_reference_decisions
             )
-            raise ValueError(f"required approved references unavailable for {brief.scene_id}: {blocked}")
+            raise ValueError(
+                f"required approved references unavailable for {brief.scene_id}: {blocked}"
+            )
         seed = deterministic_scene_seed(brief.order)
         logical_payload = {
             "scene": adapter.model_dump(mode="json"),
@@ -269,15 +278,14 @@ def build_production_run_plan(
         },
         deep=True,
     )
-    planning_payload = {
-        "job_id": job_id,
-        "topic": story_plan.topic,
-        "story_plan": story_plan.model_dump(mode="json"),
-        "executions": [item.model_dump(mode="json") for item in execution_plans],
-        "manifest": manifest.model_dump(mode="json"),
-        "production_strategy": production_strategy.model_dump(mode="json"),
-    }
+    planned_duration_assessment, planned_beat_pacing_warnings = _derive_planned_duration_policy(
+        target_duration_seconds=story_plan.target_duration_seconds,
+        beats=(
+            (beat.beat_id, beat.order, beat.duration_seconds) for beat in story_plan.semantic_beats
+        ),
+    )
     return ProductionRunPlan(
+        schema_version=3,
         plan_label=label,
         execution_mode=execution_mode,
         job_id=job_id,
@@ -285,7 +293,15 @@ def build_production_run_plan(
         story_plan=story_plan,
         scene_execution_plans=execution_plans,
         manifest=manifest,
-        planning_hash=_canonical_hash(planning_payload),
+        planning_hash=_canonical_production_run_planning_hash(
+            job_id=job_id,
+            story_plan=story_plan,
+            scene_execution_plans=execution_plans,
+            manifest=manifest,
+            production_strategy=production_strategy,
+        ),
+        planned_duration_assessment=planned_duration_assessment,
+        planned_beat_pacing_warnings=planned_beat_pacing_warnings,
         production_strategy=production_strategy,
     )
 

@@ -1,14 +1,25 @@
 """Typed contracts for provider-free visual execution planning."""
+
 from __future__ import annotations
 
+from collections.abc import Mapping
+from copy import deepcopy
 from enum import StrEnum
-from typing import Any, Literal
+import hashlib
+import json
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from tella.visual_generation.models import SceneBrief as VisualSceneBrief
 from tella.visual_generation.providers.kinds import ProviderKind
 
+from .duration_policy import (
+    BeatPacingWarning,
+    DurationValueAuthority,
+    MvpDurationTargetAssessment,
+    _derive_planned_duration_policy,
+)
 from .models import (
     AcceptancePriority,
     GenerationTier,
@@ -222,10 +233,39 @@ class SceneExecutionPlan(BaseModel):
         return migrated
 
 
-class ProductionRunPlan(BaseModel):
-    model_config = ConfigDict(frozen=True)
+def _canonical_production_run_planning_hash(
+    *,
+    job_id: str,
+    story_plan: StoryPlan,
+    scene_execution_plans: list[SceneExecutionPlan],
+    manifest: ProductionManifest,
+    production_strategy: ProductionStrategyConfig,
+) -> str:
+    payload = {
+        "job_id": job_id,
+        "topic": story_plan.topic,
+        "story_plan": story_plan.model_dump(mode="json"),
+        "executions": [item.model_dump(mode="json") for item in scene_execution_plans],
+        "manifest": manifest.model_dump(mode="json"),
+        "production_strategy": production_strategy.model_dump(mode="json"),
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
-    schema_version: int = 2
+
+class ProductionRunPlan(BaseModel):
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+    )
+
+    schema_version: Literal[3]
     plan_label: Literal["OFFLINE_FIXTURE_PREVIEW", "PRODUCTION_RUN_PLAN"]
     execution_mode: ExecutionMode
     job_id: str = Field(min_length=1)
@@ -234,10 +274,63 @@ class ProductionRunPlan(BaseModel):
     scene_execution_plans: list[SceneExecutionPlan]
     manifest: ProductionManifest
     planning_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    planned_duration_assessment: MvpDurationTargetAssessment
+    planned_beat_pacing_warnings: tuple[BeatPacingWarning, ...]
     production_strategy: ProductionStrategyConfig = Field(
         default_factory=ProductionStrategyConfig.quality
     )
     external_calls: int = Field(default=0, ge=0, le=0)
+
+    @staticmethod
+    def _derive_policy(
+        story_plan: StoryPlan,
+    ) -> tuple[MvpDurationTargetAssessment, tuple[BeatPacingWarning, ...]]:
+        return _derive_planned_duration_policy(
+            target_duration_seconds=story_plan.target_duration_seconds,
+            beats=(
+                (beat.beat_id, beat.order, beat.duration_seconds)
+                for beat in story_plan.semantic_beats
+            ),
+        )
+
+    @model_validator(mode="before")
+    @classmethod
+    def require_current_schema(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        if "schema_version" not in value:
+            raise ValueError("ProductionRunPlan schema_version is required")
+        version = value["schema_version"]
+        if type(version) is not int:
+            raise ValueError("ProductionRunPlan schema_version must be an integer")
+        if version == 3:
+            return value
+        raise ValueError(f"unsupported ProductionRunPlan schema_version: {version}")
+
+    @classmethod
+    def migrate_schema_v2(cls, value: Mapping[str, object]) -> Self:
+        """Explicitly migrate one raw persisted schema-2 mapping."""
+
+        if not isinstance(value, Mapping) or isinstance(value, BaseModel):
+            raise TypeError("ProductionRunPlan schema-2 migration requires a raw mapping")
+        if "schema_version" not in value:
+            raise ValueError("ProductionRunPlan schema_version is required")
+        version = value["schema_version"]
+        if type(version) is not int:
+            raise ValueError("ProductionRunPlan schema_version must be an integer")
+        if version != 2:
+            raise ValueError("ProductionRunPlan schema-2 migration requires schema_version 2")
+        story_plan = StoryPlan.model_validate(value.get("story_plan"))
+        assessment, warnings = cls._derive_policy(story_plan)
+        migrated = dict(value)
+        migrated.update(
+            {
+                "schema_version": 3,
+                "planned_duration_assessment": assessment,
+                "planned_beat_pacing_warnings": warnings,
+            }
+        )
+        return cls.model_validate(migrated)
 
     @model_validator(mode="after")
     def validate_scene_mapping(self) -> "ProductionRunPlan":
@@ -247,4 +340,49 @@ class ProductionRunPlan(BaseModel):
             raise ValueError("execution plans must map one-to-one to manifest scene briefs")
         if self.manifest.render_ready:
             raise ValueError("pre-generation production run plan cannot be render ready")
+        assessment, warnings = self._derive_policy(self.story_plan)
+        if self.planned_duration_assessment.value_authority is not DurationValueAuthority.PLANNED:
+            raise ValueError("planned duration assessment must use PLANNED authority")
+        if self.planned_duration_assessment != assessment:
+            raise ValueError("planned duration assessment does not match StoryPlan")
+        warning_ids = [warning.beat_id for warning in self.planned_beat_pacing_warnings]
+        if len(warning_ids) != len(set(warning_ids)):
+            raise ValueError("planned beat pacing warnings contain duplicate beat IDs")
+        if self.planned_beat_pacing_warnings != warnings:
+            raise ValueError("planned beat pacing warnings do not match StoryPlan")
+        expected_hash = _canonical_production_run_planning_hash(
+            job_id=self.job_id,
+            story_plan=self.story_plan,
+            scene_execution_plans=self.scene_execution_plans,
+            manifest=self.manifest,
+            production_strategy=self.production_strategy,
+        )
+        if self.planning_hash != expected_hash:
+            raise ValueError("planning_hash does not match ProductionRunPlan source fields")
         return self
+
+    def model_copy(
+        self,
+        *,
+        update: dict[str, Any] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        if update is not None and "schema_version" in update:
+            raise ValueError(
+                "ProductionRunPlan schema_version cannot be changed through model_copy"
+            )
+        payload = self.model_dump(mode="python")
+        if deep:
+            payload = deepcopy(payload)
+        if update:
+            payload.update(update)
+        return type(self).model_validate(payload)
+
+
+def _revalidate_current_production_run_plan(
+    plan: ProductionRunPlan,
+) -> ProductionRunPlan:
+    schema_version = getattr(plan, "schema_version", None)
+    if type(schema_version) is not int or schema_version != 3:
+        raise ValueError("in-memory ProductionRunPlan authority requires schema_version 3")
+    return ProductionRunPlan.model_validate(plan.model_dump(mode="python"))

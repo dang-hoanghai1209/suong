@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
 from typing import Literal
 
@@ -13,6 +12,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from tella.planner.models import MediaSource, Scene, TellaScenePlan
 from tella.visual_generation.providers.kinds import ProviderKind
 
+from .execution_models import (
+    _canonical_production_run_planning_hash,
+    _revalidate_current_production_run_plan,
+)
 from .models import GenerationTier
 from .runtime import evaluate_execution_readiness
 from .runtime_models import ExecutionRunState
@@ -191,29 +194,6 @@ class AcceptedCandidateRendererBridge(BaseModel):
     files_written: Literal[0] = 0
 
 
-def _canonical_hash(payload: object) -> str:
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _planning_hash(state: ExecutionRunState) -> str:
-    run = state.run_plan
-    payload = {
-        "job_id": run.job_id,
-        "topic": run.story_plan.topic,
-        "story_plan": run.story_plan.model_dump(mode="json"),
-        "executions": [item.model_dump(mode="json") for item in run.scene_execution_plans],
-        "manifest": run.manifest.model_dump(mode="json"),
-        "production_strategy": run.production_strategy.model_dump(mode="json"),
-    }
-    return _canonical_hash(payload)
-
-
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -268,12 +248,19 @@ def _validate_authorized_run(
     state: ExecutionRunState,
     authorization: RendererBridgeAuthorization,
 ) -> None:
-    run = state.run_plan
+    run = _revalidate_current_production_run_plan(state.run_plan)
     if run.job_id != authorization.job_id:
         raise ValueError("renderer authorization job ID does not match")
     if run.planning_hash != authorization.planning_hash:
         raise ValueError("renderer authorization planning hash does not match")
-    if _planning_hash(state) != run.planning_hash:
+    expected_hash = _canonical_production_run_planning_hash(
+        job_id=run.job_id,
+        story_plan=run.story_plan,
+        scene_execution_plans=run.scene_execution_plans,
+        manifest=run.manifest,
+        production_strategy=run.production_strategy,
+    )
+    if expected_hash != run.planning_hash:
         raise ValueError("run planning identity does not match its authorized contents")
     story_hash = canonical_story_plan_sha256(state.run_plan.story_plan)
     if story_hash != authorization.story_plan_sha256:

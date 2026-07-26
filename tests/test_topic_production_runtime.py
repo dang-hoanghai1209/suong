@@ -1,7 +1,9 @@
 """Phase 3A fail-closed execution, QC, acceptance, and resume tests."""
+
 from __future__ import annotations
 
 import hashlib
+import json
 
 import pytest
 from pydantic import ValidationError
@@ -11,6 +13,7 @@ from tella.topic_production import (
     ExecutionRunState,
     GenerationAttempt,
     GenerationTier,
+    ProductionRunPlan,
     ProductionSceneStatus,
     PromotionReason,
     QCCheckOutcome,
@@ -25,7 +28,10 @@ from tella.topic_production import (
     build_fixture_preview_run,
     evaluate_execution_readiness,
     initialize_execution_state,
+    load_runtime_state,
+    persist_execution_snapshot,
     plan_resume,
+    production_job_paths,
     promote_scene_to_acceptance,
     record_generation_attempt,
     record_human_qc,
@@ -33,6 +39,7 @@ from tella.topic_production import (
     simulate_eight_scene_execution,
     summarize_call_budget,
 )
+from tella.topic_production.duration_policy import DurationAssessmentStatus
 
 
 def _state():
@@ -41,9 +48,48 @@ def _state():
     )
 
 
+def _unsafe_run_plan() -> ProductionRunPlan:
+    run_plan = build_fixture_preview_run(
+        topic="unsafe nested runtime contract",
+        job_id="unsafe-runtime-test",
+    )
+    assessment_payload = run_plan.planned_duration_assessment.model_dump(mode="python")
+    assessment_payload["status"] = DurationAssessmentStatus.OUTSIDE_TARGET_WARNING
+    unsafe_assessment = type(run_plan.planned_duration_assessment).model_construct(
+        **assessment_payload
+    )
+    fields = {
+        field_name: getattr(run_plan, field_name) for field_name in ProductionRunPlan.model_fields
+    }
+    fields["planned_duration_assessment"] = unsafe_assessment
+    return ProductionRunPlan.model_construct(**fields)
+
+
+def _unsafe_schema_v2_run_plan() -> ProductionRunPlan:
+    run_plan = build_fixture_preview_run(
+        topic="unsafe in-memory schema two contract",
+        job_id="unsafe-schema-two-runtime-test",
+    )
+    fields = {
+        field_name: getattr(run_plan, field_name)
+        for field_name in ProductionRunPlan.model_fields
+        if field_name
+        not in {
+            "planned_duration_assessment",
+            "planned_beat_pacing_warnings",
+        }
+    }
+    fields["schema_version"] = 2
+    return ProductionRunPlan.model_construct(**fields)
+
+
 def _attempt(state, scene_id: str, tier: GenerationTier, *, success: bool = True):
     scene = next(item for item in state.scenes if item.scene_id == scene_id)
-    request = scene.execution_plan.draft if tier is GenerationTier.DRAFT else scene.execution_plan.acceptance
+    request = (
+        scene.execution_plan.draft
+        if tier is GenerationTier.DRAFT
+        else scene.execution_plan.acceptance
+    )
     candidate_id = f"{scene_id}-{tier.value}-candidate"
     return GenerationAttempt(
         scene_id=scene_id,
@@ -57,9 +103,7 @@ def _attempt(state, scene_id: str, tier: GenerationTier, *, success: bool = True
         logical_request_hash=scene.execution_plan.draft.logical_visual_request_hash,
         reference_hashes=[item.sha256 for item in request.references],
         technical_status=(
-            TechnicalStatus.SUCCEEDED
-            if success
-            else TechnicalStatus.TECHNICAL_GENERATION_FAIL
+            TechnicalStatus.SUCCEEDED if success else TechnicalStatus.TECHNICAL_GENERATION_FAIL
         ),
         technical_failure_reason=None if success else "synthetic transport failure",
         simulated=True,
@@ -76,6 +120,202 @@ def _checks() -> QCChecks:
         composition=QCCheckOutcome.PASS,
         reference_consistency=QCCheckOutcome.PASS,
     )
+
+
+def test_runtime_initialization_revalidates_nested_run_plan_authority() -> None:
+    with pytest.raises(ValidationError):
+        initialize_execution_state(_unsafe_run_plan())
+
+
+def test_runtime_initialization_rejects_in_memory_schema_two() -> None:
+    with pytest.raises(
+        ValueError,
+        match="in-memory ProductionRunPlan authority requires schema_version 3",
+    ):
+        initialize_execution_state(_unsafe_schema_v2_run_plan())
+
+
+def test_resume_revalidates_nested_run_plan_authority() -> None:
+    state = _state()
+    unsafe_state = state.model_copy(
+        update={"run_plan": _unsafe_run_plan()},
+        deep=True,
+    )
+
+    with pytest.raises(ValidationError):
+        plan_resume(unsafe_state)
+
+
+def test_resume_rejects_in_memory_schema_two() -> None:
+    state = _state()
+    unsafe_state = state.model_copy(
+        update={"run_plan": _unsafe_schema_v2_run_plan()},
+        deep=True,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="in-memory ProductionRunPlan authority requires schema_version 3",
+    ):
+        plan_resume(unsafe_state)
+
+
+def test_persistence_revalidates_before_creating_files(tmp_path) -> None:
+    state = _state()
+    unsafe_state = state.model_copy(
+        update={"run_plan": _unsafe_run_plan()},
+        deep=True,
+    )
+    paths = production_job_paths(
+        tmp_path,
+        job_id="unsafe-runtime-test",
+        scene_id="scene_01",
+    )
+
+    with pytest.raises(ValidationError):
+        persist_execution_snapshot(
+            unsafe_state,
+            paths,
+            execution_purpose="authority-boundary-test",
+            selected_scene_id="scene_01",
+        )
+
+    assert not paths.job_dir.exists()
+
+
+def test_persistence_rejects_in_memory_schema_two_without_filesystem_effects(
+    tmp_path,
+) -> None:
+    state = _state()
+    paths = production_job_paths(
+        tmp_path / "new",
+        job_id="unsafe-schema-two-runtime-test",
+        scene_id="scene_01",
+    )
+    unsafe_state = state.model_copy(
+        update={"run_plan": _unsafe_schema_v2_run_plan()},
+        deep=True,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="in-memory ProductionRunPlan authority requires schema_version 3",
+    ):
+        persist_execution_snapshot(
+            unsafe_state,
+            paths,
+            execution_purpose="authority-boundary-test",
+            selected_scene_id="scene_01",
+        )
+
+    assert not paths.job_dir.exists()
+
+    existing_paths = production_job_paths(
+        tmp_path / "existing",
+        job_id=state.run_plan.job_id,
+        scene_id="scene_01",
+    )
+    persist_execution_snapshot(
+        state,
+        existing_paths,
+        execution_purpose="authority-boundary-test",
+        selected_scene_id="scene_01",
+    )
+    expected = {
+        path: path.read_bytes()
+        for path in (
+            existing_paths.run_plan_path,
+            existing_paths.runtime_state_path,
+            existing_paths.manifest_path,
+        )
+    }
+    with pytest.raises(
+        ValueError,
+        match="in-memory ProductionRunPlan authority requires schema_version 3",
+    ):
+        persist_execution_snapshot(
+            unsafe_state,
+            existing_paths,
+            execution_purpose="authority-boundary-test",
+            selected_scene_id="scene_01",
+        )
+
+    assert {path: path.read_bytes() for path in expected} == expected
+    assert not list(existing_paths.job_dir.rglob("*.tmp"))
+
+
+def test_persisted_nested_schema_v2_runtime_json_migrates_to_schema_three(
+    tmp_path,
+) -> None:
+    state = _state()
+    payload = state.model_dump(mode="json")
+    payload["run_plan"]["schema_version"] = 2
+    payload["run_plan"].pop("planned_duration_assessment")
+    payload["run_plan"].pop("planned_beat_pacing_warnings")
+    runtime_path = tmp_path / "runtime_state.json"
+    runtime_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    restored = load_runtime_state(runtime_path)
+
+    assert restored.run_plan.schema_version == 3
+    assert (
+        restored.run_plan.planned_duration_assessment == state.run_plan.planned_duration_assessment
+    )
+    assert (
+        restored.run_plan.planned_beat_pacing_warnings
+        == state.run_plan.planned_beat_pacing_warnings
+    )
+
+
+def test_persisted_nested_schema_three_runtime_json_loads_strictly(tmp_path) -> None:
+    state = _state()
+    runtime_path = tmp_path / "runtime_state.json"
+    runtime_path.write_text(state.model_dump_json(), encoding="utf-8")
+
+    restored = load_runtime_state(runtime_path)
+
+    assert restored == state
+    assert restored.run_plan.schema_version == 3
+
+
+@pytest.mark.parametrize("schema_version", ["missing", 1, 4, "2"])
+def test_persisted_runtime_rejects_missing_or_unsupported_nested_schema(
+    tmp_path,
+    schema_version: object,
+) -> None:
+    payload = _state().model_dump(mode="json")
+    if schema_version == "missing":
+        payload["run_plan"].pop("schema_version")
+    else:
+        payload["run_plan"]["schema_version"] = schema_version
+    runtime_path = tmp_path / "runtime_state.json"
+    runtime_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        load_runtime_state(runtime_path)
+
+
+def test_persisted_schema_two_rejects_malformed_legacy_source(tmp_path) -> None:
+    payload = _state().model_dump(mode="json")
+    payload["run_plan"]["schema_version"] = 2
+    payload["run_plan"].pop("planned_duration_assessment")
+    payload["run_plan"].pop("planned_beat_pacing_warnings")
+    payload["run_plan"]["story_plan"]["target_duration_seconds"] = 1.0
+    runtime_path = tmp_path / "runtime_state.json"
+    runtime_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValidationError):
+        load_runtime_state(runtime_path)
+
+
+def test_corrupted_persisted_runtime_json_is_rejected(tmp_path) -> None:
+    payload = _state().model_dump(mode="json")
+    payload["run_plan"]["planning_hash"] = "0" * 64
+    runtime_path = tmp_path / "runtime_state.json"
+    runtime_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValidationError, match="planning_hash does not match"):
+        load_runtime_state(runtime_path)
 
 
 def _record_draft_pass(state, scene_id: str = "scene_01"):
@@ -319,7 +559,9 @@ def test_seven_of_eight_blocks_and_eight_valid_acceptances_are_ready() -> None:
     assert not result.readiness_before_last_acceptance.ready
     assert result.readiness_before_last_acceptance.unresolved_scene_ids == ["scene_08"]
     assert result.final_readiness.ready
-    assert all(scene.status is ProductionSceneStatus.ACCEPTED for scene in result.final_state.scenes)
+    assert all(
+        scene.status is ProductionSceneStatus.ACCEPTED for scene in result.final_state.scenes
+    )
 
 
 def test_call_budget_authorizes_one_draft_no_retry_and_acceptance_only_after_promotion() -> None:
@@ -394,9 +636,7 @@ def test_offline_simulation_has_expected_split_budget_and_zero_external_calls() 
         if scene.accepted_candidate is not None
         and scene.accepted_candidate.source_tier is GenerationTier.DRAFT
     }
-    promoted = {
-        scene.scene_id for scene in result.final_state.scenes if scene.promotions
-    }
+    promoted = {scene.scene_id for scene in result.final_state.scenes if scene.promotions}
 
     assert draft_accepts == {"scene_01", "scene_05", "scene_06"}
     assert promoted == {"scene_02", "scene_03", "scene_04", "scene_07", "scene_08"}

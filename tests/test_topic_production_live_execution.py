@@ -1,4 +1,5 @@
 """Phase 3B.1 bounded draft executor tests; no test reaches a provider network."""
+
 from __future__ import annotations
 
 import hashlib
@@ -39,9 +40,7 @@ def _reference_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root = tmp_path / "approved-references"
     root.mkdir()
     for index, definition in enumerate(reference_planning.APPROVED_REFERENCE_DEFINITIONS):
-        Image.new("RGB", (90, 160), (40 + index * 10, 30, 30)).save(
-            root / definition.filename
-        )
+        Image.new("RGB", (90, 160), (40 + index * 10, 30, 30)).save(root / definition.filename)
     definitions = tuple(
         replace(definition, expected_sha256=sha256_file(root / definition.filename))
         for definition in reference_planning.APPROVED_REFERENCE_DEFINITIONS
@@ -190,6 +189,15 @@ def test_dry_run_persists_state_and_makes_zero_provider_calls(
     assert outcome.paths.run_plan_path.is_file()
     assert outcome.paths.runtime_state_path.is_file()
     assert outcome.paths.manifest_path.is_file()
+    restored = load_runtime_state(outcome.paths.runtime_state_path)
+    assert (
+        restored.run_plan.planned_duration_assessment
+        == outcome.state.run_plan.planned_duration_assessment
+    )
+    assert (
+        restored.run_plan.planned_beat_pacing_warnings
+        == outcome.state.run_plan.planned_beat_pacing_warnings
+    )
 
 
 @pytest.mark.asyncio

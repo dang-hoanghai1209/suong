@@ -30,6 +30,7 @@ from tella.topic_production import (
     record_human_qc,
     register_accepted_candidate,
 )
+from tella.topic_production.duration_policy import DurationAssessmentStatus
 from tella.topic_production.story_plan_identity import canonical_story_plan_sha256
 from tella.visual_generation.providers.kinds import ProviderKind
 
@@ -346,6 +347,48 @@ def test_bridge_rejects_wrong_run_or_planning_identity(tmp_path: Path) -> None:
     wrong_hash = authorization.model_copy(update={"planning_hash": "0" * 64})
     with pytest.raises(ValueError, match="planning hash"):
         _bridge(state, wrong_hash)
+
+
+def test_bridge_revalidates_unsafe_constructed_planned_policy(
+    tmp_path: Path,
+) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    run_payload = {
+        field: getattr(state.run_plan, field) for field in ProductionRunPlan.model_fields
+    }
+    assessment_payload = state.run_plan.planned_duration_assessment.model_dump(mode="python")
+    assessment_payload["status"] = DurationAssessmentStatus.OUTSIDE_TARGET_WARNING
+    unsafe_assessment = type(state.run_plan.planned_duration_assessment).model_construct(
+        **assessment_payload
+    )
+    run_payload["planned_duration_assessment"] = unsafe_assessment
+    unsafe_run = ProductionRunPlan.model_construct(**run_payload)
+    unsafe_state = state.model_copy(update={"run_plan": unsafe_run}, deep=True)
+
+    with pytest.raises(ValidationError):
+        _bridge(unsafe_state, authorization)
+
+
+def test_bridge_rejects_in_memory_schema_two_run_plan(tmp_path: Path) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    run_payload = {
+        field: getattr(state.run_plan, field)
+        for field in ProductionRunPlan.model_fields
+        if field
+        not in {
+            "planned_duration_assessment",
+            "planned_beat_pacing_warnings",
+        }
+    }
+    run_payload["schema_version"] = 2
+    unsafe_run = ProductionRunPlan.model_construct(**run_payload)
+    unsafe_state = state.model_copy(update={"run_plan": unsafe_run}, deep=True)
+
+    with pytest.raises(
+        ValueError,
+        match="in-memory ProductionRunPlan authority requires schema_version 3",
+    ):
+        _bridge(unsafe_state, authorization)
 
 
 @pytest.mark.parametrize(

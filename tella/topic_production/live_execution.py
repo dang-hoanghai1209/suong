@@ -1,4 +1,5 @@
 """One-shot adapter from a topic-production scene plan to the validated provider."""
+
 from __future__ import annotations
 
 import time
@@ -21,7 +22,10 @@ from tella.visual_generation.references import sha256_file
 from tella.visual_generation.tiers import VisualQualityTier, resolve_visual_tier
 
 from .execution import build_fixture_preview_run
-from .execution_models import ReferenceDecisionStatus
+from .execution_models import (
+    ReferenceDecisionStatus,
+    _canonical_production_run_planning_hash,
+)
 from .live_execution_models import (
     CanarySelection,
     DraftExecutionOutcome,
@@ -78,7 +82,22 @@ def build_infrastructure_canary_state(
         },
         deep=True,
     )
-    return initialize_execution_state(run_plan.model_copy(update={"manifest": manifest}, deep=True))
+    planning_hash = _canonical_production_run_planning_hash(
+        job_id=run_plan.job_id,
+        story_plan=run_plan.story_plan,
+        scene_execution_plans=run_plan.scene_execution_plans,
+        manifest=manifest,
+        production_strategy=run_plan.production_strategy,
+    )
+    return initialize_execution_state(
+        run_plan.model_copy(
+            update={
+                "manifest": manifest,
+                "planning_hash": planning_hash,
+            },
+            deep=True,
+        )
+    )
 
 
 def select_draft_canary_scene(state: ExecutionRunState) -> CanarySelection:
@@ -375,9 +394,7 @@ async def execute_volume_cloudflare_retry(
     scene = next((item for item in state.scenes if item.scene_id == scene_id), None)
     if scene is None:
         raise ValueError(f"unknown scene ID: {scene_id}")
-    decision = volume_retry_decision(
-        state, scene_id=scene_id, candidate_id=prior_candidate_id
-    )
+    decision = volume_retry_decision(state, scene_id=scene_id, candidate_id=prior_candidate_id)
     if not decision.allowed or decision.provider is not ProviderKind.CLOUDFLARE_KLEIN_4B:
         raise PermissionError(decision.reason)
     if not live_authorized:
@@ -403,9 +420,7 @@ async def execute_volume_cloudflare_retry(
     if not selected_provider.credentials_present():
         raise PermissionError("live provider credentials are missing")
 
-    paths = volume_cloudflare_retry_paths(
-        out_root, job_id=state.run_plan.job_id, scene_id=scene_id
-    )
+    paths = volume_cloudflare_retry_paths(out_root, job_id=state.run_plan.job_id, scene_id=scene_id)
     persist_execution_snapshot(
         state,
         paths,
@@ -426,9 +441,7 @@ async def execute_volume_cloudflare_retry(
             job_id=state.run_plan.job_id,
             topic=state.run_plan.topic,
             planner_mode=state.run_plan.story_plan.planner_metadata.planner_mode.value,
-            production_eligible=(
-                state.run_plan.story_plan.planner_metadata.production_eligible
-            ),
+            production_eligible=(state.run_plan.story_plan.planner_metadata.production_eligible),
             execution_purpose="volume_cloudflare_hard_fail_retry",
             scene_id=scene_id,
             scene_type=scene.execution_plan.scene_brief.scene_type.value,
@@ -500,9 +513,7 @@ async def execute_volume_cloudflare_retry(
         update={"metadata": {**attempt.metadata, "provider_latency_ms": latency_ms}},
         deep=True,
     )
-    updated = record_volume_retry_attempt(
-        state, attempt, prior_candidate_id=prior_candidate_id
-    )
+    updated = record_volume_retry_attempt(state, attempt, prior_candidate_id=prior_candidate_id)
     injected = provider is not None
     external_calls = 0 if injected else int(provider_returned or request_reached_provider)
     updated = updated.model_copy(

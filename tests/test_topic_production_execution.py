@@ -1,11 +1,14 @@
 """Phase 2 tests for offline topic-to-visual execution planning."""
+
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from tella.topic_production import (
     DeterministicTopicPlanner,
@@ -25,6 +28,19 @@ from tella.topic_production import (
     resolve_references,
 )
 from tella.topic_production.cli import main
+from tella.topic_production.duration_policy import (
+    BeatPacingWarningCode,
+    DurationAssessmentReasonCode,
+    DurationAssessmentStatus,
+    DurationValueAuthority,
+)
+from tella.topic_production.execution_models import (
+    ProductionRunPlan,
+    _canonical_production_run_planning_hash,
+    _revalidate_current_production_run_plan,
+)
+from tella.topic_production.strategy import VisualExecutionMode
+from tella.topic_production.story_plan_identity import canonical_story_plan_sha256
 from tella.visual_generation.providers.cloudflare_flux import DEV_MODEL, KLEIN_4B_MODEL
 from tella.visual_generation.references import REFERENCE_FILES
 from tella.visual_generation.references import sha256_file
@@ -33,6 +49,30 @@ import tella.topic_production.reference_planning as reference_planning
 
 TOPIC_A = "Ở một mình không có nghĩa là cô đơn."
 TOPIC_B = "Học cách buông bỏ một người không còn yêu mình."
+
+
+def _story_with_durations(durations: tuple[float, ...]):
+    story = DeterministicTopicPlanner().plan(
+        topic="planned duration authority",
+        language="en",
+        scene_count=len(durations),
+        target_duration_seconds=sum(durations),
+    )
+    beats = tuple(
+        beat.model_copy(update={"duration_seconds": duration})
+        for beat, duration in zip(story.semantic_beats, durations, strict=True)
+    )
+    return story.model_copy(update={"semantic_beats": beats})
+
+
+def _run_with_durations(durations: tuple[float, ...]) -> ProductionRunPlan:
+    story = _story_with_durations(durations)
+    return build_production_run_plan(
+        job_id="planned-duration-authority",
+        story_plan=story,
+        scene_briefs=build_scene_briefs(story),
+        reference_catalog=load_reference_catalog(None),
+    )
 
 
 def _reference_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -66,6 +106,430 @@ def test_fixture_run_plan_is_deterministic_and_clearly_non_production(
     assert first.story_plan.planner_metadata.production_eligible is False
     assert first.external_calls == 0
     assert len(first.scene_execution_plans) == scene_count
+
+
+def test_run_plan_owns_required_planned_duration_policy_records() -> None:
+    run = _run_with_durations((5.0,) * 7)
+
+    assert run.schema_version == 3
+    assert run.planned_duration_assessment.status is DurationAssessmentStatus.IN_TARGET
+    assert (
+        run.planned_duration_assessment.reason_code
+        is DurationAssessmentReasonCode.DURATION_IN_TARGET
+    )
+    assert run.planned_duration_assessment.value_authority is DurationValueAuthority.PLANNED
+    assert run.planned_beat_pacing_warnings == ()
+
+
+@pytest.mark.parametrize(
+    "durations",
+    [
+        (4.0,) * 7,
+        (4.751,) * 8,
+    ],
+    ids=["below-target", "above-target"],
+)
+def test_outside_target_story_produces_one_nonfatal_planned_assessment(
+    durations: tuple[float, ...],
+) -> None:
+    run = _run_with_durations(durations)
+
+    assert run.planned_duration_assessment.status is DurationAssessmentStatus.OUTSIDE_TARGET_WARNING
+    assert (
+        run.planned_duration_assessment.reason_code
+        is DurationAssessmentReasonCode.OUTSIDE_DURATION_TARGET_WARNING
+    )
+    assert run.external_calls == 0
+    assert run.manifest.render_ready is False
+
+
+@pytest.mark.parametrize(
+    ("durations", "expected_code"),
+    [
+        (
+            (2.5, 4.5, 4.5, 4.5, 4.5, 4.5, 4.5, 4.5),
+            BeatPacingWarningCode.BEAT_DURATION_BELOW_PACING_TARGET_WARNING,
+        ),
+        (
+            (5.5, 4.5, 4.5, 4.5, 4.5, 4.5, 4.5, 3.5),
+            BeatPacingWarningCode.BEAT_DURATION_ABOVE_PACING_TARGET_WARNING,
+        ),
+    ],
+    ids=["below-pacing", "above-pacing"],
+)
+def test_run_plan_derives_exact_ordered_beat_pacing_warning(
+    durations: tuple[float, ...],
+    expected_code: BeatPacingWarningCode,
+) -> None:
+    run = _run_with_durations(durations)
+
+    assert len(run.planned_beat_pacing_warnings) == 1
+    assert run.planned_beat_pacing_warnings[0].beat_id == "beat_01"
+    assert run.planned_beat_pacing_warnings[0].warning_code is expected_code
+
+
+def test_multiple_beat_warnings_follow_storyplan_order_and_are_immutable() -> None:
+    run = _run_with_durations((2.5, 5.5, 4.5, 4.5, 4.5, 4.5, 4.5, 4.5))
+    payload = run.model_dump(mode="python")
+    caller_warnings = list(payload["planned_beat_pacing_warnings"])
+    payload["planned_beat_pacing_warnings"] = caller_warnings
+    restored = ProductionRunPlan.model_validate(payload)
+
+    caller_warnings.reverse()
+
+    assert isinstance(restored.planned_beat_pacing_warnings, tuple)
+    assert [item.beat_id for item in restored.planned_beat_pacing_warnings] == [
+        "beat_01",
+        "beat_02",
+    ]
+    with pytest.raises(TypeError):
+        restored.planned_beat_pacing_warnings[0] = restored.planned_beat_pacing_warnings[1]
+
+
+def test_planned_policy_records_round_trip_json_deterministically() -> None:
+    run = _run_with_durations((2.5, 5.5, 4.5, 4.5, 4.5, 4.5, 4.5, 4.5))
+    serialized = run.model_dump_json()
+    restored = ProductionRunPlan.model_validate_json(serialized)
+
+    assert restored == run
+    assert restored.model_dump_json() == serialized
+
+
+@pytest.mark.parametrize(
+    ("schema_value", "expected_message"),
+    [
+        (None, "schema_version must be an integer"),
+        (1, "unsupported ProductionRunPlan schema_version"),
+        (4, "unsupported ProductionRunPlan schema_version"),
+        ("3", "schema_version must be an integer"),
+    ],
+)
+def test_run_plan_requires_explicit_strict_supported_schema_version(
+    schema_value: object,
+    expected_message: str,
+) -> None:
+    payload = _run_with_durations((5.0,) * 7).model_dump(mode="python")
+    payload["schema_version"] = schema_value
+
+    with pytest.raises(ValidationError, match=expected_message):
+        ProductionRunPlan.model_validate(payload)
+
+    payload.pop("schema_version")
+    with pytest.raises(ValidationError, match="schema_version is required"):
+        ProductionRunPlan.model_validate(payload)
+
+
+def test_explicit_schema_three_accepts_and_unrelated_extras_fail() -> None:
+    run = _run_with_durations((5.0,) * 7)
+    payload = run.model_dump(mode="python")
+    payload["unrelated_extra"] = "not allowed"
+
+    assert ProductionRunPlan.model_validate(run.model_dump(mode="python")) == run
+    assert run.planning_hash == "31ef6b7caac5a8a513109274e1f2d159678630d4e495bf2634a5e8c5e97ee87d"
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        ProductionRunPlan.model_validate(payload)
+
+
+def test_general_validation_rejects_schema_two_mapping_and_json() -> None:
+    payload = _run_with_durations((5.0,) * 7).model_dump(mode="json")
+    payload["schema_version"] = 2
+
+    with pytest.raises(
+        ValidationError,
+        match="unsupported ProductionRunPlan schema_version: 2",
+    ):
+        ProductionRunPlan.model_validate(payload)
+    with pytest.raises(
+        ValidationError,
+        match="unsupported ProductionRunPlan schema_version: 2",
+    ):
+        ProductionRunPlan.model_validate_json(json.dumps(payload))
+
+
+@pytest.mark.parametrize("schema_version", [3.0, True])
+def test_in_memory_non_exact_schema_three_rejects_before_model_dump(
+    schema_version: object,
+) -> None:
+    run = _run_with_durations((5.0,) * 7)
+    fields = {field_name: getattr(run, field_name) for field_name in ProductionRunPlan.model_fields}
+    fields["schema_version"] = schema_version
+    unsafe = ProductionRunPlan.model_construct(**fields)
+
+    def fail_if_dumped(*args, **kwargs):
+        raise AssertionError("model_dump must not be reached")
+
+    object.__setattr__(unsafe, "model_dump", fail_if_dumped)
+
+    with pytest.raises(
+        ValueError,
+        match="in-memory ProductionRunPlan authority requires schema_version 3",
+    ):
+        _revalidate_current_production_run_plan(unsafe)
+
+
+def test_explicit_schema_two_adapter_rejects_model_instances() -> None:
+    run = _run_with_durations((5.0,) * 7)
+
+    with pytest.raises(
+        TypeError,
+        match="schema-2 migration requires a raw mapping",
+    ):
+        ProductionRunPlan.migrate_schema_v2(run)
+
+
+def test_schema_v2_adapter_recomputes_and_ignores_untrusted_new_fields() -> None:
+    run = _run_with_durations((2.5, 5.5, 4.5, 4.5, 4.5, 4.5, 4.5, 4.5))
+    legacy = run.model_dump(mode="python")
+    legacy["schema_version"] = 2
+    legacy["planned_duration_assessment"] = {
+        **legacy["planned_duration_assessment"],
+        "status": DurationAssessmentStatus.OUTSIDE_TARGET_WARNING,
+    }
+    legacy["planned_beat_pacing_warnings"] = []
+
+    restored = ProductionRunPlan.migrate_schema_v2(legacy)
+
+    assert restored.schema_version == 3
+    assert restored.planned_duration_assessment == run.planned_duration_assessment
+    assert restored.planned_beat_pacing_warnings == run.planned_beat_pacing_warnings
+
+
+def test_schema_v2_adapter_rejects_stale_hash_and_malformed_sources() -> None:
+    run = _run_with_durations((5.0,) * 7)
+    stale = run.model_dump(mode="python")
+    stale["schema_version"] = 2
+    stale["planning_hash"] = "0" * 64
+    with pytest.raises(ValidationError, match="planning_hash does not match"):
+        ProductionRunPlan.migrate_schema_v2(stale)
+
+    malformed_story = run.model_dump(mode="python")
+    malformed_story["schema_version"] = 2
+    malformed_story["story_plan"]["target_duration_seconds"] = 1.0
+    with pytest.raises(ValidationError):
+        ProductionRunPlan.migrate_schema_v2(malformed_story)
+
+    malformed_manifest = run.model_dump(mode="python")
+    malformed_manifest["schema_version"] = 2
+    malformed_manifest["manifest"]["render_ready"] = True
+    with pytest.raises(ValidationError, match="cannot be render ready"):
+        ProductionRunPlan.migrate_schema_v2(malformed_manifest)
+
+
+def test_schema_v2_adapter_rejects_unrelated_extras() -> None:
+    payload = _run_with_durations((5.0,) * 7).model_dump(mode="python")
+    payload["schema_version"] = 2
+    payload["unrelated_extra"] = "not allowed"
+
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        ProductionRunPlan.migrate_schema_v2(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("status", DurationAssessmentStatus.OUTSIDE_TARGET_WARNING),
+        ("reason_code", DurationAssessmentReasonCode.OUTSIDE_DURATION_TARGET_WARNING),
+        ("policy_id", "forged_policy"),
+        ("target_min_seconds", 31.0),
+        ("target_max_seconds", 39.0),
+    ],
+)
+def test_forged_planned_total_assessment_fails_closed(field: str, value: object) -> None:
+    payload = _run_with_durations((5.0,) * 7).model_dump(mode="python")
+    payload["planned_duration_assessment"][field] = value
+
+    with pytest.raises(ValidationError):
+        ProductionRunPlan.model_validate(payload)
+
+
+def test_forged_in_target_status_for_outside_duration_fails_closed() -> None:
+    payload = _run_with_durations((4.0,) * 7).model_dump(mode="python")
+    payload["planned_duration_assessment"]["status"] = DurationAssessmentStatus.IN_TARGET
+    payload["planned_duration_assessment"]["reason_code"] = (
+        DurationAssessmentReasonCode.DURATION_IN_TARGET
+    )
+
+    with pytest.raises(ValidationError):
+        ProductionRunPlan.model_validate(payload)
+
+
+@pytest.mark.parametrize("mutation", ["omitted", "extra", "reordered", "duplicate"])
+def test_forged_beat_warning_collection_fails_closed(mutation: str) -> None:
+    warning_run = _run_with_durations((2.5, 5.5, 4.5, 4.5, 4.5, 4.5, 4.5, 4.5))
+    payload = warning_run.model_dump(mode="python")
+    warnings = list(payload["planned_beat_pacing_warnings"])
+    if mutation == "omitted":
+        warnings = warnings[1:]
+    elif mutation == "extra":
+        in_target_run = _run_with_durations((5.0,) * 7)
+        payload = in_target_run.model_dump(mode="python")
+        warnings = [warning_run.planned_beat_pacing_warnings[0].model_dump(mode="python")]
+    elif mutation == "reordered":
+        warnings.reverse()
+    else:
+        warnings.append(warnings[0])
+    payload["planned_beat_pacing_warnings"] = warnings
+
+    with pytest.raises(ValidationError):
+        ProductionRunPlan.model_validate(payload)
+
+
+def test_storyplan_and_policy_only_model_copy_updates_revalidate() -> None:
+    run = _run_with_durations((5.0,) * 7)
+    changed_story = _story_with_durations((4.0,) * 7)
+
+    with pytest.raises(ValidationError, match="planned duration assessment"):
+        run.model_copy(update={"story_plan": changed_story})
+    with pytest.raises(ValidationError):
+        run.model_copy(
+            update={
+                "planned_duration_assessment": _run_with_durations(
+                    (4.0,) * 7
+                ).planned_duration_assessment
+            }
+        )
+
+
+def test_model_copy_rejects_hash_and_schema_mutation_but_allows_valid_deep_copy() -> None:
+    run = _run_with_durations((5.0,) * 7)
+
+    assert run.model_copy(deep=True) == run
+    with pytest.raises(ValidationError, match="planning_hash does not match"):
+        run.model_copy(update={"planning_hash": "0" * 64})
+    for version in (2, 3):
+        with pytest.raises(
+            ValueError,
+            match="schema_version cannot be changed through model_copy",
+        ):
+            run.model_copy(update={"schema_version": version})
+
+
+def test_model_copy_revalidates_raw_nested_values_and_rejects_extra_updates() -> None:
+    run = _run_with_durations((5.0,) * 7)
+    story_payload = run.story_plan.model_dump(mode="python")
+
+    restored = run.model_copy(update={"story_plan": story_payload})
+
+    assert restored == run
+    assert isinstance(restored.story_plan.semantic_beats, tuple)
+    story_payload["target_duration_seconds"] = 1.0
+    with pytest.raises(ValidationError):
+        run.model_copy(update={"story_plan": story_payload})
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        run.model_copy(update={"unrelated_extra": "not allowed"})
+
+
+@pytest.mark.parametrize("planning_hash", ["0" * 64, "A" * 64, "not-a-hash"])
+def test_noncanonical_or_stale_planning_hash_representations_fail(
+    planning_hash: str,
+) -> None:
+    run = _run_with_durations((5.0,) * 7)
+
+    with pytest.raises(ValidationError):
+        run.model_copy(update={"planning_hash": planning_hash})
+
+
+def test_model_copy_source_update_requires_and_accepts_recomputed_hash() -> None:
+    run = _run_with_durations((5.0,) * 7)
+    with pytest.raises(ValidationError, match="planning_hash does not match"):
+        run.model_copy(update={"job_id": "changed-job"})
+
+    expected_hash = _canonical_production_run_planning_hash(
+        job_id="changed-job",
+        story_plan=run.story_plan,
+        scene_execution_plans=run.scene_execution_plans,
+        manifest=run.manifest,
+        production_strategy=run.production_strategy,
+    )
+    changed = run.model_copy(
+        update={
+            "job_id": "changed-job",
+            "planning_hash": expected_hash,
+        }
+    )
+
+    assert changed.job_id == "changed-job"
+    assert changed.planning_hash == expected_hash
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["job_id", "story_plan", "manifest", "scene_execution_plan", "strategy"],
+)
+def test_every_planning_hash_source_rejects_stale_hash(mutation: str) -> None:
+    run = _run_with_durations((5.0,) * 7)
+    update: dict[str, object]
+    if mutation == "job_id":
+        update = {"job_id": "stale-job"}
+    elif mutation == "story_plan":
+        update = {
+            "story_plan": run.story_plan.model_copy(
+                update={"topic_intent": "changed semantic intent"}
+            )
+        }
+    elif mutation == "manifest":
+        update = {
+            "manifest": run.manifest.model_copy(
+                update={"metadata": {**run.manifest.metadata, "changed": True}},
+                deep=True,
+            )
+        }
+    elif mutation == "scene_execution_plan":
+        scenes = list(run.scene_execution_plans)
+        scenes[0] = scenes[0].model_copy(update={"order": 2})
+        update = {"scene_execution_plans": scenes}
+    else:
+        update = {
+            "production_strategy": run.production_strategy.model_copy(
+                update={"visual_mode": VisualExecutionMode.LOCAL_COMPOSITOR}
+            )
+        }
+
+    with pytest.raises(ValidationError, match="planning_hash does not match"):
+        run.model_copy(update=update)
+
+
+def test_beat_identity_or_duration_change_with_retained_warnings_fails_closed() -> None:
+    run = _run_with_durations((2.5, 5.5, 4.5, 4.5, 4.5, 4.5, 4.5, 4.5))
+    payload = run.model_dump(mode="python")
+    payload["story_plan"]["semantic_beats"][0]["beat_id"] = "beat_08"
+    with pytest.raises(ValidationError):
+        ProductionRunPlan.model_validate(payload)
+
+    changed_durations = list(run.story_plan.semantic_beats)
+    changed_durations[0] = changed_durations[0].model_copy(update={"duration_seconds": 3.0})
+    changed_durations[2] = changed_durations[2].model_copy(update={"duration_seconds": 4.0})
+    duration_story = run.story_plan.model_copy(update={"semantic_beats": tuple(changed_durations)})
+    with pytest.raises(ValidationError, match="planned beat pacing warnings"):
+        run.model_copy(update={"story_plan": duration_story})
+
+
+def test_json_tampering_fails_and_planning_hash_contract_is_unchanged() -> None:
+    run = _run_with_durations((2.5, 5.5, 4.5, 4.5, 4.5, 4.5, 4.5, 4.5))
+    payload = run.model_dump(mode="json")
+    legacy_planning_payload = {
+        "job_id": run.job_id,
+        "topic": run.story_plan.topic,
+        "story_plan": run.story_plan.model_dump(mode="json"),
+        "executions": [item.model_dump(mode="json") for item in run.scene_execution_plans],
+        "manifest": run.manifest.model_dump(mode="json"),
+        "production_strategy": run.production_strategy.model_dump(mode="json"),
+    }
+    expected_hash = hashlib.sha256(
+        json.dumps(
+            legacy_planning_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    story_hash = canonical_story_plan_sha256(run.story_plan)
+    payload["planned_beat_pacing_warnings"] = []
+
+    with pytest.raises(ValidationError):
+        ProductionRunPlan.model_validate_json(json.dumps(payload))
+    assert run.planning_hash == expected_hash
+    assert canonical_story_plan_sha256(run.story_plan) == story_hash
 
 
 def test_live_mode_rejects_fixture_planner() -> None:
@@ -140,7 +604,9 @@ def test_every_brief_maps_to_one_unaccepted_draft_pending_execution() -> None:
         scene.initial_status is ProductionSceneStatus.DRAFT_PENDING
         for scene in run.scene_execution_plans
     )
-    assert all(scene.acceptance_policy.automatic_acceptance is False for scene in run.scene_execution_plans)
+    assert all(
+        scene.acceptance_policy.automatic_acceptance is False for scene in run.scene_execution_plans
+    )
     assert all(item.accepted_candidate is None for item in run.manifest.scenes)
 
 
@@ -178,7 +644,9 @@ def test_catalog_contains_only_physical_approved_static_assets(
     assert all(Path(item.path).is_file() for item in catalog.references)
     assert all(len(item.sha256) == 64 for item in catalog.references)
     assert catalog.generated_assets_authoritative is False
-    style = next(item for item in catalog.references if item.reference_id == "scene_01_style_anchor")
+    style = next(
+        item for item in catalog.references if item.reference_id == "scene_01_style_anchor"
+    )
     assert style.roles == ["female_identity_anchor", "style_anchor"]
 
 
@@ -442,10 +910,12 @@ def test_pre_generation_manifest_is_serializable_traceable_and_fail_closed() -> 
     assert all(scene.status is ProductionSceneStatus.DRAFT_PENDING for scene in run.manifest.scenes)
     assert len(run.manifest.metadata["execution_plans"]) == 8
     assert all(
-        item["provider_request_hash"] is None
+        item["provider_request_hash"] is None for item in run.manifest.metadata["execution_plans"]
+    )
+    assert all(
+        len(item["logical_visual_request_hash"]) == 64
         for item in run.manifest.metadata["execution_plans"]
     )
-    assert all(len(item["logical_visual_request_hash"]) == 64 for item in run.manifest.metadata["execution_plans"])
     assert run.manifest.metadata["external_calls"] == 0
 
 
@@ -470,17 +940,20 @@ def test_plan_production_cli_resolves_configured_reference_root(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     root = _reference_root(tmp_path, monkeypatch)
-    assert main(
-        [
-            "plan-production",
-            "--topic",
-            TOPIC_B,
-            "--scene-count",
-            "8",
-            "--reference-root",
-            str(root),
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "plan-production",
+                "--topic",
+                TOPIC_B,
+                "--scene-count",
+                "8",
+                "--reference-root",
+                str(root),
+            ]
+        )
+        == 0
+    )
     payload = json.loads(capsys.readouterr().out)
 
     assert all(scene["references"] for scene in payload["scenes"])

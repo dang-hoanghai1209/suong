@@ -1,4 +1,5 @@
 """Pure, fail-closed execution/QC transitions with no provider operations."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -6,6 +7,10 @@ from typing import Any
 from tella.visual_generation.providers.kinds import ProviderKind
 
 from .models import GenerationTier, ProductionSceneStatus, ReadinessResult
+from .execution_models import (
+    ProductionRunPlan,
+    _revalidate_current_production_run_plan,
+)
 from .pollinations_readiness import (
     PollinationsReadinessSnapshot,
 )
@@ -34,7 +39,15 @@ from .runtime_models import (
 from .strategy import ProductionStrategy, SceneDataSensitivity
 
 
-def initialize_execution_state(run_plan) -> ExecutionRunState:
+def _revalidate_execution_state(state: ExecutionRunState) -> ExecutionRunState:
+    run_plan = _revalidate_current_production_run_plan(state.run_plan)
+    payload = state.model_dump(mode="python")
+    payload["run_plan"] = run_plan.model_dump(mode="python")
+    return ExecutionRunState.model_validate(payload)
+
+
+def initialize_execution_state(run_plan: ProductionRunPlan) -> ExecutionRunState:
+    run_plan = _revalidate_current_production_run_plan(run_plan)
     scenes = [SceneRuntimeState(execution_plan=item) for item in run_plan.scene_execution_plans]
     events = [
         ExecutionEvent(
@@ -64,8 +77,7 @@ def record_pollinations_readiness(
     return state.model_copy(
         update={
             "pollinations_readiness": snapshot,
-            "readiness_external_calls": state.readiness_external_calls
-            + snapshot.readiness_calls,
+            "readiness_external_calls": state.readiness_external_calls + snapshot.readiness_calls,
         },
         deep=True,
     )
@@ -368,7 +380,9 @@ def _apply_generation_attempt(
             if attempt.tier is GenerationTier.DRAFT
             else EventType.ACCEPTANCE_GENERATION_FAILED
         )
-        reasons = list(dict.fromkeys([*scene.block_reasons, _failure_reason(attempt.technical_status)]))
+        reasons = list(
+            dict.fromkeys([*scene.block_reasons, _failure_reason(attempt.technical_status)])
+        )
     updated = scene.model_copy(
         update={
             "status": status,
@@ -517,7 +531,9 @@ def promote_scene_to_acceptance(
         ProductionSceneStatus.DRAFT_GENERATED,
     }:
         raise ValueError(f"scene cannot be promoted from {scene.status.value}")
-    draft_attempts = [item for item in scene.generation_attempts if item.tier is GenerationTier.DRAFT]
+    draft_attempts = [
+        item for item in scene.generation_attempts if item.tier is GenerationTier.DRAFT
+    ]
     draft_qc = [item for item in scene.qc_records if item.tier is GenerationTier.DRAFT]
     if not draft_attempts or not draft_qc:
         raise ValueError("promotion requires a recorded draft attempt and draft QC history")
@@ -671,9 +687,7 @@ def block_scene(
         },
         deep=True,
     )
-    return _replace_scene(
-        state, index, updated, EventType.BLOCKED, {"reason": reason.value}
-    )
+    return _replace_scene(state, index, updated, EventType.BLOCKED, {"reason": reason.value})
 
 
 def evaluate_execution_readiness(state: ExecutionRunState) -> ReadinessResult:
@@ -750,18 +764,14 @@ def summarize_call_budget(state: ExecutionRunState) -> CallBudgetSummary:
         strategy = state.run_plan.production_strategy
         routing = scene.execution_plan.routing
         initial_is_local = bool(
-            routing is not None
-            and routing.route.selected_provider is ProviderKind.LOCAL_COMPOSITOR
+            routing is not None and routing.route.selected_provider is ProviderKind.LOCAL_COMPOSITOR
         )
         volume_retry_capacity = (
             strategy.volume_policy.hard_fail_retry_per_scene
-            if strategy.strategy is ProductionStrategy.VOLUME
-            and strategy.volume_policy is not None
+            if strategy.strategy is ProductionStrategy.VOLUME and strategy.volume_policy is not None
             else 0
         )
-        draft_max_calls = 1 + (
-            volume_retry_capacity if not initial_is_local else 0
-        )
+        draft_max_calls = 1 + (volume_retry_capacity if not initial_is_local else 0)
         budgets.append(
             SceneCallBudget(
                 scene_id=scene.scene_id,
@@ -794,6 +804,7 @@ def summarize_call_budget(state: ExecutionRunState) -> CallBudgetSummary:
 
 
 def plan_resume(state: ExecutionRunState) -> ResumePlan:
+    state = _revalidate_execution_state(state)
     action_by_status = {
         ProductionSceneStatus.DRAFT_PENDING: ResumeAction.EXECUTE_DRAFT,
         ProductionSceneStatus.DRAFT_GENERATED: ResumeAction.AWAIT_DRAFT_QC,
@@ -837,11 +848,7 @@ def plan_resume(state: ExecutionRunState) -> ResumePlan:
                     and scene_retries < policy.hard_fail_retry_per_scene
                     and run_retries < policy.max_ai_retries_per_run
                 )
-                action = (
-                    ResumeAction.RETRY_VOLUME
-                    if retry_allowed
-                    else ResumeAction.REMAIN_BLOCKED
-                )
+                action = ResumeAction.RETRY_VOLUME if retry_allowed else ResumeAction.REMAIN_BLOCKED
                 reason = (
                     "persisted Volume hard fail has one authorized Cloudflare retry"
                     if retry_allowed

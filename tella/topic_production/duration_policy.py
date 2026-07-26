@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from enum import StrEnum
 import math
-from typing import Any, Literal, Self
+from typing import Any, Iterable, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, model_validator
 
@@ -154,6 +154,35 @@ def assess_beat_duration_pacing(
         actual_duration_seconds=actual,
         warning_code=code,
     )
+
+
+def _derive_planned_duration_policy(
+    *,
+    target_duration_seconds: float,
+    beats: Iterable[tuple[str, int, float]],
+) -> tuple[MvpDurationTargetAssessment, tuple[BeatPacingWarning, ...]]:
+    """Derive immutable policy records from validated planned duration values."""
+
+    ordered_beats = sorted(beats, key=lambda item: item[1])
+    beat_ids = [beat_id for beat_id, _, _ in ordered_beats]
+    if len(beat_ids) != len(set(beat_ids)):
+        raise ValueError("planned duration policy requires unique beat IDs")
+    assessment = assess_mvp_duration_target(
+        target_duration_seconds,
+        value_authority=DurationValueAuthority.PLANNED,
+    )
+    warnings = tuple(
+        warning
+        for beat_id, _, duration_seconds in ordered_beats
+        if (
+            warning := assess_beat_duration_pacing(
+                beat_id=beat_id,
+                actual_duration_seconds=duration_seconds,
+            )
+        )
+        is not None
+    )
+    return assessment, warnings
 
 
 __all__ = [

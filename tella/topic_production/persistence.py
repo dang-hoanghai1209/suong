@@ -1,20 +1,26 @@
 """Atomic persistence and reload for topic-production runtime state."""
+
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
 from tella.atomic_write import atomic_write_json
 from tella.visual_generation.models import CandidateMetadata
 
+from .execution_models import ProductionRunPlan
 from .live_execution_models import DraftExecutionPreview, ProductionJobPaths
-from .runtime import evaluate_execution_readiness, plan_resume, summarize_call_budget
+from .runtime import (
+    _revalidate_execution_state,
+    evaluate_execution_readiness,
+    plan_resume,
+    summarize_call_budget,
+)
 from .runtime_models import ExecutionRunState
 
 
-def production_job_paths(
-    out_root: Path | str, *, job_id: str, scene_id: str
-) -> ProductionJobPaths:
+def production_job_paths(out_root: Path | str, *, job_id: str, scene_id: str) -> ProductionJobPaths:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", job_id):
         raise ValueError("job_id may contain only letters, numbers, dot, underscore, and dash")
     if not re.fullmatch(r"scene_[0-9]{2}", scene_id):
@@ -60,6 +66,7 @@ def persist_execution_snapshot(
 ) -> None:
     """Persist provider-neutral execution state and optional candidate metadata atomically."""
 
+    state = _revalidate_execution_state(state)
     readiness = evaluate_execution_readiness(state)
     budget = summarize_call_budget(state)
     resume = plan_resume(state)
@@ -72,9 +79,7 @@ def persist_execution_snapshot(
             "job_id": state.run_plan.job_id,
             "topic": state.run_plan.topic,
             "planner_mode": state.run_plan.story_plan.planner_metadata.planner_mode.value,
-            "production_eligible": (
-                state.run_plan.story_plan.planner_metadata.production_eligible
-            ),
+            "production_eligible": (state.run_plan.story_plan.planner_metadata.production_eligible),
             "execution_purpose": execution_purpose,
             "planning_hash": state.run_plan.planning_hash,
             "selected_scene_id": selected_scene_id,
@@ -82,7 +87,9 @@ def persist_execution_snapshot(
                 {
                     "scene_id": scene.scene_id,
                     "status": scene.status.value,
-                    "attempts": [item.model_dump(mode="json") for item in scene.generation_attempts],
+                    "attempts": [
+                        item.model_dump(mode="json") for item in scene.generation_attempts
+                    ],
                     "qc_records": [item.model_dump(mode="json") for item in scene.qc_records],
                     "accepted_candidate": (
                         scene.accepted_candidate.model_dump(mode="json")
@@ -111,4 +118,20 @@ def persist_execution_snapshot(
 
 
 def load_runtime_state(path: Path | str) -> ExecutionRunState:
-    return ExecutionRunState.model_validate_json(Path(path).read_text(encoding="utf-8"))
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("persisted ExecutionRunState must be a JSON object")
+    raw_run_plan = payload.get("run_plan")
+    if not isinstance(raw_run_plan, dict):
+        raise ValueError("persisted ExecutionRunState run_plan must be a JSON object")
+    if "schema_version" not in raw_run_plan:
+        raise ValueError("ProductionRunPlan schema_version is required")
+    version = raw_run_plan["schema_version"]
+    if type(version) is not int:
+        raise ValueError("ProductionRunPlan schema_version must be an integer")
+    if version == 2:
+        migrated = ProductionRunPlan.migrate_schema_v2(raw_run_plan)
+        payload["run_plan"] = migrated.model_dump(mode="python")
+    elif version != 3:
+        raise ValueError(f"unsupported ProductionRunPlan schema_version: {version}")
+    return ExecutionRunState.model_validate(payload)
