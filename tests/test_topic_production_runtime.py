@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 
 import pytest
 from pydantic import ValidationError
 
 from tella.topic_production import (
+    DurationPolicyReport,
     FailureReason,
     ExecutionRunState,
     GenerationAttempt,
@@ -25,10 +27,14 @@ from tella.topic_production import (
     TechnicalStatus,
     authorize_draft_acceptance,
     block_scene,
+    build_duration_policy_report,
     build_fixture_preview_run,
+    build_production_run_plan,
+    build_scene_briefs,
     evaluate_execution_readiness,
     initialize_execution_state,
     load_runtime_state,
+    load_reference_catalog,
     persist_execution_snapshot,
     plan_resume,
     production_job_paths,
@@ -40,12 +46,38 @@ from tella.topic_production import (
     summarize_call_budget,
 )
 from tella.topic_production.duration_policy import DurationAssessmentStatus
+from tella.topic_production.planner import DeterministicTopicPlanner
+import tella.topic_production.persistence as persistence_module
 
 
 def _state():
     return initialize_execution_state(
         build_fixture_preview_run(topic="offline runtime contract", job_id="runtime-test")
     )
+
+
+def _state_with_durations(durations: tuple[float, ...]) -> ExecutionRunState:
+    story = DeterministicTopicPlanner().plan(
+        topic="runtime duration projection",
+        language="en",
+        scene_count=len(durations),
+        target_duration_seconds=sum(durations),
+    )
+    story = story.model_copy(
+        update={
+            "semantic_beats": tuple(
+                beat.model_copy(update={"duration_seconds": duration})
+                for beat, duration in zip(story.semantic_beats, durations, strict=True)
+            )
+        }
+    )
+    run_plan = build_production_run_plan(
+        job_id="runtime-duration-projection",
+        story_plan=story,
+        scene_briefs=build_scene_briefs(story),
+        reference_catalog=load_reference_catalog(None),
+    )
+    return initialize_execution_state(run_plan)
 
 
 def _unsafe_run_plan() -> ProductionRunPlan:
@@ -242,6 +274,325 @@ def test_persistence_rejects_in_memory_schema_two_without_filesystem_effects(
 
     assert {path: path.read_bytes() for path in expected} == expected
     assert not list(existing_paths.job_dir.rglob("*.tmp"))
+
+
+@pytest.mark.parametrize(
+    "durations",
+    [
+        (5.0,) * 7,
+        (4.0,) * 7,
+        (2.5, 6.25, 4.375, 4.375, 4.375, 4.375, 4.375, 4.375),
+    ],
+    ids=["in-target", "outside-target", "ordered-beat-warnings"],
+)
+def test_runtime_manifest_contains_exact_canonical_duration_policy_projection(
+    tmp_path,
+    durations: tuple[float, ...],
+) -> None:
+    state = _state_with_durations(durations)
+    paths = production_job_paths(
+        tmp_path,
+        job_id=state.run_plan.job_id,
+        scene_id="scene_01",
+    )
+
+    persist_execution_snapshot(
+        state,
+        paths,
+        execution_purpose="duration-policy-projection-test",
+        selected_scene_id="scene_01",
+    )
+
+    manifest = json.loads(paths.manifest_path.read_text(encoding="utf-8"))
+    expected = build_duration_policy_report(state.run_plan).model_dump(mode="json")
+    assert manifest["schema_version"] == 1
+    assert manifest["duration_policy"] == expected
+    assert manifest["duration_policy"]["schema_version"] == 1
+    assert manifest["duration_policy"]["planned_duration_assessment"] == (
+        state.run_plan.planned_duration_assessment.model_dump(mode="json")
+    )
+    assert manifest["duration_policy"]["planned_beat_pacing_warnings"] == [
+        warning.model_dump(mode="json") for warning in state.run_plan.planned_beat_pacing_warnings
+    ]
+    assert manifest["duration_policy"]["warning_count"] == expected["warning_count"]
+    assert "measured_duration_assessment" not in manifest["duration_policy"]
+    assert "estimated_duration_assessment" not in manifest["duration_policy"]
+    assert "has_warnings" not in manifest["duration_policy"]
+    assert "duration_policy" not in type(state).model_fields
+    assert "duration_policy" not in type(state.run_plan.manifest).model_fields
+    assert "duration_policy" not in inspect.signature(persist_execution_snapshot).parameters
+
+    persist_execution_snapshot(
+        state,
+        paths,
+        execution_purpose="duration-policy-projection-test",
+        selected_scene_id="scene_01",
+    )
+    repeated = json.loads(paths.manifest_path.read_text(encoding="utf-8"))
+    assert repeated["duration_policy"] == expected
+
+
+@pytest.mark.parametrize(
+    "failure_stage",
+    ["builder", "report-serialization", "json-serialization"],
+)
+@pytest.mark.parametrize("existing_snapshot", [False, True], ids=["new", "existing"])
+def test_duration_policy_failure_occurs_before_every_filesystem_side_effect(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+    existing_snapshot: bool,
+) -> None:
+    state = _state()
+    state_before = state.model_copy(deep=True)
+    paths = production_job_paths(
+        tmp_path,
+        job_id=state.run_plan.job_id,
+        scene_id="scene_01",
+    )
+    expected: dict[object, bytes] = {}
+    if existing_snapshot:
+        persist_execution_snapshot(
+            state,
+            paths,
+            execution_purpose="duration-policy-preflight-test",
+            selected_scene_id="scene_01",
+        )
+        expected = {
+            path: path.read_bytes()
+            for path in (
+                paths.run_plan_path,
+                paths.runtime_state_path,
+                paths.manifest_path,
+            )
+        }
+
+    if failure_stage == "builder":
+
+        def fail_builder(_run_plan):
+            raise RuntimeError("injected duration-policy builder failure")
+
+        monkeypatch.setattr(
+            persistence_module,
+            "build_duration_policy_report",
+            fail_builder,
+        )
+        expected_message = "injected duration-policy builder failure"
+    elif failure_stage == "report-serialization":
+
+        def fail_report_serialization(_self, *args, **kwargs):
+            raise RuntimeError("injected duration-policy serialization failure")
+
+        monkeypatch.setattr(
+            DurationPolicyReport,
+            "model_dump",
+            fail_report_serialization,
+        )
+        expected_message = "injected duration-policy serialization failure"
+    else:
+
+        def fail_json_serialization(*args, **kwargs):
+            raise RuntimeError("injected JSON serialization failure")
+
+        monkeypatch.setattr(persistence_module.json, "dumps", fail_json_serialization)
+        expected_message = "injected JSON serialization failure"
+
+    with pytest.raises(RuntimeError, match=expected_message):
+        persist_execution_snapshot(
+            state,
+            paths,
+            execution_purpose="duration-policy-preflight-test",
+            selected_scene_id="scene_01",
+        )
+
+    assert state == state_before
+    if existing_snapshot:
+        assert {path: path.read_bytes() for path in expected} == expected
+        assert not list(paths.job_dir.rglob("*.tmp"))
+    else:
+        assert not paths.job_dir.exists()
+
+
+@pytest.mark.parametrize("existing_snapshot", [False, True], ids=["new", "existing"])
+def test_utf8_encoding_failure_precedes_every_filesystem_side_effect(
+    tmp_path,
+    existing_snapshot: bool,
+) -> None:
+    state = _state()
+    state_before = state.model_copy(deep=True)
+    paths = production_job_paths(
+        tmp_path,
+        job_id=state.run_plan.job_id,
+        scene_id="scene_01",
+    )
+    valid_metadata = {
+        "status": "original",
+        "detail": "valid UTF-8 metadata",
+    }
+    expected: dict[str, bytes] = {}
+    if existing_snapshot:
+        persist_execution_snapshot(
+            state,
+            paths,
+            execution_purpose="duration-policy-utf8-preflight-test",
+            selected_scene_id="scene_01",
+            candidate_metadata=valid_metadata,
+        )
+        expected = {
+            str(path.relative_to(paths.job_dir)): path.read_bytes()
+            for path in paths.job_dir.rglob("*")
+            if path.is_file()
+        }
+        candidate_relative_path = str(paths.candidate_metadata_path.relative_to(paths.job_dir))
+        assert candidate_relative_path in expected
+        assert expected[candidate_relative_path] == json.dumps(
+            valid_metadata,
+            ensure_ascii=False,
+            indent=2,
+        ).encode("utf-8")
+        manifest = json.loads(paths.manifest_path.read_text(encoding="utf-8"))
+        assert manifest["duration_policy"] == build_duration_policy_report(
+            state.run_plan
+        ).model_dump(mode="json")
+
+    with pytest.raises(UnicodeEncodeError):
+        persist_execution_snapshot(
+            state,
+            paths,
+            execution_purpose="changed-purpose",
+            selected_scene_id="scene_01",
+            candidate_metadata={"value": "\ud800"},
+        )
+
+    assert state == state_before
+    if existing_snapshot:
+        actual = {
+            str(path.relative_to(paths.job_dir)): path.read_bytes()
+            for path in paths.job_dir.rglob("*")
+            if path.is_file()
+        }
+        assert actual == expected
+        assert set(actual) == set(expected)
+        assert not any(path.name.endswith(".tmp") for path in paths.job_dir.rglob("*"))
+    else:
+        assert not paths.job_dir.exists()
+
+
+def test_persistence_rejects_stale_planning_hash_before_filesystem_effects(
+    tmp_path,
+) -> None:
+    state = _state()
+    run_plan_fields = {
+        field_name: getattr(state.run_plan, field_name)
+        for field_name in ProductionRunPlan.model_fields
+    }
+    run_plan_fields["planning_hash"] = "0" * 64
+    unsafe_run_plan = ProductionRunPlan.model_construct(**run_plan_fields)
+    unsafe_state = state.model_copy(update={"run_plan": unsafe_run_plan}, deep=True)
+    paths = production_job_paths(
+        tmp_path,
+        job_id=state.run_plan.job_id,
+        scene_id="scene_01",
+    )
+
+    with pytest.raises(ValidationError, match="planning_hash does not match"):
+        persist_execution_snapshot(
+            unsafe_state,
+            paths,
+            execution_purpose="duration-policy-preflight-test",
+            selected_scene_id="scene_01",
+        )
+
+    assert not paths.job_dir.exists()
+
+
+@pytest.mark.parametrize(
+    "manifest_variant",
+    ["missing", "malformed", "forged", "invalid-json"],
+)
+def test_runtime_load_and_resume_ignore_manifest_duration_policy(
+    tmp_path,
+    manifest_variant: str,
+) -> None:
+    state = _state_with_durations((4.0,) * 7)
+    paths = production_job_paths(
+        tmp_path,
+        job_id=state.run_plan.job_id,
+        scene_id="scene_01",
+    )
+    persist_execution_snapshot(
+        state,
+        paths,
+        execution_purpose="duration-policy-compatibility-test",
+        selected_scene_id="scene_01",
+    )
+    expected_resume = plan_resume(state)
+
+    if manifest_variant == "invalid-json":
+        paths.manifest_path.write_text("{not-json", encoding="utf-8")
+    else:
+        manifest = json.loads(paths.manifest_path.read_text(encoding="utf-8"))
+        if manifest_variant == "missing":
+            manifest.pop("duration_policy")
+        elif manifest_variant == "malformed":
+            manifest["duration_policy"] = "not-a-report"
+        else:
+            manifest["duration_policy"] = {
+                "schema_version": 99,
+                "planned_duration_assessment": None,
+                "planned_beat_pacing_warnings": [],
+                "warning_count": -1,
+            }
+        paths.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    restored = load_runtime_state(paths.runtime_state_path)
+
+    assert restored == state
+    assert plan_resume(restored) == expected_resume
+    assert (
+        restored.run_plan.planned_duration_assessment.status
+        is DurationAssessmentStatus.OUTSIDE_TARGET_WARNING
+    )
+
+
+def test_persistence_rebuilds_and_overwrites_stale_duration_policy(
+    tmp_path,
+) -> None:
+    state = _state_with_durations((2.5, 6.25, 4.375, 4.375, 4.375, 4.375, 4.375, 4.375))
+    paths = production_job_paths(
+        tmp_path,
+        job_id=state.run_plan.job_id,
+        scene_id="scene_01",
+    )
+    persist_execution_snapshot(
+        state,
+        paths,
+        execution_purpose="duration-policy-rebuild-test",
+        selected_scene_id="scene_01",
+    )
+    manifest = json.loads(paths.manifest_path.read_text(encoding="utf-8"))
+    copied = build_duration_policy_report(_state_with_durations((4.0,) * 7).run_plan).model_dump(
+        mode="json"
+    )
+    copied["schema_version"] = 99
+    copied["warning_count"] = 999
+    copied["planned_duration_assessment"]["policy_id"] = "forged-policy"
+    copied["planned_beat_pacing_warnings"] = list(
+        reversed(manifest["duration_policy"]["planned_beat_pacing_warnings"])
+    )
+    manifest["duration_policy"] = copied
+    paths.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    persist_execution_snapshot(
+        state,
+        paths,
+        execution_purpose="duration-policy-rebuild-test",
+        selected_scene_id="scene_01",
+    )
+
+    rebuilt = json.loads(paths.manifest_path.read_text(encoding="utf-8"))
+    expected = build_duration_policy_report(state.run_plan).model_dump(mode="json")
+    assert rebuilt["duration_policy"] == expected
 
 
 def test_persisted_nested_schema_v2_runtime_json_migrates_to_schema_three(

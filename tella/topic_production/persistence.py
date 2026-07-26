@@ -6,9 +6,10 @@ import json
 import re
 from pathlib import Path
 
-from tella.atomic_write import atomic_write_json
+from tella.atomic_write import atomic_write_bytes
 from tella.visual_generation.models import CandidateMetadata
 
+from .duration_policy_projection import build_duration_policy_report
 from .execution_models import ProductionRunPlan
 from .live_execution_models import DraftExecutionPreview, ProductionJobPaths
 from .runtime import (
@@ -18,6 +19,10 @@ from .runtime import (
     summarize_call_budget,
 )
 from .runtime_models import ExecutionRunState
+
+
+def _serialize_json_utf8(payload: object) -> bytes:
+    return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
 
 
 def production_job_paths(out_root: Path | str, *, job_id: str, scene_id: str) -> ProductionJobPaths:
@@ -66,55 +71,62 @@ def persist_execution_snapshot(
 ) -> None:
     """Persist provider-neutral execution state and optional candidate metadata atomically."""
 
-    state = _revalidate_execution_state(state)
-    readiness = evaluate_execution_readiness(state)
-    budget = summarize_call_budget(state)
-    resume = plan_resume(state)
-    atomic_write_json(paths.run_plan_path, state.run_plan.model_dump(mode="json"))
-    atomic_write_json(paths.runtime_state_path, state.model_dump(mode="json"))
-    atomic_write_json(
-        paths.manifest_path,
-        {
-            "schema_version": 1,
-            "job_id": state.run_plan.job_id,
-            "topic": state.run_plan.topic,
-            "planner_mode": state.run_plan.story_plan.planner_metadata.planner_mode.value,
-            "production_eligible": (state.run_plan.story_plan.planner_metadata.production_eligible),
-            "execution_purpose": execution_purpose,
-            "planning_hash": state.run_plan.planning_hash,
-            "selected_scene_id": selected_scene_id,
-            "runtime_scenes": [
-                {
-                    "scene_id": scene.scene_id,
-                    "status": scene.status.value,
-                    "attempts": [
-                        item.model_dump(mode="json") for item in scene.generation_attempts
-                    ],
-                    "qc_records": [item.model_dump(mode="json") for item in scene.qc_records],
-                    "accepted_candidate": (
-                        scene.accepted_candidate.model_dump(mode="json")
-                        if scene.accepted_candidate
-                        else None
-                    ),
-                    "block_reasons": [item.value for item in scene.block_reasons],
-                }
-                for scene in state.scenes
-            ],
-            "event_history": [item.model_dump(mode="json") for item in state.event_history],
-            "call_budget": budget.model_dump(mode="json"),
-            "readiness": readiness.model_dump(mode="json"),
-            "resume_plan": resume.model_dump(mode="json"),
-            "external_calls": state.external_calls,
-            "readiness_external_calls": state.readiness_external_calls,
-            "pollinations_readiness": (
-                state.pollinations_readiness.model_dump(mode="json")
-                if state.pollinations_readiness is not None
-                else None
-            ),
-        },
-    )
+    validated_state = _revalidate_execution_state(state)
+    duration_policy_report = build_duration_policy_report(validated_state.run_plan)
+    readiness = evaluate_execution_readiness(validated_state)
+    budget = summarize_call_budget(validated_state)
+    resume = plan_resume(validated_state)
+    run_plan_payload = validated_state.run_plan.model_dump(mode="json")
+    runtime_state_payload = validated_state.model_dump(mode="json")
+    manifest_payload = {
+        "schema_version": 1,
+        "job_id": validated_state.run_plan.job_id,
+        "topic": validated_state.run_plan.topic,
+        "planner_mode": (validated_state.run_plan.story_plan.planner_metadata.planner_mode.value),
+        "production_eligible": (
+            validated_state.run_plan.story_plan.planner_metadata.production_eligible
+        ),
+        "execution_purpose": execution_purpose,
+        "planning_hash": validated_state.run_plan.planning_hash,
+        "selected_scene_id": selected_scene_id,
+        "runtime_scenes": [
+            {
+                "scene_id": scene.scene_id,
+                "status": scene.status.value,
+                "attempts": [item.model_dump(mode="json") for item in scene.generation_attempts],
+                "qc_records": [item.model_dump(mode="json") for item in scene.qc_records],
+                "accepted_candidate": (
+                    scene.accepted_candidate.model_dump(mode="json")
+                    if scene.accepted_candidate
+                    else None
+                ),
+                "block_reasons": [item.value for item in scene.block_reasons],
+            }
+            for scene in validated_state.scenes
+        ],
+        "event_history": [item.model_dump(mode="json") for item in validated_state.event_history],
+        "call_budget": budget.model_dump(mode="json"),
+        "readiness": readiness.model_dump(mode="json"),
+        "resume_plan": resume.model_dump(mode="json"),
+        "duration_policy": duration_policy_report.model_dump(mode="json"),
+        "external_calls": validated_state.external_calls,
+        "readiness_external_calls": validated_state.readiness_external_calls,
+        "pollinations_readiness": (
+            validated_state.pollinations_readiness.model_dump(mode="json")
+            if validated_state.pollinations_readiness is not None
+            else None
+        ),
+    }
+    write_plan = [
+        (paths.run_plan_path, _serialize_json_utf8(run_plan_payload)),
+        (paths.runtime_state_path, _serialize_json_utf8(runtime_state_payload)),
+        (paths.manifest_path, _serialize_json_utf8(manifest_payload)),
+    ]
     if candidate_metadata is not None:
-        atomic_write_json(paths.candidate_metadata_path, candidate_metadata)
+        write_plan.append((paths.candidate_metadata_path, _serialize_json_utf8(candidate_metadata)))
+
+    for destination, content in write_plan:
+        atomic_write_bytes(destination, content)
 
 
 def load_runtime_state(path: Path | str) -> ExecutionRunState:
