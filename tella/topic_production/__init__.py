@@ -17,6 +17,10 @@ from .execution_models import (
     SceneExecutionPlan,
     VolumeLocalSceneInput,
 )
+from .duration_policy_projection import (
+    DurationPolicyReport,
+    build_duration_policy_report,
+)
 from .manifest import build_initial_manifest, refresh_manifest_readiness
 from .identity_eligibility import (
     IdentityAuthorityDecision,
@@ -231,6 +235,7 @@ __all__ = [
     "CloudflareOverflowAuthorization",
     "DeterministicTopicPlanner",
     "DualTierPolicy",
+    "DurationPolicyReport",
     "DraftExecutionOutcome",
     "DraftExecutionPreview",
     "ExecutionMode",
@@ -336,6 +341,7 @@ __all__ = [
     "block_scene",
     "build_fixture_preview_run",
     "build_draft_execution_preview",
+    "build_duration_policy_report",
     "build_infrastructure_canary_state",
     "build_initial_manifest",
     "build_production_run_plan",
