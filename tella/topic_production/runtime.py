@@ -25,6 +25,7 @@ from .runtime_models import (
     GenerationAttempt,
     PromotionReason,
     PromotionRecord,
+    ProcessedNarrationDurationMeasurement,
     QCChecks,
     QCDecision,
     QCRecord,
@@ -40,6 +41,9 @@ from .strategy import ProductionStrategy, SceneDataSensitivity
 
 
 def _revalidate_execution_state(state: ExecutionRunState) -> ExecutionRunState:
+    schema_version = getattr(state, "schema_version", None)
+    if type(schema_version) is not int or schema_version != 2:
+        raise ValueError("in-memory ExecutionRunState authority requires schema_version 2")
     run_plan = _revalidate_current_production_run_plan(state.run_plan)
     payload = state.model_dump(mode="python")
     payload["run_plan"] = run_plan.model_dump(mode="python")
@@ -58,7 +62,50 @@ def initialize_execution_state(run_plan: ProductionRunPlan) -> ExecutionRunState
         )
         for index, scene in enumerate(scenes, start=1)
     ]
-    return ExecutionRunState(run_plan=run_plan, scenes=scenes, event_history=events)
+    return ExecutionRunState(
+        schema_version=2,
+        run_plan=run_plan,
+        scenes=scenes,
+        event_history=events,
+        processed_narration_measurement=None,
+    )
+
+
+def bind_processed_narration_measurement(
+    state: ExecutionRunState,
+    measurement: ProcessedNarrationDurationMeasurement,
+) -> ExecutionRunState:
+    """Bind one caller-supplied measurement without filesystem activity."""
+
+    validated_state = _revalidate_execution_state(state)
+    validated_measurement = ProcessedNarrationDurationMeasurement.model_validate(
+        measurement.model_dump(mode="python")
+    )
+    current = validated_state.processed_narration_measurement
+    if current is not None:
+        if current == validated_measurement:
+            return validated_state
+        raise ValueError(
+            "processed narration measurement already exists; clear it before replacement"
+        )
+    return validated_state.model_copy(
+        update={"processed_narration_measurement": validated_measurement},
+        deep=True,
+    )
+
+
+def clear_processed_narration_measurement(
+    state: ExecutionRunState,
+) -> ExecutionRunState:
+    """Clear measured authority explicitly without filesystem activity."""
+
+    validated_state = _revalidate_execution_state(state)
+    if validated_state.processed_narration_measurement is None:
+        return validated_state
+    return validated_state.model_copy(
+        update={"processed_narration_measurement": None},
+        deep=True,
+    )
 
 
 def record_pollinations_readiness(

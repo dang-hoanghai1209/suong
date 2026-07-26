@@ -296,6 +296,14 @@ def _mutate_candidate(
     return state.model_copy(update={"scenes": scenes}, deep=True)
 
 
+def _unsafe_state_with_run_plan(state, run_plan):
+    fields = {
+        field_name: getattr(state, field_name) for field_name in ExecutionRunState.model_fields
+    }
+    fields["run_plan"] = run_plan
+    return ExecutionRunState.model_construct(**fields)
+
+
 def test_bridge_maps_validated_images_without_side_effects(tmp_path: Path) -> None:
     state, authorization = _accepted_state_with_valid_images(tmp_path)
     before = sorted(tmp_path.iterdir())
@@ -363,7 +371,7 @@ def test_bridge_revalidates_unsafe_constructed_planned_policy(
     )
     run_payload["planned_duration_assessment"] = unsafe_assessment
     unsafe_run = ProductionRunPlan.model_construct(**run_payload)
-    unsafe_state = state.model_copy(update={"run_plan": unsafe_run}, deep=True)
+    unsafe_state = _unsafe_state_with_run_plan(state, unsafe_run)
 
     with pytest.raises(ValidationError):
         _bridge(unsafe_state, authorization)
@@ -382,7 +390,7 @@ def test_bridge_rejects_in_memory_schema_two_run_plan(tmp_path: Path) -> None:
     }
     run_payload["schema_version"] = 2
     unsafe_run = ProductionRunPlan.model_construct(**run_payload)
-    unsafe_state = state.model_copy(update={"run_plan": unsafe_run}, deep=True)
+    unsafe_state = _unsafe_state_with_run_plan(state, unsafe_run)
 
     with pytest.raises(
         ValueError,

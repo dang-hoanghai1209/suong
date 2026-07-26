@@ -1,16 +1,22 @@
 """Auditable offline runtime contracts for topic-production execution and QC."""
+
 from __future__ import annotations
 
+from collections.abc import Mapping
+from copy import deepcopy
 from enum import StrEnum
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from tella.visual_generation.providers.kinds import ProviderKind
 
+from .duration_policy import DurationValueAuthority, MvpDurationTargetAssessment
 from .execution_models import ProductionRunPlan, SceneExecutionPlan
 from .models import GenerationTier, ProductionSceneStatus, ReadinessResult
 from .pollinations_readiness import PollinationsReadinessSnapshot
+from .story_plan_identity import canonical_story_plan_sha256
 
 
 class TechnicalStatus(StrEnum):
@@ -117,7 +123,9 @@ class GenerationAttempt(BaseModel):
     @field_validator("reference_hashes")
     @classmethod
     def validate_reference_hashes(cls, values: list[str]) -> list[str]:
-        if any(len(value) != 64 or any(c not in "0123456789abcdef" for c in value) for value in values):
+        if any(
+            len(value) != 64 or any(c not in "0123456789abcdef" for c in value) for value in values
+        ):
             raise ValueError("reference hashes must be lowercase SHA-256 digests")
         return values
 
@@ -265,16 +273,168 @@ class SceneRuntimeState(BaseModel):
         return self.execution_plan.scene_id
 
 
-class ExecutionRunState(BaseModel):
-    model_config = ConfigDict(frozen=True)
+class ProcessedNarrationDurationMeasurement(BaseModel):
+    """Artifact-bound measured duration supplied by a later filesystem boundary."""
 
-    schema_version: int = 1
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+    )
+
+    schema_version: Literal[1]
+    artifact_relative_path: str
+    artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    story_plan_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    measurement_method: Literal["ffprobe_single_audio_stream_v1"]
+    measured_duration_assessment: MvpDurationTargetAssessment
+
+    @field_validator("schema_version", mode="before")
+    @classmethod
+    def validate_schema_version(cls, value: object) -> object:
+        if type(value) is not int or value != 1:
+            raise ValueError(
+                "ProcessedNarrationDurationMeasurement schema_version must be exact integer 1"
+            )
+        return value
+
+    @field_validator("artifact_relative_path", mode="before")
+    @classmethod
+    def validate_artifact_relative_path(cls, value: object) -> object:
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise ValueError("artifact_relative_path must be a non-empty string")
+        if "\\" in value:
+            raise ValueError("artifact_relative_path must use forward slashes")
+        posix_path = PurePosixPath(value)
+        windows_path = PureWindowsPath(value)
+        if posix_path.is_absolute() or windows_path.is_absolute() or windows_path.drive:
+            raise ValueError("artifact_relative_path must be job-relative")
+        if value == "." or any(part in {".", ".."} for part in posix_path.parts):
+            raise ValueError("artifact_relative_path cannot contain traversal segments")
+        if posix_path.as_posix() != value:
+            raise ValueError("artifact_relative_path must use canonical POSIX form")
+        return value
+
+    @field_validator("measured_duration_assessment", mode="before")
+    @classmethod
+    def detach_assessment(cls, value: object) -> object:
+        if isinstance(value, MvpDurationTargetAssessment):
+            return value.model_dump(mode="python")
+        return deepcopy(value)
+
+    @model_validator(mode="after")
+    def validate_measured_authority(self) -> "ProcessedNarrationDurationMeasurement":
+        if self.measured_duration_assessment.value_authority is not DurationValueAuthority.MEASURED:
+            raise ValueError("processed narration duration requires MEASURED authority")
+        return self
+
+    def model_copy(
+        self,
+        *,
+        update: dict[str, Any] | None = None,
+        deep: bool = False,
+    ) -> "ProcessedNarrationDurationMeasurement":
+        if update is not None and "schema_version" in update:
+            raise ValueError(
+                "ProcessedNarrationDurationMeasurement schema_version "
+                "cannot be changed through model_copy"
+            )
+        payload = self.model_dump(mode="python")
+        if deep:
+            payload = deepcopy(payload)
+        if update:
+            payload.update(update)
+        return type(self).model_validate(payload)
+
+
+class ExecutionRunState(BaseModel):
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+    )
+
+    schema_version: Literal[2]
     run_plan: ProductionRunPlan
     scenes: list[SceneRuntimeState]
     event_history: list[ExecutionEvent]
+    processed_narration_measurement: ProcessedNarrationDurationMeasurement | None
     external_calls: int = Field(default=0, ge=0)
     readiness_external_calls: int = Field(default=0, ge=0)
     pollinations_readiness: PollinationsReadinessSnapshot | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def require_current_schema(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        if "schema_version" not in value:
+            raise ValueError("ExecutionRunState schema_version is required")
+        version = value["schema_version"]
+        if type(version) is not int:
+            raise ValueError("ExecutionRunState schema_version must be an integer")
+        if version != 2:
+            raise ValueError(f"unsupported ExecutionRunState schema_version: {version}")
+        if "processed_narration_measurement" not in value:
+            raise ValueError("ExecutionRunState processed_narration_measurement is required")
+        return value
+
+    @field_validator("processed_narration_measurement", mode="before")
+    @classmethod
+    def detach_measurement(cls, value: object) -> object:
+        if isinstance(value, ProcessedNarrationDurationMeasurement):
+            return value.model_dump(mode="python")
+        return deepcopy(value)
+
+    @model_validator(mode="after")
+    def validate_measurement_story_identity(self) -> "ExecutionRunState":
+        measurement = self.processed_narration_measurement
+        if measurement is not None and measurement.story_plan_sha256 != (
+            canonical_story_plan_sha256(self.run_plan.story_plan)
+        ):
+            raise ValueError("processed narration measurement StoryPlan SHA-256 does not match")
+        return self
+
+    @classmethod
+    def migrate_schema_v1(cls, value: Mapping[str, object]) -> "ExecutionRunState":
+        """Explicitly migrate one raw persisted schema-1 mapping."""
+
+        if not isinstance(value, Mapping) or isinstance(value, BaseModel):
+            raise TypeError("ExecutionRunState schema-1 migration requires a raw mapping")
+        if "schema_version" not in value:
+            raise ValueError("ExecutionRunState schema_version is required")
+        version = value["schema_version"]
+        if type(version) is not int:
+            raise ValueError("ExecutionRunState schema_version must be an integer")
+        if version != 1:
+            raise ValueError("ExecutionRunState schema-1 migration requires schema_version 1")
+        if "processed_narration_measurement" in value:
+            raise ValueError("ExecutionRunState schema 1 cannot contain measured authority fields")
+        migrated = dict(value)
+        migrated.update(
+            {
+                "schema_version": 2,
+                "processed_narration_measurement": None,
+            }
+        )
+        return cls.model_validate(migrated)
+
+    def model_copy(
+        self,
+        *,
+        update: dict[str, Any] | None = None,
+        deep: bool = False,
+    ) -> "ExecutionRunState":
+        if update is not None and "schema_version" in update:
+            raise ValueError(
+                "ExecutionRunState schema_version cannot be changed through model_copy"
+            )
+        payload = self.model_dump(mode="python")
+        if deep:
+            payload = deepcopy(payload)
+        if update:
+            payload.update(update)
+        return type(self).model_validate(payload)
 
 
 class SceneCallBudget(BaseModel):
@@ -319,9 +479,7 @@ class ResumePlan(BaseModel):
 class QCEvaluator(Protocol):
     """Extension point; implementations must declare honest review provenance."""
 
-    def evaluate(
-        self, *, attempt: GenerationAttempt, scene: SceneExecutionPlan
-    ) -> QCRecord: ...
+    def evaluate(self, *, attempt: GenerationAttempt, scene: SceneExecutionPlan) -> QCRecord: ...
 
 
 class ExecutionReadiness(BaseModel):

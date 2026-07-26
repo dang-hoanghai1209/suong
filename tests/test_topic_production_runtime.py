@@ -115,6 +115,17 @@ def _unsafe_schema_v2_run_plan() -> ProductionRunPlan:
     return ProductionRunPlan.model_construct(**fields)
 
 
+def _unsafe_state_with_run_plan(
+    state: ExecutionRunState,
+    run_plan: ProductionRunPlan,
+) -> ExecutionRunState:
+    fields = {
+        field_name: getattr(state, field_name) for field_name in ExecutionRunState.model_fields
+    }
+    fields["run_plan"] = run_plan
+    return ExecutionRunState.model_construct(**fields)
+
+
 def _attempt(state, scene_id: str, tier: GenerationTier, *, success: bool = True):
     scene = next(item for item in state.scenes if item.scene_id == scene_id)
     request = (
@@ -169,10 +180,7 @@ def test_runtime_initialization_rejects_in_memory_schema_two() -> None:
 
 def test_resume_revalidates_nested_run_plan_authority() -> None:
     state = _state()
-    unsafe_state = state.model_copy(
-        update={"run_plan": _unsafe_run_plan()},
-        deep=True,
-    )
+    unsafe_state = _unsafe_state_with_run_plan(state, _unsafe_run_plan())
 
     with pytest.raises(ValidationError):
         plan_resume(unsafe_state)
@@ -180,10 +188,7 @@ def test_resume_revalidates_nested_run_plan_authority() -> None:
 
 def test_resume_rejects_in_memory_schema_two() -> None:
     state = _state()
-    unsafe_state = state.model_copy(
-        update={"run_plan": _unsafe_schema_v2_run_plan()},
-        deep=True,
-    )
+    unsafe_state = _unsafe_state_with_run_plan(state, _unsafe_schema_v2_run_plan())
 
     with pytest.raises(
         ValueError,
@@ -194,10 +199,7 @@ def test_resume_rejects_in_memory_schema_two() -> None:
 
 def test_persistence_revalidates_before_creating_files(tmp_path) -> None:
     state = _state()
-    unsafe_state = state.model_copy(
-        update={"run_plan": _unsafe_run_plan()},
-        deep=True,
-    )
+    unsafe_state = _unsafe_state_with_run_plan(state, _unsafe_run_plan())
     paths = production_job_paths(
         tmp_path,
         job_id="unsafe-runtime-test",
@@ -224,10 +226,7 @@ def test_persistence_rejects_in_memory_schema_two_without_filesystem_effects(
         job_id="unsafe-schema-two-runtime-test",
         scene_id="scene_01",
     )
-    unsafe_state = state.model_copy(
-        update={"run_plan": _unsafe_schema_v2_run_plan()},
-        deep=True,
-    )
+    unsafe_state = _unsafe_state_with_run_plan(state, _unsafe_schema_v2_run_plan())
 
     with pytest.raises(
         ValueError,
@@ -488,7 +487,7 @@ def test_persistence_rejects_stale_planning_hash_before_filesystem_effects(
     }
     run_plan_fields["planning_hash"] = "0" * 64
     unsafe_run_plan = ProductionRunPlan.model_construct(**run_plan_fields)
-    unsafe_state = state.model_copy(update={"run_plan": unsafe_run_plan}, deep=True)
+    unsafe_state = _unsafe_state_with_run_plan(state, unsafe_run_plan)
     paths = production_job_paths(
         tmp_path,
         job_id=state.run_plan.job_id,

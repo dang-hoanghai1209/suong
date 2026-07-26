@@ -133,6 +133,13 @@ def load_runtime_state(path: Path | str) -> ExecutionRunState:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("persisted ExecutionRunState must be a JSON object")
+    if "schema_version" not in payload:
+        raise ValueError("ExecutionRunState schema_version is required")
+    state_version = payload["schema_version"]
+    if type(state_version) is not int:
+        raise ValueError("ExecutionRunState schema_version must be an integer")
+    if state_version not in {1, 2}:
+        raise ValueError(f"unsupported ExecutionRunState schema_version: {state_version}")
     raw_run_plan = payload.get("run_plan")
     if not isinstance(raw_run_plan, dict):
         raise ValueError("persisted ExecutionRunState run_plan must be a JSON object")
@@ -146,4 +153,6 @@ def load_runtime_state(path: Path | str) -> ExecutionRunState:
         payload["run_plan"] = migrated.model_dump(mode="python")
     elif version != 3:
         raise ValueError(f"unsupported ProductionRunPlan schema_version: {version}")
+    if state_version == 1:
+        return ExecutionRunState.migrate_schema_v1(payload)
     return ExecutionRunState.model_validate(payload)
