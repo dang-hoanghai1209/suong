@@ -25,7 +25,6 @@ from tella.topic_production import (
     ProcessedNarrationArtifactBindingFailure,
     ProductionJobPaths,
     RendererBridgeAuthorization,
-    RendererSceneTimingInput,
     build_fixture_preview_run,
     initialize_execution_state,
 )
@@ -33,7 +32,10 @@ from tella.topic_production.duration_policy import (
     DurationValueAuthority,
     assess_mvp_duration_target,
 )
-from tella.topic_production.renderer_bridge import AuthoritativeNarrationTimeline
+from tella.topic_production.renderer_bridge import (
+    AuthoritativeNarrationTimeline,
+    build_authoritative_narration_timeline,
+)
 from tella.topic_production.story_plan_identity import canonical_story_plan_sha256
 from tella.visual_generation.providers.kinds import ProviderKind
 from tests.test_topic_production_renderer_bridge import _profile
@@ -121,29 +123,9 @@ def _request(tmp_path: Path) -> AuthorizedRenderLifecycleRequest:
 
 
 def _timeline(request: AuthorizedRenderLifecycleRequest) -> AuthoritativeNarrationTimeline:
-    measurement = request.state.processed_narration_measurement
-    assert measurement is not None
-    duration = measurement.measured_duration_assessment.actual_duration_seconds
-    plans = request.state.run_plan.scene_execution_plans
-    return AuthoritativeNarrationTimeline(
-        story_plan_sha256=measurement.story_plan_sha256,
-        narration_text=request.state.run_plan.story_plan.narration_text,
-        processed_duration_seconds=duration,
-        scene_timings=[
-            RendererSceneTimingInput(
-                scene_id=item.scene_id,
-                order=item.order,
-                start_seconds=item.timing.start_seconds,
-                duration_seconds=item.timing.duration_seconds,
-                render_clip_duration_seconds=item.timing.duration_seconds,
-                end_seconds=item.timing.end_seconds,
-            )
-            for item in plans
-        ],
-        render_timing_contract={
-            "expected_final_timeline_duration_seconds": duration,
-            "timing_tolerance_seconds": 0.15,
-        },
+    return build_authoritative_narration_timeline(
+        request.state,
+        profile=request.profile,
     )
 
 
@@ -377,13 +359,18 @@ def test_outcome_is_immutable_and_reuses_existing_authority_types(tmp_path: Path
     original_contract = outcome.narration_timeline.render_timing_contract
 
     state.scenes.clear()
-    timeline.scene_timings.clear()
-    timeline.render_timing_contract.clear()
     outcome.state.scenes.clear()
-    outcome.narration_timeline.scene_timings.clear()
-    outcome.narration_timeline.render_timing_contract.clear()
     dict(outcome)["state"].scenes.clear()
-    dict(outcome)["narration_timeline"].scene_timings.clear()
+    with pytest.raises(AttributeError):
+        timeline.scene_timings.clear()
+    with pytest.raises(AttributeError):
+        timeline.render_timing_contract.clear()
+    with pytest.raises(AttributeError):
+        outcome.narration_timeline.scene_timings.clear()
+    with pytest.raises(AttributeError):
+        outcome.narration_timeline.render_timing_contract.clear()
+    with pytest.raises(AttributeError):
+        dict(outcome)["narration_timeline"].scene_timings.clear()
 
     assert len(outcome.state.scenes) == original_scene_count
     assert len(outcome.narration_timeline.scene_timings) == original_timing_count
@@ -482,7 +469,7 @@ def test_request_and_outcome_serialization_are_public_detached_and_round_trip(
         if isinstance(model, AuthorizedRenderLifecycleRequest):
             python_dump["authorization"]["scene_requests"].clear()
         else:
-            python_dump["narration_timeline"]["scene_timings"].clear()
+            python_dump["narration_timeline"]["scene_timings"] = ()
             json_dump["narration_timeline"]["render_timing_contract"].clear()
 
         assert model.model_dump(mode="python") == original
@@ -557,7 +544,8 @@ def test_request_and_outcome_repr_and_equality_ignore_disposable_mutations(
     left_request.state.scenes.clear()
     left_request.authorization.scene_requests.clear()
     left_outcome.state.scenes.clear()
-    left_outcome.narration_timeline.scene_timings.clear()
+    with pytest.raises(AttributeError):
+        left_outcome.narration_timeline.scene_timings.clear()
 
     assert repr(left_request) == request_repr
     assert repr(left_outcome) == outcome_repr
@@ -575,9 +563,11 @@ def test_outcome_rejects_extra_or_duplicate_timeline_scenes_without_aliasing(
     extra_payload = deepcopy(original_timeline)
     extra_scene = deepcopy(extra_payload["scene_timings"][-1])
     extra_scene.update({"scene_id": "scene_09", "order": 9})
-    extra_payload["scene_timings"].append(extra_scene)
+    extra_payload["scene_timings"] = (*extra_payload["scene_timings"], extra_scene)
     duplicate_payload = deepcopy(original_timeline)
-    duplicate_payload["scene_timings"][-1] = deepcopy(duplicate_payload["scene_timings"][-2])
+    duplicate_timings = list(duplicate_payload["scene_timings"])
+    duplicate_timings[-1] = deepcopy(duplicate_timings[-2])
+    duplicate_payload["scene_timings"] = tuple(duplicate_timings)
 
     for payload in (extra_payload, duplicate_payload):
         with pytest.raises(ValidationError, match="timeline scenes"):

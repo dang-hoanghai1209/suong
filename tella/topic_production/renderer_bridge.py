@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+from decimal import Decimal, ROUND_HALF_EVEN
 import hashlib
+import math
 from pathlib import Path
-from typing import Literal
+from types import MappingProxyType
+from typing import Any, Literal, Self
 
 from PIL import Image, UnidentifiedImageError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictFloat, field_validator, model_validator
 
+from tella.composer.timing import DEFAULT_TIMING_TOLERANCE_SECONDS
 from tella.planner.models import MediaSource, Scene, TellaScenePlan
 from tella.visual_generation.providers.kinds import ProviderKind
 
+from .duration_policy import DurationValueAuthority
 from .execution_models import (
     _canonical_production_run_planning_hash,
     _revalidate_current_production_run_plan,
@@ -25,6 +31,58 @@ from .runtime import _revalidate_execution_state, evaluate_execution_readiness
 from .runtime_models import ExecutionRunState
 from .story_plan_identity import canonical_story_plan_sha256
 from .strategy import VisualExecutionMode
+
+
+_TIMELINE_QUANTUM = Decimal("0.000001")
+_TRANSITION_DURATIONS_SECONDS = MappingProxyType(
+    {
+        "subtle_crossfade": Decimal("0.800000"),
+        "clean_soft_cut": Decimal("0.000000"),
+        "clean_progressive_cut": Decimal("0.000000"),
+    }
+)
+
+
+def _timeline_decimal(value: object, *, field_name: str) -> Decimal:
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        raise ValueError(f"{field_name} must be a finite number")
+    decimal_value = Decimal(str(value))
+    if not decimal_value.is_finite():
+        raise ValueError(f"{field_name} must be finite")
+    return decimal_value
+
+
+def _quantize_timeline(value: Decimal) -> Decimal:
+    return value.quantize(_TIMELINE_QUANTUM, rounding=ROUND_HALF_EVEN)
+
+
+def _resolve_configured_transition_duration(transition_profile_id: str) -> Decimal:
+    transition = _TRANSITION_DURATIONS_SECONDS.get(transition_profile_id)
+    if transition is None:
+        raise ValueError(f"unsupported renderer transition profile: {transition_profile_id}")
+    return transition
+
+
+class _StrictFrozenRendererAuthorityModel(BaseModel):
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        strict=True,
+    )
+
+    def model_copy(
+        self,
+        *,
+        update: dict[str, Any] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        payload = self.model_dump(mode="python")
+        if deep:
+            payload = deepcopy(payload)
+        if update:
+            payload.update(update)
+        return type(self).model_validate(payload)
 
 
 class AuthorizedCandidateRequest(BaseModel):
@@ -117,9 +175,7 @@ class RendererPlanProfile(BaseModel):
         return self
 
 
-class RendererSceneTimingInput(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
+class RendererSceneTimingInput(_StrictFrozenRendererAuthorityModel):
     scene_id: str = Field(pattern=r"^scene_[0-9]{2}$")
     order: int = Field(ge=1)
     start_seconds: float = Field(ge=0)
@@ -129,6 +185,14 @@ class RendererSceneTimingInput(BaseModel):
 
     @model_validator(mode="after")
     def validate_interval(self) -> "RendererSceneTimingInput":
+        values = (
+            self.start_seconds,
+            self.duration_seconds,
+            self.render_clip_duration_seconds,
+            self.end_seconds,
+        )
+        if any(not math.isfinite(value) for value in values):
+            raise ValueError("renderer timeline values must be finite")
         if round(self.start_seconds + self.duration_seconds, 6) != round(self.end_seconds, 6):
             raise ValueError("renderer timeline end must equal start plus duration")
         if self.render_clip_duration_seconds < self.duration_seconds:
@@ -136,34 +200,422 @@ class RendererSceneTimingInput(BaseModel):
         return self
 
 
-class AuthoritativeNarrationTimeline(BaseModel):
-    """Caller-owned processed narration identity and exact scene timeline."""
+class AuthoritativeRenderTimingContract(_StrictFrozenRendererAuthorityModel):
+    """Typed topic authority projected onto the legacy render timing keys."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    schema_version: Literal[1]
+    requested_duration_seconds: StrictFloat = Field(ge=0, allow_inf_nan=False)
+    narration_duration_seconds: StrictFloat = Field(gt=0, allow_inf_nan=False)
+    authoritative_duration_seconds: StrictFloat = Field(gt=0, allow_inf_nan=False)
+    duration_authority: Literal[DurationValueAuthority.MEASURED]
+    configured_transition_duration_seconds: StrictFloat = Field(ge=0, allow_inf_nan=False)
+    effective_transition_duration_seconds: StrictFloat = Field(ge=0, allow_inf_nan=False)
+    transition_overlap_count: int = Field(ge=0)
+    total_transition_overlap_seconds: StrictFloat = Field(ge=0, allow_inf_nan=False)
+    scene_timeline_durations_seconds: tuple[StrictFloat, ...]
+    scene_clip_durations_seconds: tuple[StrictFloat, ...]
+    scene_start_times_seconds: tuple[StrictFloat, ...]
+    scene_end_times_seconds: tuple[StrictFloat, ...]
+    expected_final_timeline_duration_seconds: StrictFloat = Field(gt=0, allow_inf_nan=False)
+    timing_tolerance_seconds: Literal[0.15]
+    requested_duration_delta_seconds: StrictFloat
+    requested_duration_status: Literal["passed", "differs_from_authoritative_narration"]
+    renderer_stretch_authorized: Literal[False]
+    actual_rendered_duration_seconds: None
+    actual_duration_delta_seconds: None
+    actual_duration_status: Literal["not_evaluated"]
+    actual_duration_failure_reason: Literal[""]
+
+    @field_validator(
+        "scene_timeline_durations_seconds",
+        "scene_clip_durations_seconds",
+        "scene_start_times_seconds",
+        "scene_end_times_seconds",
+        mode="before",
+    )
+    @classmethod
+    def freeze_scene_arrays(cls, value: object) -> object:
+        if isinstance(value, (list, tuple)):
+            return tuple(value)
+        return value
+
+    @model_validator(mode="after")
+    def validate_derived_contract(self) -> "AuthoritativeRenderTimingContract":
+        arrays = (
+            self.scene_timeline_durations_seconds,
+            self.scene_clip_durations_seconds,
+            self.scene_start_times_seconds,
+            self.scene_end_times_seconds,
+        )
+        if not arrays[0] or any(len(values) != len(arrays[0]) for values in arrays[1:]):
+            raise ValueError("render timing contract scene arrays must be non-empty and aligned")
+        numeric_values = (
+            self.requested_duration_seconds,
+            self.narration_duration_seconds,
+            self.authoritative_duration_seconds,
+            self.configured_transition_duration_seconds,
+            self.effective_transition_duration_seconds,
+            self.total_transition_overlap_seconds,
+            self.expected_final_timeline_duration_seconds,
+            self.requested_duration_delta_seconds,
+            *arrays[0],
+            *arrays[1],
+            *arrays[2],
+            *arrays[3],
+        )
+        if any(not math.isfinite(value) for value in numeric_values):
+            raise ValueError("render timing contract values must be finite")
+        if any(value <= 0 for value in arrays[0]) or any(value <= 0 for value in arrays[1]):
+            raise ValueError("render timing contract scene durations must be positive")
+        narration_total = _timeline_decimal(
+            self.narration_duration_seconds,
+            field_name="narration duration",
+        )
+        authoritative_total = _timeline_decimal(
+            self.authoritative_duration_seconds,
+            field_name="authoritative duration",
+        )
+        expected_total = _timeline_decimal(
+            self.expected_final_timeline_duration_seconds,
+            field_name="expected final duration",
+        )
+        if narration_total != authoritative_total or expected_total != authoritative_total:
+            raise ValueError("render timing contract authoritative totals are inconsistent")
+        supported_transitions = {float(value) for value in _TRANSITION_DURATIONS_SECONDS.values()}
+        if self.configured_transition_duration_seconds not in supported_transitions:
+            raise ValueError("render timing contract transition duration is unsupported")
+        expected_effective = _effective_transition_duration(
+            _timeline_decimal(
+                self.configured_transition_duration_seconds,
+                field_name="configured transition duration",
+            ),
+            tuple(
+                _timeline_decimal(value, field_name="scene duration")
+                for value in self.scene_timeline_durations_seconds
+            ),
+        )
+        if (
+            _quantize_timeline(
+                _timeline_decimal(
+                    self.effective_transition_duration_seconds,
+                    field_name="effective transition duration",
+                )
+            )
+            != expected_effective
+        ):
+            raise ValueError("render timing contract effective transition is inconsistent")
+        expected_overlap_count = (
+            len(arrays[0]) - 1 if self.effective_transition_duration_seconds > 0 else 0
+        )
+        if self.transition_overlap_count != expected_overlap_count:
+            raise ValueError("render timing contract transition overlap count is inconsistent")
+        expected_overlap = _quantize_timeline(expected_effective * Decimal(expected_overlap_count))
+        if (
+            _quantize_timeline(
+                _timeline_decimal(
+                    self.total_transition_overlap_seconds,
+                    field_name="total transition overlap",
+                )
+            )
+            != expected_overlap
+        ):
+            raise ValueError("render timing contract transition overlap total is inconsistent")
+        durations = tuple(
+            _timeline_decimal(value, field_name="scene duration") for value in arrays[0]
+        )
+        clips = tuple(
+            _timeline_decimal(value, field_name="scene clip duration") for value in arrays[1]
+        )
+        starts = tuple(_timeline_decimal(value, field_name="scene start") for value in arrays[2])
+        ends = tuple(_timeline_decimal(value, field_name="scene end") for value in arrays[3])
+        cursor = Decimal("0")
+        for index, (duration, clip, start, end) in enumerate(
+            zip(durations, clips, starts, ends, strict=True)
+        ):
+            expected_clip = duration + (
+                expected_effective if index < len(durations) - 1 else Decimal("0")
+            )
+            if start != cursor or end != start + duration:
+                raise ValueError("render timing contract scene arrays must be contiguous")
+            if clip != expected_clip:
+                raise ValueError("render timing contract clip arrays are inconsistent")
+            cursor = end
+        if cursor != expected_total:
+            raise ValueError("render timing contract scene arrays do not preserve exact total")
+        requested_delta = _quantize_timeline(
+            _timeline_decimal(
+                self.authoritative_duration_seconds,
+                field_name="authoritative duration",
+            )
+            - _timeline_decimal(
+                self.requested_duration_seconds,
+                field_name="requested duration",
+            )
+        )
+        if (
+            _quantize_timeline(
+                _timeline_decimal(
+                    self.requested_duration_delta_seconds,
+                    field_name="requested duration delta",
+                )
+            )
+            != requested_delta
+        ):
+            raise ValueError("render timing contract requested duration delta is inconsistent")
+        expected_status = (
+            "passed"
+            if abs(requested_delta) <= Decimal(str(DEFAULT_TIMING_TOLERANCE_SECONDS))
+            else "differs_from_authoritative_narration"
+        )
+        if self.requested_duration_status != expected_status:
+            raise ValueError("render timing contract requested duration status is inconsistent")
+        return self
+
+
+class AuthoritativeNarrationTimeline(_StrictFrozenRendererAuthorityModel):
+    """Caller-owned processed narration identity and exact scene timeline."""
 
     story_plan_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     narration_text: str = Field(min_length=1)
-    processed_duration_seconds: float = Field(gt=0)
-    scene_timings: list[RendererSceneTimingInput] = Field(min_length=1)
-    render_timing_contract: dict[str, object]
+    processed_duration_seconds: StrictFloat = Field(gt=0, allow_inf_nan=False)
+    scene_timings: tuple[RendererSceneTimingInput, ...] = Field(min_length=1)
+    render_timing_contract: AuthoritativeRenderTimingContract
     renderer_stretch_authorized: Literal[False] = False
 
-    @model_validator(mode="after")
-    def validate_render_timing_contract(self) -> "AuthoritativeNarrationTimeline":
-        required = {
-            "expected_final_timeline_duration_seconds",
-            "timing_tolerance_seconds",
-        }
-        missing = sorted(required - self.render_timing_contract.keys())
-        if missing:
-            raise ValueError(
-                "authoritative narration timeline is missing required render "
-                f"timing fields: {missing}"
+    @field_validator("scene_timings", "render_timing_contract", mode="before")
+    @classmethod
+    def detach_nested_authority(cls, value: object) -> object:
+        if isinstance(value, BaseModel):
+            return value.model_dump(mode="python")
+        if isinstance(value, (list, tuple)):
+            return tuple(
+                item.model_dump(mode="python") if isinstance(item, BaseModel) else deepcopy(item)
+                for item in value
             )
-        tolerance = float(self.render_timing_contract["timing_tolerance_seconds"])
-        if tolerance < 0:
-            raise ValueError("render timing tolerance cannot be negative")
+        return deepcopy(value)
+
+    @model_validator(mode="after")
+    def validate_timeline_consistency(self) -> "AuthoritativeNarrationTimeline":
+        if not math.isfinite(self.processed_duration_seconds):
+            raise ValueError("processed narration duration must be finite")
+        expected_orders = tuple(range(1, len(self.scene_timings) + 1))
+        orders = tuple(item.order for item in self.scene_timings)
+        if orders != expected_orders:
+            raise ValueError("authoritative narration timeline scenes must use canonical order")
+        expected_ids = tuple(f"scene_{order:02d}" for order in expected_orders)
+        ids = tuple(item.scene_id for item in self.scene_timings)
+        if ids != expected_ids:
+            raise ValueError("authoritative narration timeline scene IDs must be canonical")
+        contract_scene_count = len(self.render_timing_contract.scene_timeline_durations_seconds)
+        if contract_scene_count != len(self.scene_timings):
+            raise ValueError(
+                "authoritative narration timeline scenes do not match render timing contract"
+            )
+        cursor = Decimal("0")
+        for timing in self.scene_timings:
+            start = _timeline_decimal(timing.start_seconds, field_name="scene start")
+            duration = _timeline_decimal(timing.duration_seconds, field_name="scene duration")
+            end = _timeline_decimal(timing.end_seconds, field_name="scene end")
+            if start != cursor or end != start + duration:
+                raise ValueError("authoritative narration timeline scenes must be contiguous")
+            cursor = end
+        total = _timeline_decimal(
+            self.processed_duration_seconds,
+            field_name="processed narration duration",
+        )
+        if cursor != total:
+            raise ValueError(
+                "authoritative narration timeline final duration/end must equal measured total"
+            )
+        contract = self.render_timing_contract
+        contract_total_values = (
+            contract.narration_duration_seconds,
+            contract.authoritative_duration_seconds,
+            contract.expected_final_timeline_duration_seconds,
+        )
+        if any(
+            _timeline_decimal(value, field_name="contract total") != total
+            for value in contract_total_values
+        ):
+            raise ValueError("render timing contract total does not match measured narration")
+        expected_arrays = (
+            tuple(item.duration_seconds for item in self.scene_timings),
+            tuple(item.render_clip_duration_seconds for item in self.scene_timings),
+            tuple(item.start_seconds for item in self.scene_timings),
+            tuple(item.end_seconds for item in self.scene_timings),
+        )
+        contract_arrays = (
+            contract.scene_timeline_durations_seconds,
+            contract.scene_clip_durations_seconds,
+            contract.scene_start_times_seconds,
+            contract.scene_end_times_seconds,
+        )
+        if contract_arrays != expected_arrays:
+            raise ValueError("render timing contract arrays do not match scene timings")
+        transition = contract.effective_transition_duration_seconds
+        for index, timing in enumerate(self.scene_timings):
+            expected_clip = timing.duration_seconds + (
+                transition if index < len(self.scene_timings) - 1 else 0.0
+            )
+            if round(timing.render_clip_duration_seconds, 6) != round(expected_clip, 6):
+                raise ValueError("authoritative narration timeline transition is inconsistent")
         return self
+
+
+def _effective_transition_duration(
+    configured: Decimal,
+    durations: tuple[Decimal, ...],
+) -> Decimal:
+    if len(durations) <= 1 or configured <= 0:
+        return Decimal("0.000000")
+    cap = max(Decimal("0.100000"), min(durations) / Decimal(3))
+    return _quantize_timeline(min(configured, cap))
+
+
+def _allocate_measured_scene_durations(
+    measured_total: float,
+    weights: tuple[float, ...],
+) -> tuple[Decimal, tuple[Decimal, ...]]:
+    total = _timeline_decimal(measured_total, field_name="measured narration duration")
+    if total <= 0:
+        raise ValueError("measured narration duration must be positive")
+    if not weights:
+        raise ValueError("measured narration timeline requires at least one scene")
+    decimal_weights = tuple(
+        _timeline_decimal(value, field_name="planned scene duration") for value in weights
+    )
+    if any(value <= 0 for value in decimal_weights):
+        raise ValueError("planned scene duration weights must be strictly positive")
+    weight_total = sum(decimal_weights, Decimal("0"))
+    allocated: list[Decimal] = []
+    assigned = Decimal("0")
+    for weight in decimal_weights[:-1]:
+        duration = _quantize_timeline(total * weight / weight_total)
+        if duration <= 0:
+            raise ValueError("measured duration cannot allocate a positive slot to every scene")
+        allocated.append(duration)
+        assigned += duration
+    final_duration = total - assigned
+    if final_duration <= 0:
+        raise ValueError("measured duration cannot allocate a positive slot to every scene")
+    allocated.append(final_duration)
+    if sum(allocated, Decimal("0")) != total:
+        raise ValueError("measured narration timeline allocation does not preserve exact total")
+    return total, tuple(allocated)
+
+
+def build_authoritative_narration_timeline(
+    state: ExecutionRunState,
+    *,
+    profile: RendererPlanProfile,
+) -> AuthoritativeNarrationTimeline:
+    """Build one pure measured timeline from validated runtime authority."""
+
+    validated_state = _revalidate_execution_state(state)
+    validated_profile = RendererPlanProfile.model_validate(
+        profile.model_dump(mode="python", warnings=False),
+        strict=True,
+    )
+    measurement = validated_state.processed_narration_measurement
+    if measurement is None:
+        raise ValueError("processed narration measurement is required for timeline construction")
+    assessment = measurement.measured_duration_assessment
+    if assessment.value_authority is not DurationValueAuthority.MEASURED:
+        raise ValueError("authoritative narration timeline requires MEASURED duration authority")
+    expected_story_sha256 = canonical_story_plan_sha256(validated_state.run_plan.story_plan)
+    if measurement.story_plan_sha256 != expected_story_sha256:
+        raise ValueError("processed narration measurement StoryPlan SHA-256 does not match")
+    execution_plans = tuple(validated_state.run_plan.scene_execution_plans)
+    expected_orders = tuple(range(1, len(execution_plans) + 1))
+    if not execution_plans:
+        raise ValueError("authoritative narration timeline requires scene execution plans")
+    if tuple(item.order for item in execution_plans) != expected_orders:
+        raise ValueError("scene execution plans must be in canonical order")
+    if tuple(item.scene_id for item in execution_plans) != tuple(
+        f"scene_{order:02d}" for order in expected_orders
+    ):
+        raise ValueError("scene execution plan IDs must match canonical order")
+    transition = _resolve_configured_transition_duration(validated_profile.transition_profile_id)
+    total, durations = _allocate_measured_scene_durations(
+        assessment.actual_duration_seconds,
+        tuple(item.timing.duration_seconds for item in execution_plans),
+    )
+    effective_transition = _effective_transition_duration(transition, durations)
+    timings: list[RendererSceneTimingInput] = []
+    starts: list[Decimal] = []
+    ends: list[Decimal] = []
+    clips: list[Decimal] = []
+    cursor = Decimal("0")
+    for index, (execution, duration) in enumerate(zip(execution_plans, durations, strict=True)):
+        start = cursor
+        end = start + duration
+        clip = duration + (
+            effective_transition if index < len(execution_plans) - 1 else Decimal("0")
+        )
+        timings.append(
+            RendererSceneTimingInput(
+                scene_id=execution.scene_id,
+                order=execution.order,
+                start_seconds=float(start),
+                duration_seconds=float(duration),
+                render_clip_duration_seconds=float(clip),
+                end_seconds=float(end),
+            )
+        )
+        starts.append(start)
+        ends.append(end)
+        clips.append(clip)
+        cursor = end
+    if cursor != total:
+        raise ValueError("authoritative narration timeline does not end at measured total")
+    requested = _quantize_timeline(
+        _timeline_decimal(
+            validated_profile.requested_production_duration_seconds,
+            field_name="requested production duration",
+        )
+    )
+    requested_delta = total - requested
+    tolerance = Decimal(str(DEFAULT_TIMING_TOLERANCE_SECONDS))
+    contract = AuthoritativeRenderTimingContract(
+        schema_version=1,
+        requested_duration_seconds=float(requested),
+        narration_duration_seconds=float(total),
+        authoritative_duration_seconds=float(total),
+        duration_authority=DurationValueAuthority.MEASURED,
+        configured_transition_duration_seconds=float(transition),
+        effective_transition_duration_seconds=float(effective_transition),
+        transition_overlap_count=(len(execution_plans) - 1 if effective_transition > 0 else 0),
+        total_transition_overlap_seconds=float(
+            _quantize_timeline(
+                effective_transition
+                * Decimal(len(execution_plans) - 1 if effective_transition > 0 else 0)
+            )
+        ),
+        scene_timeline_durations_seconds=tuple(float(value) for value in durations),
+        scene_clip_durations_seconds=tuple(float(value) for value in clips),
+        scene_start_times_seconds=tuple(float(value) for value in starts),
+        scene_end_times_seconds=tuple(float(value) for value in ends),
+        expected_final_timeline_duration_seconds=float(total),
+        timing_tolerance_seconds=DEFAULT_TIMING_TOLERANCE_SECONDS,
+        requested_duration_delta_seconds=float(requested_delta),
+        requested_duration_status=(
+            "passed"
+            if abs(requested_delta) <= tolerance
+            else "differs_from_authoritative_narration"
+        ),
+        renderer_stretch_authorized=False,
+        actual_rendered_duration_seconds=None,
+        actual_duration_delta_seconds=None,
+        actual_duration_status="not_evaluated",
+        actual_duration_failure_reason="",
+    )
+    return AuthoritativeNarrationTimeline(
+        story_plan_sha256=expected_story_sha256,
+        narration_text=validated_state.run_plan.story_plan.narration_text,
+        processed_duration_seconds=float(total),
+        scene_timings=tuple(timings),
+        render_timing_contract=contract,
+    )
 
 
 class RendererAcceptedCandidateInput(BaseModel):
@@ -305,14 +757,7 @@ def _validate_timeline(
     if actual_identity != expected_identity:
         raise ValueError("narration timeline scene set/order does not match")
     prior_end = 0.0
-    transition = float(
-        timeline.render_timing_contract.get(
-            "effective_transition_duration_seconds",
-            0.0,
-        )
-    )
-    if transition < 0:
-        raise ValueError("effective transition duration cannot be negative")
+    transition = timeline.render_timing_contract.effective_transition_duration_seconds
     last_index = len(timeline.scene_timings) - 1
     for index, timing in enumerate(timeline.scene_timings):
         if round(timing.start_seconds, 6) != round(prior_end, 6):
@@ -458,8 +903,22 @@ def build_renderer_plan_from_accepted_candidates(
         artifact_path=narration_artifact_path,
         artifact_root=artifact_root,
     )
+    profile = RendererPlanProfile.model_validate(
+        profile.model_dump(mode="python", warnings=False),
+        strict=True,
+    )
     _validate_authorized_run(state, authorization)
     timings = _validate_timeline(state, narration_timeline)
+    configured_transition = _resolve_configured_transition_duration(profile.transition_profile_id)
+    timeline_transition = _timeline_decimal(
+        narration_timeline.render_timing_contract.configured_transition_duration_seconds,
+        field_name="timeline configured transition duration",
+    )
+    if timeline_transition != configured_transition:
+        raise ValueError(
+            "renderer profile transition does not match narration timeline "
+            "configured transition authority"
+        )
     readiness = evaluate_execution_readiness(state)
     if not readiness.ready:
         raise ValueError(
@@ -624,7 +1083,7 @@ def build_renderer_plan_from_accepted_candidates(
             }
             for timing in narration_timeline.scene_timings
         ],
-        render_timing_contract=narration_timeline.render_timing_contract,
+        render_timing_contract=narration_timeline.render_timing_contract.model_dump(mode="python"),
         total_duration=narration_timeline.processed_duration_seconds,
         subtitle_style=profile.subtitle_style,
         music_enabled=profile.music_enabled,

@@ -7,10 +7,8 @@ from PIL import Image
 import pytest
 from pydantic import ValidationError
 
-from tella.composer.timing import (
-    DEFAULT_TIMING_TOLERANCE_SECONDS,
-    build_render_timing_plan,
-)
+from tella.composer.timing import DEFAULT_TIMING_TOLERANCE_SECONDS
+import tella.topic_production.renderer_bridge as renderer_bridge
 from tella.topic_production import (
     AuthoritativeNarrationTimeline,
     AuthorizedCandidateRequest,
@@ -21,7 +19,6 @@ from tella.topic_production import (
     QCDecision,
     RendererBridgeAuthorization,
     RendererPlanProfile,
-    RendererSceneTimingInput,
     TechnicalStatus,
     ExecutionRunState,
     ProcessedNarrationDurationMeasurement,
@@ -35,6 +32,9 @@ from tella.topic_production import (
     record_generation_attempt,
     record_human_qc,
     register_accepted_candidate,
+)
+from tella.topic_production.renderer_bridge import (
+    build_authoritative_narration_timeline,
 )
 from tella.topic_production.duration_policy import DurationAssessmentStatus
 from tella.topic_production.duration_policy import (
@@ -242,36 +242,9 @@ def test_legacy_story_without_source_spans_cannot_build_runtime_authority() -> N
 
 
 def _timeline(state) -> AuthoritativeNarrationTimeline:
-    effective_transition = 0.8
-    execution_plans = state.run_plan.scene_execution_plans
-    timing_plan = build_render_timing_plan(
-        [item.timing.duration_seconds for item in execution_plans],
-        narration_duration=execution_plans[-1].timing.end_seconds,
-        configured_transition_duration=effective_transition,
-    )
-    timings = [
-        RendererSceneTimingInput(
-            scene_id=item.scene_id,
-            order=item.order,
-            start_seconds=timing_plan.scene_starts[index],
-            duration_seconds=timing_plan.scene_timeline_durations[index],
-            render_clip_duration_seconds=timing_plan.scene_clip_durations[index],
-            end_seconds=round(
-                timing_plan.scene_starts[index] + timing_plan.scene_timeline_durations[index],
-                6,
-            ),
-        )
-        for index, item in enumerate(execution_plans)
-    ]
-    return AuthoritativeNarrationTimeline(
-        story_plan_sha256=canonical_story_plan_sha256(state.run_plan.story_plan),
-        narration_text=state.run_plan.story_plan.narration_text,
-        processed_duration_seconds=timing_plan.authoritative_duration,
-        scene_timings=timings,
-        render_timing_contract={
-            **timing_plan.metadata(),
-            "renderer_stretch_authorized": False,
-        },
+    return build_authoritative_narration_timeline(
+        state,
+        profile=_profile(scene_count=len(state.run_plan.scene_execution_plans)),
     )
 
 
@@ -474,7 +447,13 @@ def test_bridge_rejects_narration_or_timeline_identity_mismatch(
 
     timings = list(_timeline(state).scene_timings)
     timings[0] = timings[0].model_copy(update={"scene_id": "scene_08"})
-    timeline = _timeline(state).model_copy(update={"scene_timings": timings})
+    valid_timeline = _timeline(state)
+    timeline = AuthoritativeNarrationTimeline.model_construct(
+        **{
+            **valid_timeline.model_dump(mode="python"),
+            "scene_timings": tuple(timings),
+        }
+    )
     with pytest.raises(ValueError, match="timeline scene set/order"):
         build_renderer_plan_from_accepted_candidates(
             state,
@@ -661,7 +640,15 @@ def test_bridge_rejects_free_duration_before_image_or_media_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state, authorization = _accepted_state_with_valid_images(tmp_path)
-    timeline = _timeline(state).model_copy(update={"processed_duration_seconds": 35.5})
+    valid_timeline = _timeline(state)
+    timeline = AuthoritativeNarrationTimeline.model_construct(
+        **{
+            **valid_timeline.model_dump(mode="python"),
+            "scene_timings": valid_timeline.scene_timings,
+            "render_timing_contract": valid_timeline.render_timing_contract,
+            "processed_duration_seconds": 35.5,
+        }
+    )
     monkeypatch.setattr(
         Image,
         "open",
@@ -687,4 +674,125 @@ def test_renderer_bridge_preserves_postmux_sync_tolerance(tmp_path: Path) -> Non
     assert (
         bridge.renderer_plan.render_timing_contract["timing_tolerance_seconds"]
         == DEFAULT_TIMING_TOLERANCE_SECONDS
+    )
+
+
+@pytest.mark.parametrize(
+    ("transition_profile_id", "configured_duration"),
+    [
+        ("subtle_crossfade", 0.8),
+        ("clean_soft_cut", 0.0),
+        ("clean_progressive_cut", 0.0),
+    ],
+)
+def test_bridge_accepts_matching_transition_profile_authority(
+    tmp_path: Path,
+    transition_profile_id: str,
+    configured_duration: float,
+) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    profile = _profile().model_copy(update={"transition_profile_id": transition_profile_id})
+    timeline = build_authoritative_narration_timeline(state, profile=profile)
+
+    bridge = build_renderer_plan_from_accepted_candidates(
+        state,
+        authorization=authorization,
+        profile=profile,
+        narration_timeline=timeline,
+        narration_artifact_path=tmp_path / "narration" / "final.mp3",
+        artifact_root=tmp_path,
+    )
+
+    assert bridge.renderer_plan.transition_profile_id == transition_profile_id
+    assert (
+        bridge.renderer_plan.render_timing_contract["configured_transition_duration_seconds"]
+        == configured_duration
+    )
+
+
+@pytest.mark.parametrize(
+    ("profile_transition", "timeline_transition"),
+    [
+        ("subtle_crossfade", "clean_soft_cut"),
+        ("clean_soft_cut", "subtle_crossfade"),
+    ],
+)
+def test_bridge_rejects_mismatched_transition_authority_before_candidate_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    profile_transition: str,
+    timeline_transition: str,
+) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    profile = _profile().model_copy(update={"transition_profile_id": profile_transition})
+    timeline_profile = _profile().model_copy(update={"transition_profile_id": timeline_transition})
+    timeline = build_authoritative_narration_timeline(
+        state,
+        profile=timeline_profile,
+    )
+    before = tuple(
+        value.model_dump(mode="python") for value in (state, authorization, profile, timeline)
+    )
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("candidate effect started before transition authority validation")
+
+    monkeypatch.setattr(renderer_bridge, "_artifact_path", forbidden)
+    monkeypatch.setattr(renderer_bridge, "_sha256_file", forbidden)
+    monkeypatch.setattr(renderer_bridge, "_validate_image", forbidden)
+
+    with pytest.raises(ValueError, match="profile transition does not match"):
+        build_renderer_plan_from_accepted_candidates(
+            state,
+            authorization=authorization,
+            profile=profile,
+            narration_timeline=timeline,
+            narration_artifact_path=tmp_path / "narration" / "final.mp3",
+            artifact_root=tmp_path,
+        )
+
+    assert (
+        tuple(
+            value.model_dump(mode="python") for value in (state, authorization, profile, timeline)
+        )
+        == before
+    )
+
+
+def test_bridge_rejects_unknown_transition_profile_before_candidate_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    profile = _profile().model_copy(update={"transition_profile_id": "unknown_transition"})
+    timeline = build_authoritative_narration_timeline(
+        state,
+        profile=_profile(),
+    )
+    before = tuple(
+        value.model_dump(mode="python") for value in (state, authorization, profile, timeline)
+    )
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("candidate effect started before transition profile validation")
+
+    monkeypatch.setattr(renderer_bridge, "_artifact_path", forbidden)
+    monkeypatch.setattr(renderer_bridge, "_sha256_file", forbidden)
+    monkeypatch.setattr(renderer_bridge, "_validate_image", forbidden)
+
+    with pytest.raises(ValueError, match="unsupported renderer transition profile"):
+        build_renderer_plan_from_accepted_candidates(
+            state,
+            authorization=authorization,
+            profile=profile,
+            narration_timeline=timeline,
+            narration_artifact_path=tmp_path / "narration" / "final.mp3",
+            artifact_root=tmp_path,
+        )
+
+    assert (
+        tuple(
+            value.model_dump(mode="python") for value in (state, authorization, profile, timeline)
+        )
+        == before
     )
