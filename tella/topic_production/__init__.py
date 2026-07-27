@@ -98,6 +98,14 @@ from .renderer_bridge import (
     RendererSceneTimingInput,
     build_renderer_plan_from_accepted_candidates,
 )
+from .render_lifecycle import (
+    AuthorizedRenderer,
+    AuthorizedRenderLifecycleCoordinator,
+    AuthorizedRenderLifecycleError,
+    AuthorizedRenderLifecycleOutcome,
+    AuthorizedRenderLifecycleRequest,
+    AuthorizedRenderLifecycleStage,
+)
 from .reference_planning import (
     APPROVED_REFERENCE_DEFINITIONS,
     ApprovedReferenceValidationError,
@@ -232,6 +240,12 @@ __all__ = [
     "AcceptedCandidateRendererBridge",
     "AuthoritativeNarrationTimeline",
     "AuthorizedCandidateRequest",
+    "AuthorizedRenderer",
+    "AuthorizedRenderLifecycleCoordinator",
+    "AuthorizedRenderLifecycleError",
+    "AuthorizedRenderLifecycleOutcome",
+    "AuthorizedRenderLifecycleRequest",
+    "AuthorizedRenderLifecycleStage",
     "ApprovedReference",
     "ApprovedReferenceValidationError",
     "APPROVED_REFERENCE_DEFINITIONS",
