@@ -6,7 +6,10 @@ import hashlib
 from enum import StrEnum
 from pathlib import Path, PureWindowsPath
 
-from tella.tts.audio_probe import probe_single_audio_stream_duration
+from tella.tts.audio_probe import (
+    SingleAudioStreamProbeError,
+    probe_single_audio_stream_duration,
+)
 
 from .duration_policy import DurationValueAuthority, assess_mvp_duration_target
 from .runtime import (
@@ -28,6 +31,8 @@ class ProcessedNarrationArtifactBindingFailure(StrEnum):
     ARTIFACT_OUTSIDE_ROOT = "artifact_outside_root"
     ARTIFACT_READ_FAILED = "artifact_read_failed"
     ARTIFACT_CHANGED = "artifact_changed_during_measurement"
+    BOUND_IDENTITY_MISMATCH = "bound_identity_mismatch"
+    STRICT_PROBE_FAILED = "strict_probe_failed"
 
 
 class ProcessedNarrationArtifactBindingError(RuntimeError):
@@ -118,6 +123,22 @@ def _stream_sha256(artifact_path: Path) -> str:
     return digest.hexdigest()
 
 
+def _inspect_processed_narration_artifact(
+    state: ExecutionRunState,
+    *,
+    artifact_path: Path,
+    artifact_root: Path,
+) -> tuple[ExecutionRunState, Path, str]:
+    """Validate current path containment without probing or reading artifact bytes."""
+
+    validated_state = _revalidate_execution_state(state)
+    _, resolved_path, relative_path = _resolve_artifact_within_root(
+        artifact_path,
+        artifact_root,
+    )
+    return validated_state, resolved_path, relative_path
+
+
 def measure_and_bind_processed_narration_artifact(
     state: ExecutionRunState,
     *,
@@ -127,16 +148,23 @@ def measure_and_bind_processed_narration_artifact(
 ) -> ExecutionRunState:
     """Measure one stable final narration artifact and bind runtime authority."""
 
-    validated_state = _revalidate_execution_state(state)
-    _, resolved_path, relative_path = _resolve_artifact_within_root(
-        artifact_path,
-        artifact_root,
+    validated_state, resolved_path, relative_path = _inspect_processed_narration_artifact(
+        state,
+        artifact_path=artifact_path,
+        artifact_root=artifact_root,
     )
     before_sha256 = _stream_sha256(resolved_path)
-    measured_seconds = probe_single_audio_stream_duration(
-        resolved_path,
-        ffprobe_binary=ffprobe_binary,
-    )
+    try:
+        measured_seconds = probe_single_audio_stream_duration(
+            resolved_path,
+            ffprobe_binary=ffprobe_binary,
+        )
+    except SingleAudioStreamProbeError as exc:
+        raise ProcessedNarrationArtifactBindingError(
+            resolved_path,
+            ProcessedNarrationArtifactBindingFailure.STRICT_PROBE_FAILED,
+            str(exc),
+        ) from exc
     after_sha256 = _stream_sha256(resolved_path)
     if before_sha256 != after_sha256:
         raise ProcessedNarrationArtifactBindingError(

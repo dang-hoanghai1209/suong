@@ -281,7 +281,7 @@ def test_legacy_all_accepted_cannot_reach_renderer_without_measurement(
         sentinels.append("reached")
         raise AssertionError("renderer/media work preceded measurement validation")
 
-    monkeypatch.setattr(renderer_bridge, "_resolve_artifact_within_root", forbidden)
+    monkeypatch.setattr(renderer_bridge, "_inspect_processed_narration_artifact", forbidden)
     monkeypatch.setattr(renderer_bridge, "_stream_sha256", forbidden)
     monkeypatch.setattr(renderer_bridge.Image, "open", forbidden)
     monkeypatch.setattr(

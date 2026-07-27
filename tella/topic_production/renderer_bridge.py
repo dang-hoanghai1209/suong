@@ -17,7 +17,10 @@ from .execution_models import (
     _revalidate_current_production_run_plan,
 )
 from .models import GenerationTier
-from .narration_measurement import _resolve_artifact_within_root, _stream_sha256
+from .narration_measurement import (
+    _inspect_processed_narration_artifact,
+    _stream_sha256,
+)
 from .runtime import _revalidate_execution_state, evaluate_execution_readiness
 from .runtime_models import ExecutionRunState
 from .story_plan_identity import canonical_story_plan_sha256
@@ -336,9 +339,10 @@ def _validate_processed_narration_artifact(
     measurement = validated_state.processed_narration_measurement
     if measurement is None:
         raise ValueError("processed narration measurement is required for renderer preparation")
-    _, resolved_path, relative_path = _resolve_artifact_within_root(
-        artifact_path,
-        artifact_root,
+    validated_state, resolved_path, relative_path = _inspect_processed_narration_artifact(
+        validated_state,
+        artifact_path=artifact_path,
+        artifact_root=artifact_root,
     )
     if relative_path != measurement.artifact_relative_path:
         raise ValueError("renderer narration artifact path does not match bound measurement")

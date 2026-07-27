@@ -11,7 +11,14 @@ from typing import Any, ClassVar, Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .live_execution_models import ProductionJobPaths
-from .narration_measurement import ProcessedNarrationArtifactBindingError
+from .narration_measurement import (
+    ProcessedNarrationArtifactBindingError,
+    ProcessedNarrationArtifactBindingFailure,
+    _inspect_processed_narration_artifact,
+    _stream_sha256,
+    measure_and_bind_processed_narration_artifact as _measure_and_bind_processed_narration_artifact,
+)
+from .persistence import persist_execution_snapshot as _persist_execution_snapshot
 from .renderer_bridge import (
     AcceptedCandidateRendererBridge,
     AuthoritativeNarrationTimeline,
@@ -19,6 +26,7 @@ from .renderer_bridge import (
     RendererPlanProfile,
 )
 from .runtime_models import ExecutionRunState
+from .story_plan_identity import canonical_story_plan_sha256
 
 
 class AuthorizedRenderLifecycleStage(StrEnum):
@@ -207,6 +215,74 @@ class AuthorizedRenderLifecycleError(RuntimeError):
         self.original_exception = cause
         super().__init__(f"{stage.value}: {cause}")
         self.__cause__ = cause
+
+
+def bind_and_persist_processed_narration_authority(
+    request: AuthorizedRenderLifecycleRequest,
+) -> ExecutionRunState:
+    """Bind or revalidate final narration authority, then persist it once."""
+
+    validated_request = AuthorizedRenderLifecycleRequest.model_validate(request)
+    state = validated_request.state
+    paths = validated_request.paths
+    narration_path = validated_request.processed_narration_path
+
+    measurement = state.processed_narration_measurement
+    try:
+        if measurement is None:
+            resulting_state = _measure_and_bind_processed_narration_artifact(
+                state,
+                artifact_path=narration_path,
+                artifact_root=paths.job_dir,
+            )
+        else:
+            resulting_state, resolved_path, relative_path = _inspect_processed_narration_artifact(
+                state,
+                artifact_path=narration_path,
+                artifact_root=paths.job_dir,
+            )
+            if relative_path != measurement.artifact_relative_path:
+                raise ProcessedNarrationArtifactBindingError(
+                    resolved_path,
+                    ProcessedNarrationArtifactBindingFailure.BOUND_IDENTITY_MISMATCH,
+                    "processed narration path does not match bound measurement",
+                )
+            if _stream_sha256(resolved_path) != measurement.artifact_sha256:
+                raise ProcessedNarrationArtifactBindingError(
+                    resolved_path,
+                    ProcessedNarrationArtifactBindingFailure.BOUND_IDENTITY_MISMATCH,
+                    "processed narration SHA-256 does not match bound measurement",
+                )
+            if measurement.story_plan_sha256 != canonical_story_plan_sha256(
+                resulting_state.run_plan.story_plan
+            ):
+                raise ProcessedNarrationArtifactBindingError(
+                    resolved_path,
+                    ProcessedNarrationArtifactBindingFailure.BOUND_IDENTITY_MISMATCH,
+                    "processed narration StoryPlan SHA-256 does not match runtime state",
+                )
+    except ProcessedNarrationArtifactBindingError:
+        raise
+    except Exception as exc:
+        raise AuthorizedRenderLifecycleError(
+            AuthorizedRenderLifecycleStage.BIND,
+            exc,
+        ) from exc
+
+    try:
+        _persist_execution_snapshot(
+            resulting_state,
+            paths,
+            execution_purpose=validated_request.execution_purpose,
+            selected_scene_id=validated_request.selected_scene_id,
+        )
+    except Exception as exc:
+        raise AuthorizedRenderLifecycleError(
+            AuthorizedRenderLifecycleStage.PERSIST,
+            exc,
+        ) from exc
+
+    return ExecutionRunState.model_validate(resulting_state.model_dump(mode="python"))
 
 
 @runtime_checkable
