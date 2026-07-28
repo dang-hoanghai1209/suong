@@ -63,11 +63,20 @@ def _known_api_methods(path: str) -> frozenset[str] | None:
     if path == f"{PLAN_ONLY_API_PREFIX}/runs":
         return frozenset({"GET", "POST"})
     lookup_prefix = f"{PLAN_ONLY_API_PREFIX}/runs/"
-    if (
-        path.startswith(lookup_prefix)
-        and path[len(lookup_prefix) :]
-        and "/" not in path[len(lookup_prefix) :]
-    ):
+    if not path.startswith(lookup_prefix):
+        return None
+    parts = path[len(lookup_prefix) :].split("/")
+    if not all(parts):
+        return None
+    if len(parts) == 1:
+        return frozenset({"GET"})
+    if len(parts) == 2 and parts[1] == "review":
+        return frozenset({"GET"})
+    if len(parts) == 3 and parts[1:] == ["review", "accept"]:
+        return frozenset({"POST"})
+    if len(parts) == 2 and parts[1] == "revisions":
+        return frozenset({"GET", "POST"})
+    if len(parts) == 3 and parts[1] == "revisions":
         return frozenset({"GET"})
     return None
 

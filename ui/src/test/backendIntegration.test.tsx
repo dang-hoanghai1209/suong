@@ -17,6 +17,7 @@ import type {
   ProductionCapabilitiesV1,
   ProductionDashboardViewV1,
   ProductionRunViewV1,
+  StoryPlanReviewOperationResultV1,
 } from "../contracts/v1/production";
 import { loadPlanOnlySuccessFixture } from "../fixtures/v1/fixtureManifest";
 
@@ -95,6 +96,26 @@ class TestRepository implements ProductionRepository {
   getRun(requestedRunId: string) {
     return this.run(requestedRunId);
   }
+
+  async getStoryPlanReview() {
+    return null;
+  }
+
+  async acceptStoryPlan(): Promise<StoryPlanReviewOperationResultV1> {
+    throw new Error("Review is outside this test repository.");
+  }
+
+  async requestStoryPlanReplan(): Promise<StoryPlanReviewOperationResultV1> {
+    throw new Error("Review is outside this test repository.");
+  }
+
+  async getStoryPlanRevisions() {
+    return null;
+  }
+
+  async getStoryPlanRevision() {
+    return null;
+  }
 }
 
 function renderRoute(path: string, repository: ProductionRepository) {
@@ -133,7 +154,7 @@ describe("PLAN_ONLY backend UI integration", () => {
     await userEvent.click(screen.getByRole("button", { name: "Create StoryPlan" }));
 
     expect(await screen.findByRole("heading", { name: "Production run" })).toBeVisible();
-    expect(screen.getByText(runId)).toBeVisible();
+    expect(screen.getAllByText(runId).length).toBeGreaterThanOrEqual(1);
     expect(repository.create).toHaveBeenCalledWith({
       schema_version: 1,
       input_mode: "TOPIC",

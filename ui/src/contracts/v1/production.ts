@@ -175,3 +175,142 @@ export interface PlanOnlyCreateResultV1 {
   readonly run: ProductionRunViewV1 | null;
   readonly error: PublicApiErrorV1 | null;
 }
+
+export type StoryPlanReviewStatusV1 =
+  | "UNREVIEWED"
+  | "ACCEPTED_FOR_SCENE_PLANNING"
+  | "REPLAN_REQUESTED";
+
+export type ReplanFeedbackDimensionV1 =
+  | "narration_too_short"
+  | "narration_too_long"
+  | "story_focus_incorrect"
+  | "emotional_progression_weak"
+  | "character_scope_incorrect"
+  | "scene_count_unsuitable"
+  | "custom_note";
+
+export interface ReviewSemanticBeatV1 extends SemanticBeatViewV1 {
+  readonly source_span: {
+    readonly start: number;
+    readonly end: number;
+  };
+  readonly transition_intent: string;
+}
+
+export interface PlannerMetadataViewV1 {
+  readonly planner_id: string;
+  readonly planner_version: string;
+  readonly deterministic: true;
+  readonly external_calls: 0;
+  readonly production_eligible: false;
+  readonly story_planning_authorized: true;
+}
+
+export interface DurationAssessmentViewV1 {
+  readonly policy_id: "mvp_emotional_duration_32_38_v1";
+  readonly status: "IN_TARGET" | "OUTSIDE_TARGET_WARNING";
+  readonly reason_code: string;
+  readonly value_authority: "PLANNED";
+  readonly target_duration_seconds: number;
+  readonly target_min_seconds: 32;
+  readonly target_max_seconds: 38;
+  readonly semantic_beat_total_seconds: number;
+  readonly scene_planning_total_seconds: number;
+}
+
+export interface IdentityScopeViewV1 {
+  readonly requested_scope:
+    | "recurring_female"
+    | "female_with_anonymous_background";
+  readonly supported: true;
+  readonly eligibility_status:
+    | "SUPPORTED_RECURRING_FEMALE"
+    | "SUPPORTED_FEMALE_WITH_ANONYMOUS_BACKGROUND";
+  readonly recurring_female_required: true;
+  readonly anonymous_background_people_allowed: boolean;
+  readonly identity_continuity_required: true;
+  readonly visual_identity_verified: false;
+  readonly blocking_reason_codes: readonly string[];
+}
+
+export interface ReviewStoryPlanViewV1 {
+  readonly schema_version: 1;
+  readonly topic: string;
+  readonly language: string;
+  readonly aspect_ratio: "9:16";
+  readonly target_duration_seconds: number;
+  readonly requested_scene_count: 7 | 8;
+  readonly narration_text: string;
+  readonly emotional_arc: readonly string[];
+  readonly topic_intent: string;
+  readonly semantic_beats: readonly ReviewSemanticBeatV1[];
+  readonly scenes: readonly SceneViewV1[];
+  readonly planner_metadata: PlannerMetadataViewV1;
+}
+
+export interface StoryPlanRevisionV1 {
+  readonly schema_version: 1;
+  readonly run_id: string;
+  readonly revision_id: string;
+  readonly revision_number: number;
+  readonly created_at: string;
+  readonly reasons: readonly string[];
+  readonly custom_note: string | null;
+  readonly target_duration_seconds: number;
+  readonly beat_count: number;
+  readonly story_plan: ReviewStoryPlanViewV1;
+  readonly timeline: TimelineViewV1;
+  readonly warnings: WarningCollectionV1;
+  readonly duration_assessment: DurationAssessmentViewV1;
+  readonly identity_scope: IdentityScopeViewV1;
+}
+
+export interface StoryPlanRevisionSummaryV1 {
+  readonly revision_id: string;
+  readonly revision_number: number;
+  readonly created_at: string;
+  readonly reasons: readonly string[];
+  readonly target_duration_seconds: number;
+  readonly beat_count: number;
+}
+
+export interface StoryPlanReviewViewV1 {
+  readonly schema_version: 1;
+  readonly run_id: string;
+  readonly review_status: StoryPlanReviewStatusV1;
+  readonly current_revision_id: string;
+  readonly accepted_revision_id: string | null;
+  readonly revision_history: readonly StoryPlanRevisionSummaryV1[];
+  readonly current_revision: StoryPlanRevisionV1;
+  readonly scene_planning_accepted: boolean;
+  readonly render_authority: false;
+  readonly media_capability: false;
+  readonly process_local: true;
+}
+
+export interface StoryPlanRevisionHistoryV1 {
+  readonly schema_version: 1;
+  readonly run_id: string;
+  readonly current_revision_id: string;
+  readonly revisions: readonly StoryPlanRevisionSummaryV1[];
+}
+
+export interface AcceptStoryPlanRequestV1 {
+  readonly schema_version: 1;
+  readonly current_revision_id: string;
+}
+
+export interface ReplanRequestV1 {
+  readonly schema_version: 1;
+  readonly base_revision_id: string;
+  readonly feedback: readonly ReplanFeedbackDimensionV1[];
+  readonly custom_note: string | null;
+}
+
+export interface StoryPlanReviewOperationResultV1 {
+  readonly schema_version: 1;
+  readonly review: StoryPlanReviewViewV1 | null;
+  readonly revision: StoryPlanRevisionV1 | null;
+  readonly error: PublicApiErrorV1 | null;
+}

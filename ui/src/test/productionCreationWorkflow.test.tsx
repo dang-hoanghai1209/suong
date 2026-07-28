@@ -19,6 +19,7 @@ import type {
   ProductionCapabilitiesV1,
   ProductionDashboardViewV1,
   ProductionRunViewV1,
+  StoryPlanReviewOperationResultV1,
 } from "../contracts/v1/production";
 import {
   CONTENT_MAX_CHARACTERS,
@@ -80,6 +81,26 @@ class WorkflowRepository implements ProductionRepository {
   }
 
   async getRun(_runId: string): Promise<ProductionRunViewV1 | null> {
+    return null;
+  }
+
+  async getStoryPlanReview() {
+    return null;
+  }
+
+  async acceptStoryPlan(): Promise<StoryPlanReviewOperationResultV1> {
+    throw new Error("Review is outside this test repository.");
+  }
+
+  async requestStoryPlanReplan(): Promise<StoryPlanReviewOperationResultV1> {
+    throw new Error("Review is outside this test repository.");
+  }
+
+  async getStoryPlanRevisions() {
+    return null;
+  }
+
+  async getStoryPlanRevision() {
     return null;
   }
 }

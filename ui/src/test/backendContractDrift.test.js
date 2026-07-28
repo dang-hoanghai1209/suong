@@ -22,11 +22,22 @@ request = {
 }
 created = application.create_run(request)
 run_id = created["run"]["run_id"]
+review = application.get_review(run_id)
+history = application.list_revisions(run_id)
+revision = application.get_revision(run_id, "revision-0001")
+accepted = application.accept_story_plan(
+    run_id,
+    {"schema_version": 1, "current_revision_id": "revision-0001"},
+)
 print(json.dumps({
     "created": created,
     "run": application.get_run(run_id),
     "dashboard": application.list_runs(),
     "capabilities": application.capabilities(),
+    "review": review,
+    "history": history,
+    "revision": revision,
+    "accepted": accepted,
 }, ensure_ascii=True, sort_keys=True))
 `;
 
@@ -58,6 +69,18 @@ describe("Python-to-TypeScript V1 contract drift", () => {
         if (requestPath.endsWith(`/runs/${runId}`)) {
           return { status: 200, payload: payload.run };
         }
+        if (requestPath.endsWith(`/runs/${runId}/review/accept`)) {
+          return { status: 200, payload: payload.accepted };
+        }
+        if (requestPath.endsWith(`/runs/${runId}/review`)) {
+          return { status: 200, payload: payload.review };
+        }
+        if (requestPath.endsWith(`/runs/${runId}/revisions/revision-0001`)) {
+          return { status: 200, payload: payload.revision };
+        }
+        if (requestPath.endsWith(`/runs/${runId}/revisions`)) {
+          return { status: 200, payload: payload.history };
+        }
         return { status: 404, payload: null };
       },
     });
@@ -74,6 +97,16 @@ describe("Python-to-TypeScript V1 contract drift", () => {
     const run = await repository.getRun(runId);
     const dashboard = await repository.getDashboard();
     const capabilities = await repository.getCapabilities();
+    const review = await repository.getStoryPlanReview(runId);
+    const history = await repository.getStoryPlanRevisions(runId);
+    const revision = await repository.getStoryPlanRevision(
+      runId,
+      "revision-0001",
+    );
+    const accepted = await repository.acceptStoryPlan(runId, {
+      schema_version: 1,
+      current_revision_id: "revision-0001",
+    });
 
     expect(created.run).toEqual(run);
     expect(run.run_id).toBe(runId);
@@ -91,5 +124,15 @@ describe("Python-to-TypeScript V1 contract drift", () => {
     expect(
       capabilities.render_lock_reason_codes.every((code) => typeof code === "string"),
     ).toBe(true);
+    expect(review.review_status).toBe("UNREVIEWED");
+    expect(review.render_authority).toBe(false);
+    expect(review.media_capability).toBe(false);
+    expect(review.current_revision.story_plan.semantic_beats.map((beat) => beat.order)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8,
+    ]);
+    expect(history.current_revision_id).toBe("revision-0001");
+    expect(revision.revision_id).toBe("revision-0001");
+    expect(accepted.review.review_status).toBe("ACCEPTED_FOR_SCENE_PLANNING");
+    expect(accepted.review.render_authority).toBe(false);
   });
 });

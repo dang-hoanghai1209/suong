@@ -11,6 +11,7 @@ import type {
   PlanOnlyCreateResultV1,
   PlanOnlyHealthV1,
   ProductionCapabilitiesV1,
+  StoryPlanReviewOperationResultV1,
 } from "../contracts/v1/production";
 
 afterEach(() => {
@@ -63,6 +64,26 @@ class ConnectionRepository implements ProductionRepository {
     _request: PlanOnlyCreateRequestV1,
   ): Promise<PlanOnlyCreateResultV1> {
     throw new Error("not used");
+  }
+
+  async getStoryPlanReview() {
+    return null;
+  }
+
+  async acceptStoryPlan(): Promise<StoryPlanReviewOperationResultV1> {
+    throw new Error("not used");
+  }
+
+  async requestStoryPlanReplan(): Promise<StoryPlanReviewOperationResultV1> {
+    throw new Error("not used");
+  }
+
+  async getStoryPlanRevisions() {
+    return null;
+  }
+
+  async getStoryPlanRevision() {
+    return null;
   }
 }
 

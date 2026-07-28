@@ -37,17 +37,20 @@ describe("authority display", () => {
       "scene_08",
     ]);
 
-    const timeline = screen.getByRole("table");
-    expect(within(timeline).getAllByText("4.25 s")).toHaveLength(6);
-    expect(within(timeline).getAllByText("8.75 s")).toHaveLength(2);
+    expect(within(sceneList as HTMLElement).getAllByText(/Timeline .* s/)).toHaveLength(8);
+    expect(within(sceneList as HTMLElement).getByText("Timeline 0–4.25 s")).toBeVisible();
+    expect(within(sceneList as HTMLElement).getByText("Timeline 30.5–35 s")).toBeVisible();
     expect(screen.getAllByText("35 s").length).toBeGreaterThanOrEqual(2);
   });
 
   it("shows unavailable server values without calculating replacements", async () => {
     renderRoute("/production/runs/mock-plan-2026-01");
-    await screen.findByRole("table");
+    await screen.findByRole("heading", { name: "Duration assessment" });
 
-    expect(screen.getAllByText("Not available").length).toBeGreaterThanOrEqual(8);
+    expect(screen.getByText("Estimated narration duration").nextElementSibling).toHaveTextContent(
+      "Not supplied",
+    );
+    expect(screen.getByText(/No measured narration/)).toBeVisible();
     expect(screen.getByText("PLANNED")).toBeInTheDocument();
     expect(screen.queryByText("MEASURED")).not.toBeInTheDocument();
   });

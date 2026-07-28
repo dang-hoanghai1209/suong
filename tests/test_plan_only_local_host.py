@@ -193,6 +193,71 @@ def test_acceptance_create_list_and_exact_lookup_use_actual_application(
     assert unknown["error"]["code"] == "PLAN_ONLY_ROUTE_NOT_FOUND"
 
 
+def test_review_revision_routes_methods_and_malformed_json_are_bounded(
+    tmp_path: Path,
+) -> None:
+    with _running_host(tmp_path) as address:
+        _, created, _ = _json_request(
+            address,
+            "POST",
+            "/api/v1/plan-only/runs",
+            _request_payload(),
+        )
+        run = created["run"]
+        assert isinstance(run, dict)
+        run_id = str(run["run_id"])
+        review_path = f"/api/v1/plan-only/runs/{run_id}/review"
+        accept_path = f"{review_path}/accept"
+        revisions_path = f"/api/v1/plan-only/runs/{run_id}/revisions"
+
+        review_status, review, _ = _http_request(address, "GET", review_path)
+        accept_status, accepted, _ = _json_request(
+            address,
+            "POST",
+            accept_path,
+            {"schema_version": 1, "current_revision_id": "revision-0001"},
+        )
+        history_status, history, _ = _http_request(
+            address,
+            "GET",
+            revisions_path,
+        )
+        revision_status, revision, _ = _http_request(
+            address,
+            "GET",
+            f"{revisions_path}/revision-0001",
+        )
+        method_status, method_error, method_headers = _http_request(
+            address,
+            "POST",
+            review_path,
+            body=b"{}",
+            headers={"Content-Type": "application/json", "Content-Length": "2"},
+        )
+        malformed_status, malformed, _ = _http_request(
+            address,
+            "POST",
+            revisions_path,
+            body=b"{",
+            headers={"Content-Type": "application/json", "Content-Length": "1"},
+        )
+
+    assert review_status == 200
+    assert review["review_status"] == "UNREVIEWED"
+    assert review["render_authority"] is False
+    assert accept_status == 200
+    assert accepted["review"]["review_status"] == "ACCEPTED_FOR_SCENE_PLANNING"
+    assert history_status == 200
+    assert history["current_revision_id"] == "revision-0001"
+    assert revision_status == 200
+    assert revision["revision_id"] == "revision-0001"
+    assert method_status == 405
+    assert method_error["error"]["code"] == "METHOD_NOT_ALLOWED"
+    assert method_headers["Allow"] == "GET"
+    assert malformed_status == 400
+    assert malformed["error"]["code"] == "MALFORMED_JSON"
+
+
 @pytest.mark.parametrize(
     ("body", "expected_status", "expected_code"),
     [

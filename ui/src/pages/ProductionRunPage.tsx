@@ -1,51 +1,77 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { StatusBadge } from "../components/status/StatusBadge";
-import type { ProductionRunViewV1, TimelineRowV1 } from "../contracts/v1/production";
+import {
+  ProductionBackendUnavailableError,
+  ProductionContractError,
+} from "../api/productionClient";
 import { useProductionRepository } from "../app/ProductionRepositoryContext";
+import { ReviewDecisionPanel } from "../components/storyPlanReview/ReviewDecisionPanel";
+import { StoryPlanReviewSections } from "../components/storyPlanReview/StoryPlanReviewSections";
+import { StatusBadge } from "../components/status/StatusBadge";
+import type {
+  ReplanRequestV1,
+  ProductionRunViewV1,
+  StoryPlanReviewViewV1,
+  StoryPlanRevisionV1,
+} from "../contracts/v1/production";
 
-function ExactDuration({ value }: { readonly value: number | null }) {
-  return <code>{value === null ? "Not available" : `${value} s`}</code>;
-}
-
-function TimelineRow({ row }: { readonly row: TimelineRowV1 }) {
-  return (
-    <tr>
-      <th scope="row">
-        <code>{row.scene_id}</code>
-      </th>
-      <td>
-        <ExactDuration value={row.start_seconds} />
-      </td>
-      <td>
-        <ExactDuration value={row.narration_slot_duration_seconds} />
-      </td>
-      <td>
-        <ExactDuration value={row.render_clip_duration_seconds} />
-      </td>
-      <td>
-        <ExactDuration value={row.end_seconds} />
-      </td>
-    </tr>
-  );
+function safeOperationMessage(caught: unknown): string {
+  if (caught instanceof ProductionContractError) {
+    return "The backend returned a malformed StoryPlan review response.";
+  }
+  if (caught instanceof ProductionBackendUnavailableError) {
+    return "The PLAN_ONLY review backend is unavailable.";
+  }
+  return "The StoryPlan review operation ended without a safe response.";
 }
 
 export function ProductionRunPage() {
   const repository = useProductionRepository();
-  const { runId = "mock-plan-2026-01" } = useParams();
-  const [run, setRun] = useState<ProductionRunViewV1 | null | undefined>(undefined);
+  const { runId = "" } = useParams();
+  const [run, setRun] = useState<ProductionRunViewV1 | null | undefined>(
+    undefined,
+  );
+  const [review, setReview] = useState<StoryPlanReviewViewV1 | null>(null);
+  const [selectedRevision, setSelectedRevision] =
+    useState<StoryPlanRevisionV1 | null>(null);
   const [unavailable, setUnavailable] = useState(false);
+  const [reviewUnavailable, setReviewUnavailable] = useState(false);
+  const [busyAction, setBusyAction] = useState<
+    "accept" | "replan" | "revision" | null
+  >(null);
+  const [operationError, setOperationError] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const operationInFlight = useRef(false);
 
   useEffect(() => {
     let active = true;
     setRun(undefined);
+    setReview(null);
+    setSelectedRevision(null);
     setUnavailable(false);
+    setReviewUnavailable(false);
+    setOperationError(null);
     void repository
       .getRun(runId)
-      .then((value) => {
-        if (active) {
-          setRun(value);
+      .then(async (loadedRun) => {
+        if (!active) {
+          return;
+        }
+        setRun(loadedRun);
+        if (loadedRun === null) {
+          return;
+        }
+        try {
+          const loadedReview = await repository.getStoryPlanReview(runId);
+          if (active) {
+            setReview(loadedReview);
+            setSelectedRevision(loadedReview?.current_revision ?? null);
+          }
+        } catch {
+          if (active) {
+            setReviewUnavailable(true);
+          }
         }
       })
       .catch(() => {
@@ -59,12 +85,121 @@ export function ProductionRunPage() {
     };
   }, [repository, runId]);
 
+  async function acceptStoryPlan() {
+    if (
+      review === null ||
+      run?.status !== "PLANNED" ||
+      operationInFlight.current
+    ) {
+      return;
+    }
+    operationInFlight.current = true;
+    setBusyAction("accept");
+    setOperationError(null);
+    try {
+      const result = await repository.acceptStoryPlan(run.run_id, {
+        schema_version: 1,
+        current_revision_id: review.current_revision_id,
+      });
+      if (result.error !== null) {
+        setOperationError(`${result.error.code}: ${result.error.message}`);
+      } else if (result.review !== null && result.revision !== null) {
+        setReview(result.review);
+        setSelectedRevision(result.revision);
+      } else {
+        setOperationError("The acceptance response was incomplete.");
+      }
+    } catch (caught) {
+      setOperationError(safeOperationMessage(caught));
+    } finally {
+      operationInFlight.current = false;
+      setBusyAction(null);
+    }
+  }
+
+  async function requestReplan(request: ReplanRequestV1): Promise<boolean> {
+    if (
+      review === null ||
+      run?.status !== "PLANNED" ||
+      operationInFlight.current
+    ) {
+      return false;
+    }
+    operationInFlight.current = true;
+    setBusyAction("replan");
+    setOperationError(null);
+    try {
+      const result = await repository.requestStoryPlanReplan(run.run_id, request);
+      if (result.error !== null) {
+        setOperationError(`${result.error.code}: ${result.error.message}`);
+        return false;
+      }
+      if (result.review === null || result.revision === null) {
+        setOperationError("The replan response was incomplete.");
+        return false;
+      }
+      setReview(result.review);
+      setSelectedRevision(result.revision);
+      return true;
+    } catch (caught) {
+      setOperationError(safeOperationMessage(caught));
+      return false;
+    } finally {
+      operationInFlight.current = false;
+      setBusyAction(null);
+    }
+  }
+
+  async function selectRevision(revisionId: string) {
+    if (run === null || run === undefined || operationInFlight.current) {
+      return;
+    }
+    if (selectedRevision?.revision_id === revisionId) {
+      return;
+    }
+    operationInFlight.current = true;
+    setBusyAction("revision");
+    setOperationError(null);
+    try {
+      const revision = await repository.getStoryPlanRevision(
+        run.run_id,
+        revisionId,
+      );
+      if (revision === null) {
+        setOperationError("The requested StoryPlan revision was not found.");
+      } else {
+        setSelectedRevision(revision);
+      }
+    } catch (caught) {
+      setOperationError(safeOperationMessage(caught));
+    } finally {
+      operationInFlight.current = false;
+      setBusyAction(null);
+    }
+  }
+
+  async function copyNarration() {
+    const narration = selectedRevision?.story_plan.narration_text;
+    if (!narration) {
+      return;
+    }
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Clipboard unavailable");
+      }
+      await navigator.clipboard.writeText(narration);
+      setCopyStatus("Canonical narration copied.");
+    } catch {
+      setCopyStatus("Narration could not be copied.");
+    }
+  }
+
   if (run === undefined) {
     return (
       <div className="page-stack">
         <h1>Loading production run</h1>
         <p role="status" aria-live="polite">
-          Loading plan review…
+          Loading StoryPlan review…
         </p>
       </div>
     );
@@ -92,17 +227,20 @@ export function ProductionRunPage() {
     );
   }
 
+  const selectedStory = selectedRevision?.story_plan;
   const blocking = run.status === "BLOCKED" || run.status === "FAILED";
 
   return (
-    <div className="page-stack">
+    <div className="page-stack story-review-workspace">
       <header className="page-heading">
         <div>
           <p className="eyebrow">
-            {run.execution_mode === "MOCK" ? "Synthetic UI mock" : "Backend PLAN_ONLY"}
+            {run.execution_mode === "MOCK"
+              ? "Synthetic UI mock"
+              : "Backend PLAN_ONLY"}
           </p>
           <h1>Production run</h1>
-          <code>{run.run_id}</code>
+          <code className="copyable-run-id">{run.run_id}</code>
         </div>
         <StatusBadge status={run.status} />
       </header>
@@ -116,14 +254,20 @@ export function ProductionRunPage() {
           <p className="eyebrow">Run summary</p>
           <h2 id="run-summary-title">{run.current_stage.replaceAll("_", " ")}</h2>
         </div>
-        <dl className="inline-details">
+        <dl className="review-detail-grid">
           <div>
-            <dt>Mode</dt>
-            <dd>{run.execution_mode}</dd>
+            <dt>Exact run ID</dt>
+            <dd>
+              <code>{run.run_id}</code>
+            </dd>
           </div>
           <div>
-            <dt>Warnings</dt>
-            <dd>{run.warnings.warning_count}</dd>
+            <dt>Run status</dt>
+            <dd>{run.status}</dd>
+          </div>
+          <div>
+            <dt>Contract schema</dt>
+            <dd>{run.schema_version}</dd>
           </div>
           <div>
             <dt>Created</dt>
@@ -133,149 +277,90 @@ export function ProductionRunPage() {
             <dt>Updated</dt>
             <dd>{run.updated_at}</dd>
           </div>
+          <div>
+            <dt>Input mode</dt>
+            <dd>{run.normalized_input.input_mode}</dd>
+          </div>
+          <div>
+            <dt>Production mode</dt>
+            <dd>{run.execution_mode}</dd>
+          </div>
+          <div>
+            <dt>Requested scenes</dt>
+            <dd>{selectedStory?.requested_scene_count ?? "Not available"}</dd>
+          </div>
+          <div>
+            <dt>Planned scenes</dt>
+            <dd>{selectedStory?.scenes.length ?? "Not available"}</dd>
+          </div>
+          <div>
+            <dt>Selected revision</dt>
+            <dd>{selectedRevision?.revision_id ?? "Not available"}</dd>
+          </div>
+          <div>
+            <dt>Current revision</dt>
+            <dd>{review?.current_revision_id ?? "Not available"}</dd>
+          </div>
+          <div>
+            <dt>Review status</dt>
+            <dd>{review?.review_status ?? "UNAVAILABLE"}</dd>
+          </div>
         </dl>
       </section>
 
-      <section className="surface" aria-labelledby="story-plan-title">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">StoryPlan</p>
-            <h2 id="story-plan-title">
-              {run.story_plan?.topic ?? "Canonical plan unavailable"}
-            </h2>
-          </div>
-          {run.story_plan && <ExactDuration value={run.story_plan.target_duration_seconds} />}
-        </div>
-        {run.story_plan ? (
-          <>
-            <p className="narration">{run.story_plan.narration_text}</p>
-            <div className="arc-list" aria-label="Emotional arc">
-              {run.story_plan.emotional_arc.map((state, index) => (
-                <span key={`${index}-${state}`}>{state}</span>
-              ))}
-            </div>
-          </>
-        ) : (
-          <p>Not available</p>
-        )}
-      </section>
+      {reviewUnavailable ? (
+        <section className="status-callout status-callout--blocking" role="alert">
+          <h2>StoryPlan review unavailable</h2>
+          <p>The review projection failed closed. No review action is available.</p>
+        </section>
+      ) : null}
 
-      <section className="surface" aria-labelledby="scenes-title">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">Canonical order</p>
-            <h2 id="scenes-title">Scenes</h2>
-          </div>
+      <div className="story-review-layout">
+        <div className="story-review-primary">
+          <StoryPlanReviewSections
+            run={run}
+            revision={selectedRevision}
+            copyStatus={copyStatus}
+            onCopyNarration={copyNarration}
+          />
         </div>
-        {run.story_plan ? (
-          <ol className="scene-list">
-            {run.story_plan.scenes.map((scene) => (
-              <li key={scene.scene_id}>
-                <div className="scene-list__identity">
-                  <code>{scene.scene_id}</code>
-                  <span>{scene.order}</span>
-                </div>
-                <div>
-                  <h3>{scene.meaning}</h3>
-                  <p>{scene.visual_intent}</p>
-                </div>
-                <ExactDuration value={scene.planned_duration_seconds} />
-              </li>
-            ))}
-          </ol>
-        ) : (
-          <p>Not available</p>
-        )}
-      </section>
-
-      <section className="surface" aria-labelledby="timeline-title">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">Backend-shaped authority</p>
-            <h2 id="timeline-title">Timeline</h2>
-          </div>
-          <span className="authority-label">{run.timeline?.authority ?? "Not available"}</span>
-        </div>
-        {run.timeline ? (
-          <>
-            <div className="table-scroll">
-              <table>
-                <caption className="sr-only">
-                  Scene timeline values supplied by the planning backend
-                </caption>
-                <thead>
-                  <tr>
-                    <th scope="col">Scene</th>
-                    <th scope="col">Start</th>
-                    <th scope="col">Narration slot</th>
-                    <th scope="col">Render clip</th>
-                    <th scope="col">End</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {run.timeline.rows.map((row) => (
-                    <TimelineRow key={row.scene_id} row={row} />
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <dl className="timeline-summary">
+        <aside className="story-review-sidebar" aria-label="StoryPlan review controls">
+          <ReviewDecisionPanel
+            review={review}
+            selectedRevision={selectedRevision}
+            runIsPlanned={run.status === "PLANNED"}
+            busyAction={busyAction}
+            errorMessage={operationError}
+            onAccept={acceptStoryPlan}
+            onReplan={requestReplan}
+            onSelectRevision={selectRevision}
+            onReturnCurrent={() =>
+              setSelectedRevision(review?.current_revision ?? null)
+            }
+          />
+          <details className="surface diagnostics-disclosure">
+            <summary>Diagnostics</summary>
+            <dl>
               <div>
-                <dt>Transition profile</dt>
-                <dd>{run.timeline.transition_profile_id ?? "Not available"}</dd>
+                <dt>Run contract</dt>
+                <dd>v{run.schema_version}</dd>
               </div>
               <div>
-                <dt>Configured transition</dt>
-                <dd>
-                  <ExactDuration value={run.timeline.configured_transition_seconds} />
-                </dd>
+                <dt>Review contract</dt>
+                <dd>{review ? `v${review.schema_version}` : "Unavailable"}</dd>
               </div>
               <div>
-                <dt>Effective transition</dt>
-                <dd>
-                  <ExactDuration value={run.timeline.effective_transition_seconds} />
-                </dd>
+                <dt>Render authority</dt>
+                <dd>{review?.render_authority === false ? "Not granted" : "Unavailable"}</dd>
               </div>
               <div>
-                <dt>Total</dt>
-                <dd>
-                  <ExactDuration value={run.timeline.total_duration_seconds} />
-                </dd>
+                <dt>Media capability</dt>
+                <dd>{review?.media_capability === false ? "Not granted" : "Unavailable"}</dd>
               </div>
             </dl>
-          </>
-        ) : (
-          <p>Not available</p>
-        )}
-      </section>
-
-      <section className="surface" aria-labelledby="warnings-title">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">Validation</p>
-            <h2 id="warnings-title">Warnings and conditions</h2>
-          </div>
-          <span>{run.warnings.warning_count}</span>
-        </div>
-        {run.warnings.conditions.length === 0 ? (
-          <p>No warnings were supplied for this plan.</p>
-        ) : (
-          <ul className="condition-list">
-            {run.warnings.conditions.map((condition) => (
-              <li key={condition.code}>
-                <span className="state-icon" aria-hidden="true">
-                  {condition.severity === "WARNING" ? "!" : "■"}
-                </span>
-                <div>
-                  <h3>{condition.title}</h3>
-                  <code>{condition.code}</code>
-                  <p>{condition.detail}</p>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+          </details>
+        </aside>
+      </div>
 
       <section className="surface" aria-labelledby="run-readiness-title">
         <p className="eyebrow">Render readiness</p>

@@ -11,6 +11,7 @@ import type {
   ProductionRunViewV1,
 } from "../contracts/v1/production";
 import { loadPlanOnlySuccessFixture } from "../fixtures/v1/fixtureManifest";
+import { mockProductionRepository } from "../mock/mockProductionRepository";
 
 const runId = "plan-0123456789abcdefabcd";
 
@@ -239,5 +240,142 @@ describe("backend production repository", () => {
       transport.request("/api/v1/plan-only/render", { method: "POST" }),
     ).rejects.toBeInstanceOf(ProductionContractError);
     expect(fetchSentinel).not.toHaveBeenCalled();
+  });
+});
+
+describe("StoryPlan review repository boundary", () => {
+  it("uses exact review routes and returns detached validated authority", async () => {
+    const review = await mockProductionRepository.getStoryPlanReview(
+      "mock-plan-2026-01",
+    );
+    expect(review).not.toBeNull();
+    const transport = new StaticTransport({
+      [`GET /api/v1/plan-only/runs/${runId}/review`]: {
+        status: 200,
+        payload: { ...structuredClone(review), run_id: runId, current_revision: {
+          ...structuredClone(review?.current_revision),
+          run_id: runId,
+        } },
+      },
+    });
+    const repository = new BackendProductionRepository(transport);
+
+    const result = await repository.getStoryPlanReview(runId);
+
+    expect(result?.review_status).toBe("UNREVIEWED");
+    expect(result?.render_authority).toBe(false);
+    expect(result?.media_capability).toBe(false);
+    expect(transport.calls[0]?.path).toBe(
+      `/api/v1/plan-only/runs/${runId}/review`,
+    );
+    if (result !== null) {
+      (result.current_revision.story_plan.semantic_beats as unknown as Array<{ beat_id: string }>)[0]!
+        .beat_id = "mutated";
+    }
+    expect(
+      (
+        transport as unknown as {
+          readonly calls: unknown[];
+        }
+      ).calls,
+    ).toHaveLength(1);
+    expect(review?.current_revision.story_plan.semantic_beats[0]?.beat_id).toBe(
+      "beat_01",
+    );
+  });
+
+  it.each([
+    ["duplicate beat", (payload: Record<string, any>) => {
+      payload.current_revision.story_plan.semantic_beats[1].beat_id = "beat_01";
+    }],
+    ["out-of-order beat", (payload: Record<string, any>) => {
+      payload.current_revision.story_plan.semantic_beats[0].order = 8;
+    }],
+    ["forged render authority", (payload: Record<string, any>) => {
+      payload.render_authority = true;
+    }],
+    ["non-boolean media authority", (payload: Record<string, any>) => {
+      payload.media_capability = "false";
+    }],
+    ["out-of-order revision history", (payload: Record<string, any>) => {
+      payload.revision_history[0].revision_number = 2;
+    }],
+  ])("rejects %s", async (_label, mutate) => {
+    const review = await mockProductionRepository.getStoryPlanReview(
+      "mock-plan-2026-01",
+    );
+    const payload = structuredClone(review) as unknown as Record<string, any>;
+    payload.run_id = runId;
+    payload.current_revision.run_id = runId;
+    mutate(payload);
+    const transport = new StaticTransport({
+      [`GET /api/v1/plan-only/runs/${runId}/review`]: {
+        status: 200,
+        payload,
+      },
+    });
+
+    await expect(
+      new BackendProductionRepository(transport).getStoryPlanReview(runId),
+    ).rejects.toBeInstanceOf(ProductionContractError);
+  });
+
+  it("posts only bounded acceptance and replan payloads to exact local routes", async () => {
+    const base = await mockProductionRepository.getStoryPlanReview(
+      "mock-plan-2026-01",
+    );
+    expect(base).not.toBeNull();
+    const accepted = {
+      ...structuredClone(base),
+      run_id: runId,
+      review_status: "ACCEPTED_FOR_SCENE_PLANNING",
+      accepted_revision_id: "revision-0001",
+      scene_planning_accepted: true,
+      current_revision: {
+        ...structuredClone(base?.current_revision),
+        run_id: runId,
+      },
+    };
+    const operation = {
+      schema_version: 1,
+      review: accepted,
+      revision: accepted.current_revision,
+      error: null,
+    };
+    const transport = new StaticTransport({
+      [`POST /api/v1/plan-only/runs/${runId}/review/accept`]: {
+        status: 200,
+        payload: operation,
+      },
+      [`POST /api/v1/plan-only/runs/${runId}/revisions`]: {
+        status: 200,
+        payload: operation,
+      },
+    });
+    const repository = new BackendProductionRepository(transport);
+    const acceptRequest = {
+      schema_version: 1 as const,
+      current_revision_id: "revision-0001",
+    };
+    const replanRequest = {
+      schema_version: 1 as const,
+      base_revision_id: "revision-0001",
+      feedback: ["story_focus_incorrect"] as const,
+      custom_note: null,
+    };
+
+    await repository.acceptStoryPlan(runId, acceptRequest);
+    await repository.requestStoryPlanReplan(runId, replanRequest);
+
+    expect(transport.calls.map((call) => call.path)).toEqual([
+      `/api/v1/plan-only/runs/${runId}/review/accept`,
+      `/api/v1/plan-only/runs/${runId}/revisions`,
+    ]);
+    expect(JSON.parse(String(transport.calls[0]?.init?.body))).toEqual(
+      acceptRequest,
+    );
+    expect(JSON.parse(String(transport.calls[1]?.init?.body))).toEqual(
+      replanRequest,
+    );
   });
 });

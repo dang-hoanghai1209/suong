@@ -13,7 +13,15 @@ import hashlib
 import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    ValidationError,
+    model_validator,
+)
 
 from .duration_policy import (
     DurationAssessmentStatus,
@@ -292,6 +300,303 @@ class PlanOnlyCreateResultV1(_ContractModel):
         return self
 
 
+class StoryPlanReviewStatus(StrEnum):
+    UNREVIEWED = "UNREVIEWED"
+    ACCEPTED_FOR_SCENE_PLANNING = "ACCEPTED_FOR_SCENE_PLANNING"
+    REPLAN_REQUESTED = "REPLAN_REQUESTED"
+
+
+class ReplanFeedbackDimension(StrEnum):
+    NARRATION_TOO_SHORT = "narration_too_short"
+    NARRATION_TOO_LONG = "narration_too_long"
+    STORY_FOCUS_INCORRECT = "story_focus_incorrect"
+    EMOTIONAL_PROGRESSION_WEAK = "emotional_progression_weak"
+    CHARACTER_SCOPE_INCORRECT = "character_scope_incorrect"
+    SCENE_COUNT_UNSUITABLE = "scene_count_unsuitable"
+    CUSTOM_NOTE = "custom_note"
+
+
+_REPLAN_FEEDBACK_ORDER = tuple(ReplanFeedbackDimension)
+
+
+class NarrationSourceSpanViewV1(_ContractModel):
+    start: StrictInt = Field(ge=0)
+    end: StrictInt = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> "NarrationSourceSpanViewV1":
+        if self.end <= self.start:
+            raise ValueError("source span end must be greater than start")
+        return self
+
+
+class ReviewSemanticBeatV1(_ContractModel):
+    beat_id: str = Field(pattern=r"^beat_[0-9]{2}$")
+    order: StrictInt = Field(ge=1, le=8)
+    source_span: NarrationSourceSpanViewV1
+    narration_segment: str = Field(min_length=1)
+    semantic_purpose: str = Field(min_length=1)
+    emotional_state: str = Field(min_length=1)
+    transition_intent: str = Field(min_length=1)
+    visual_intent: str = Field(min_length=1)
+    duration_seconds: float = Field(gt=0, allow_inf_nan=False)
+
+
+class PlannerMetadataViewV1(_ContractModel):
+    planner_id: str = Field(min_length=1)
+    planner_version: str = Field(min_length=1)
+    deterministic: Literal[True] = True
+    external_calls: Literal[0] = 0
+    production_eligible: Literal[False] = False
+    story_planning_authorized: Literal[True] = True
+
+
+class DurationAssessmentViewV1(_ContractModel):
+    policy_id: Literal["mvp_emotional_duration_32_38_v1"]
+    status: Literal["IN_TARGET", "OUTSIDE_TARGET_WARNING"]
+    reason_code: str = Field(min_length=1)
+    value_authority: Literal["PLANNED"]
+    target_duration_seconds: float = Field(gt=0, allow_inf_nan=False)
+    target_min_seconds: Literal[32.0]
+    target_max_seconds: Literal[38.0]
+    semantic_beat_total_seconds: float = Field(gt=0, allow_inf_nan=False)
+    scene_planning_total_seconds: float = Field(gt=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_totals(self) -> "DurationAssessmentViewV1":
+        if not (
+            self.target_duration_seconds
+            == self.semantic_beat_total_seconds
+            == self.scene_planning_total_seconds
+        ):
+            raise ValueError("planned duration summaries must remain consistent")
+        return self
+
+
+class IdentityScopeViewV1(_ContractModel):
+    requested_scope: Literal[
+        "recurring_female",
+        "female_with_anonymous_background",
+    ]
+    supported: Literal[True] = True
+    eligibility_status: Literal[
+        "SUPPORTED_RECURRING_FEMALE",
+        "SUPPORTED_FEMALE_WITH_ANONYMOUS_BACKGROUND",
+    ]
+    recurring_female_required: Literal[True] = True
+    anonymous_background_people_allowed: StrictBool
+    identity_continuity_required: Literal[True] = True
+    visual_identity_verified: Literal[False] = False
+    blocking_reason_codes: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_scope_summary(self) -> "IdentityScopeViewV1":
+        anonymous = self.requested_scope == "female_with_anonymous_background"
+        expected_status = (
+            "SUPPORTED_FEMALE_WITH_ANONYMOUS_BACKGROUND"
+            if anonymous
+            else "SUPPORTED_RECURRING_FEMALE"
+        )
+        if (
+            self.anonymous_background_people_allowed is not anonymous
+            or self.eligibility_status != expected_status
+            or self.blocking_reason_codes
+        ):
+            raise ValueError("identity summary must match the supported requested scope")
+        return self
+
+
+class ReviewStoryPlanViewV1(_ContractModel):
+    schema_version: Literal[1] = 1
+    topic: str = Field(min_length=1)
+    language: str = Field(min_length=2, max_length=12)
+    aspect_ratio: Literal["9:16"] = "9:16"
+    target_duration_seconds: float = Field(gt=0, allow_inf_nan=False)
+    requested_scene_count: StrictInt = Field(ge=7, le=8)
+    narration_text: str = Field(min_length=1)
+    emotional_arc: tuple[str, ...] = Field(min_length=3)
+    topic_intent: str = Field(min_length=1)
+    semantic_beats: tuple[ReviewSemanticBeatV1, ...]
+    scenes: tuple[SceneViewV1, ...]
+    planner_metadata: PlannerMetadataViewV1
+
+    @model_validator(mode="after")
+    def validate_story_projection(self) -> "ReviewStoryPlanViewV1":
+        expected = list(range(1, self.requested_scene_count + 1))
+        if len(self.semantic_beats) != self.requested_scene_count:
+            raise ValueError("review beats must match requested scene count")
+        if [beat.order for beat in self.semantic_beats] != expected:
+            raise ValueError("review beats must remain in canonical order")
+        if len({beat.beat_id for beat in self.semantic_beats}) != len(self.semantic_beats):
+            raise ValueError("review beat IDs must be unique")
+        if [scene.order for scene in self.scenes] != expected:
+            raise ValueError("review scenes must remain in canonical order")
+        if [scene.source_beat_id for scene in self.scenes] != [
+            beat.beat_id for beat in self.semantic_beats
+        ]:
+            raise ValueError("review scenes must preserve beat correspondence")
+        previous_end = 0
+        for beat in self.semantic_beats:
+            if (
+                beat.source_span.start != previous_end
+                or self.narration_text[beat.source_span.start : beat.source_span.end]
+                != beat.narration_segment
+            ):
+                raise ValueError("review source spans must partition canonical narration")
+            previous_end = beat.source_span.end
+        if previous_end != len(self.narration_text):
+            raise ValueError("review source spans must cover canonical narration")
+        return self
+
+
+class StoryPlanRevisionV1(_ContractModel):
+    schema_version: Literal[1] = 1
+    run_id: str = Field(pattern=_RUN_ID_PATTERN)
+    revision_id: str = Field(pattern=r"^revision-[0-9]{4}$")
+    revision_number: StrictInt = Field(ge=1)
+    created_at: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+    reasons: tuple[str, ...] = Field(min_length=1)
+    custom_note: str | None = Field(default=None, max_length=500)
+    target_duration_seconds: float = Field(gt=0, allow_inf_nan=False)
+    beat_count: StrictInt = Field(ge=7, le=8)
+    story_plan: ReviewStoryPlanViewV1
+    timeline: TimelineViewV1
+    warnings: WarningCollectionV1
+    duration_assessment: DurationAssessmentViewV1
+    identity_scope: IdentityScopeViewV1
+
+    @model_validator(mode="after")
+    def validate_revision_summary(self) -> "StoryPlanRevisionV1":
+        if self.revision_id != f"revision-{self.revision_number:04d}":
+            raise ValueError("revision identity must match revision number")
+        if (
+            self.target_duration_seconds != self.story_plan.target_duration_seconds
+            or self.beat_count != len(self.story_plan.semantic_beats)
+            or self.timeline.total_duration_seconds != self.target_duration_seconds
+        ):
+            raise ValueError("revision summaries must match the canonical StoryPlan")
+        return self
+
+
+class StoryPlanRevisionSummaryV1(_ContractModel):
+    revision_id: str = Field(pattern=r"^revision-[0-9]{4}$")
+    revision_number: StrictInt = Field(ge=1)
+    created_at: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+    reasons: tuple[str, ...] = Field(min_length=1)
+    target_duration_seconds: float = Field(gt=0, allow_inf_nan=False)
+    beat_count: StrictInt = Field(ge=7, le=8)
+
+
+class StoryPlanReviewViewV1(_ContractModel):
+    schema_version: Literal[1] = 1
+    run_id: str = Field(pattern=_RUN_ID_PATTERN)
+    review_status: StoryPlanReviewStatus
+    current_revision_id: str = Field(pattern=r"^revision-[0-9]{4}$")
+    accepted_revision_id: str | None = Field(default=None, pattern=r"^revision-[0-9]{4}$")
+    revision_history: tuple[StoryPlanRevisionSummaryV1, ...] = Field(min_length=1)
+    current_revision: StoryPlanRevisionV1
+    scene_planning_accepted: StrictBool
+    render_authority: Literal[False] = False
+    media_capability: Literal[False] = False
+    process_local: Literal[True] = True
+
+    @model_validator(mode="after")
+    def validate_review_state(self) -> "StoryPlanReviewViewV1":
+        numbers = [revision.revision_number for revision in self.revision_history]
+        if numbers != list(range(1, len(numbers) + 1)):
+            raise ValueError("revision history must be strictly ordered")
+        ids = [revision.revision_id for revision in self.revision_history]
+        if len(ids) != len(set(ids)) or self.current_revision_id != ids[-1]:
+            raise ValueError("current revision must be the final unique revision")
+        if (
+            self.current_revision.revision_id != self.current_revision_id
+            or self.current_revision.run_id != self.run_id
+        ):
+            raise ValueError("current revision must match review identity")
+        accepted = self.review_status is StoryPlanReviewStatus.ACCEPTED_FOR_SCENE_PLANNING
+        if (
+            self.scene_planning_accepted is not accepted
+            or (self.accepted_revision_id is not None) is not accepted
+            or (accepted and self.accepted_revision_id != self.current_revision_id)
+        ):
+            raise ValueError("acceptance summary must match review status")
+        return self
+
+
+class StoryPlanRevisionHistoryV1(_ContractModel):
+    schema_version: Literal[1] = 1
+    run_id: str = Field(pattern=_RUN_ID_PATTERN)
+    current_revision_id: str = Field(pattern=r"^revision-[0-9]{4}$")
+    revisions: tuple[StoryPlanRevisionSummaryV1, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_history(self) -> "StoryPlanRevisionHistoryV1":
+        numbers = [revision.revision_number for revision in self.revisions]
+        ids = [revision.revision_id for revision in self.revisions]
+        if (
+            numbers != list(range(1, len(numbers) + 1))
+            or len(ids) != len(set(ids))
+            or self.current_revision_id != ids[-1]
+        ):
+            raise ValueError("revision history must be ordered, unique, and current")
+        return self
+
+
+class AcceptStoryPlanRequestV1(_ContractModel):
+    schema_version: Literal[1]
+    current_revision_id: str = Field(pattern=r"^revision-[0-9]{4}$")
+
+    @model_validator(mode="before")
+    @classmethod
+    def require_exact_schema_version(cls, value: Any) -> Any:
+        if isinstance(value, Mapping) and type(value.get("schema_version")) is not int:
+            raise ValueError("schema_version must be the exact integer 1")
+        return value
+
+
+class ReplanRequestV1(_ContractModel):
+    schema_version: Literal[1]
+    base_revision_id: str = Field(pattern=r"^revision-[0-9]{4}$")
+    feedback: tuple[ReplanFeedbackDimension, ...] = Field(min_length=1)
+    custom_note: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="before")
+    @classmethod
+    def require_exact_schema_version(cls, value: Any) -> Any:
+        if isinstance(value, Mapping) and type(value.get("schema_version")) is not int:
+            raise ValueError("schema_version must be the exact integer 1")
+        return value
+
+    @model_validator(mode="after")
+    def validate_feedback(self) -> "ReplanRequestV1":
+        expected = tuple(item for item in _REPLAN_FEEDBACK_ORDER if item in self.feedback)
+        if self.feedback != expected or len(set(self.feedback)) != len(self.feedback):
+            raise ValueError("feedback dimensions must be unique and canonically ordered")
+        has_custom = ReplanFeedbackDimension.CUSTOM_NOTE in self.feedback
+        if has_custom != (self.custom_note is not None):
+            raise ValueError("custom_note must be supplied exactly when selected")
+        if self.custom_note is not None:
+            if not self.custom_note.strip() or any(
+                ord(character) < 32 and character not in "\n\t" for character in self.custom_note
+            ):
+                raise ValueError("custom_note contains unsupported text")
+        return self
+
+
+class StoryPlanReviewOperationResultV1(_ContractModel):
+    schema_version: Literal[1] = 1
+    review: StoryPlanReviewViewV1 | None = None
+    revision: StoryPlanRevisionV1 | None = None
+    error: PublicApiErrorV1 | None = None
+
+    @model_validator(mode="after")
+    def require_success_or_error(self) -> "StoryPlanReviewOperationResultV1":
+        success = self.review is not None and self.revision is not None
+        if success == (self.error is not None):
+            raise ValueError("review operation requires success or error")
+        return self
+
+
 class PlanOnlyDeterministicTopicProducer(ApprovedStoryPlanProducer):
     """Reviewed deterministic producer authorized only for non-render planning."""
 
@@ -497,12 +802,178 @@ def _project_run(
     )
 
 
+def _revision_summary(
+    revision: StoryPlanRevisionV1,
+) -> StoryPlanRevisionSummaryV1:
+    return StoryPlanRevisionSummaryV1(
+        revision_id=revision.revision_id,
+        revision_number=revision.revision_number,
+        created_at=revision.created_at,
+        reasons=revision.reasons,
+        target_duration_seconds=revision.target_duration_seconds,
+        beat_count=revision.beat_count,
+    )
+
+
+def _revision_timestamp(created_at: str, revision_number: int) -> str:
+    base = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    return (base + timedelta(seconds=revision_number - 1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _project_revision(
+    *,
+    run: ProductionRunViewV1,
+    request: PlanOnlyCreateRequestV1,
+    story_plan: StoryPlan,
+    revision_number: int,
+    reasons: tuple[str, ...],
+    custom_note: str | None,
+) -> StoryPlanRevisionV1:
+    duration = assess_mvp_duration_target(
+        float(story_plan.target_duration_seconds),
+        value_authority=DurationValueAuthority.PLANNED,
+    )
+    review_beats = tuple(
+        ReviewSemanticBeatV1(
+            beat_id=beat.beat_id,
+            order=beat.order,
+            source_span=NarrationSourceSpanViewV1(
+                start=beat.source_span.start,
+                end=beat.source_span.end,
+            ),
+            narration_segment=beat.narration_segment,
+            semantic_purpose=beat.semantic_purpose,
+            emotional_state=beat.emotional_state,
+            transition_intent=beat.transition_intent,
+            visual_intent=beat.visual_intent,
+            duration_seconds=beat.duration_seconds,
+        )
+        for beat in story_plan.semantic_beats
+    )
+    review_story = ReviewStoryPlanViewV1(
+        topic=story_plan.topic,
+        language=story_plan.language,
+        target_duration_seconds=story_plan.target_duration_seconds,
+        requested_scene_count=story_plan.requested_scene_count,
+        narration_text=story_plan.narration_text,
+        emotional_arc=story_plan.emotional_arc,
+        topic_intent=story_plan.topic_intent,
+        semantic_beats=review_beats,
+        scenes=run.story_plan.scenes,
+        planner_metadata=PlannerMetadataViewV1(
+            planner_id=story_plan.planner_metadata.planner_id,
+            planner_version=story_plan.planner_metadata.planner_version,
+        ),
+    )
+    return StoryPlanRevisionV1(
+        run_id=run.run_id,
+        revision_id=f"revision-{revision_number:04d}",
+        revision_number=revision_number,
+        created_at=_revision_timestamp(run.created_at, revision_number),
+        reasons=reasons,
+        custom_note=custom_note,
+        target_duration_seconds=story_plan.target_duration_seconds,
+        beat_count=len(story_plan.semantic_beats),
+        story_plan=review_story,
+        timeline=run.timeline,
+        warnings=run.warnings,
+        duration_assessment=DurationAssessmentViewV1(
+            policy_id=duration.policy_id,
+            status=duration.status.value,
+            reason_code=duration.reason_code.value,
+            value_authority=duration.value_authority.value,
+            target_duration_seconds=story_plan.target_duration_seconds,
+            target_min_seconds=duration.target_min_seconds,
+            target_max_seconds=duration.target_max_seconds,
+            semantic_beat_total_seconds=sum(
+                beat.duration_seconds for beat in story_plan.semantic_beats
+            ),
+            scene_planning_total_seconds=sum(
+                scene.planned_duration_seconds for scene in run.story_plan.scenes
+            ),
+        ),
+        identity_scope=IdentityScopeViewV1(
+            requested_scope=request.character_scope,
+            eligibility_status=(
+                "SUPPORTED_FEMALE_WITH_ANONYMOUS_BACKGROUND"
+                if request.character_scope == "female_with_anonymous_background"
+                else "SUPPORTED_RECURRING_FEMALE"
+            ),
+            anonymous_background_people_allowed=(
+                request.character_scope == "female_with_anonymous_background"
+            ),
+        ),
+    )
+
+
+def _review_operation_error(
+    payload: object,
+    *,
+    code: str,
+    message: str,
+    status: Literal["BLOCKED", "FAILED"] = "BLOCKED",
+    field_errors: tuple[PublicFieldErrorV1, ...] = (),
+) -> dict[str, object]:
+    return _json_detached(
+        StoryPlanReviewOperationResultV1(
+            error=PublicApiErrorV1(
+                request_id=_request_id(payload),
+                status=status,
+                code=code,
+                message=message,
+                retryable=False,
+                field_errors=field_errors,
+            )
+        )
+    )
+
+
 class PlanOnlyApplication:
     """In-memory, detached, provider-free planning application boundary."""
 
     def __init__(self, producer: ApprovedStoryPlanProducer | None = None) -> None:
         self._producer = producer or PlanOnlyDeterministicTopicProducer()
         self._runs: dict[str, ProductionRunViewV1] = {}
+        self._requests: dict[str, PlanOnlyCreateRequestV1] = {}
+        self._revisions: dict[str, tuple[StoryPlanRevisionV1, ...]] = {}
+        self._review_statuses: dict[str, StoryPlanReviewStatus] = {}
+        self._accepted_revision_ids: dict[str, str | None] = {}
+
+    def _produce(
+        self,
+        request: PlanOnlyCreateRequestV1,
+    ) -> tuple[NormalizedScriptInput, StoryPlan]:
+        normalized = normalize_script_input(
+            TopicScriptInput(
+                topic=request.source_content,
+                language=request.language,
+                requested_scene_count_range=(
+                    request.requested_scene_count,
+                    request.requested_scene_count,
+                ),
+                character_scope_request=_scope(request.character_scope),
+                execution_mode=ExecutionMode.FIXTURE_PREVIEW,
+            )
+        )
+        require_supported_identity(normalized)
+        approved = self._producer.produce(normalized)
+        return normalized, approved.story_plan
+
+    def _review(self, run_id: str) -> StoryPlanReviewViewV1 | None:
+        revisions = self._revisions.get(run_id)
+        if not revisions:
+            return None
+        status = self._review_statuses[run_id]
+        current = revisions[-1]
+        return StoryPlanReviewViewV1(
+            run_id=run_id,
+            review_status=status,
+            current_revision_id=current.revision_id,
+            accepted_revision_id=self._accepted_revision_ids[run_id],
+            revision_history=tuple(_revision_summary(item) for item in revisions),
+            current_revision=current,
+            scene_planning_accepted=(status is StoryPlanReviewStatus.ACCEPTED_FOR_SCENE_PLANNING),
+        )
 
     def create_run(self, payload: object) -> dict[str, object]:
         try:
@@ -535,21 +1006,8 @@ class PlanOnlyApplication:
                 )
             )
         try:
-            normalized = normalize_script_input(
-                TopicScriptInput(
-                    topic=request.source_content,
-                    language=request.language,
-                    requested_scene_count_range=(
-                        request.requested_scene_count,
-                        request.requested_scene_count,
-                    ),
-                    character_scope_request=_scope(request.character_scope),
-                    execution_mode=ExecutionMode.FIXTURE_PREVIEW,
-                )
-            )
-            require_supported_identity(normalized)
-            approved = self._producer.produce(normalized)
-            run = _project_run(request, normalized, approved.story_plan)
+            normalized, story_plan = self._produce(request)
+            run = _project_run(request, normalized, story_plan)
         except IdentityEligibilityError as error:
             return _json_detached(
                 _public_error(
@@ -568,8 +1026,24 @@ class PlanOnlyApplication:
                     message="The planning operation failed.",
                 )
             )
-        self._runs[run.run_id] = ProductionRunViewV1.model_validate(run.model_dump(mode="python"))
-        return _json_detached(PlanOnlyCreateResultV1(run=run))
+        if run.run_id not in self._runs:
+            stored_run = ProductionRunViewV1.model_validate(run.model_dump(mode="python"))
+            initial_revision = _project_revision(
+                run=stored_run,
+                request=request,
+                story_plan=story_plan,
+                revision_number=1,
+                reasons=("INITIAL_PLAN",),
+                custom_note=None,
+            )
+            self._runs[run.run_id] = stored_run
+            self._requests[run.run_id] = PlanOnlyCreateRequestV1.model_validate(
+                request.model_dump(mode="python")
+            )
+            self._revisions[run.run_id] = (initial_revision,)
+            self._review_statuses[run.run_id] = StoryPlanReviewStatus.UNREVIEWED
+            self._accepted_revision_ids[run.run_id] = None
+        return _json_detached(PlanOnlyCreateResultV1(run=self._runs[run.run_id]))
 
     def get_run(self, run_id: str) -> dict[str, object] | None:
         run = self._runs.get(run_id)
@@ -592,6 +1066,160 @@ class PlanOnlyApplication:
 
     def capabilities(self) -> dict[str, object]:
         return _json_detached(ProductionCapabilitiesV1())
+
+    def get_review(self, run_id: str) -> dict[str, object] | None:
+        review = self._review(run_id)
+        return None if review is None else _json_detached(review)
+
+    def accept_story_plan(self, run_id: str, payload: object) -> dict[str, object] | None:
+        run = self._runs.get(run_id)
+        review = self._review(run_id)
+        if run is None or review is None:
+            return None
+        try:
+            request = AcceptStoryPlanRequestV1.model_validate(payload)
+        except ValidationError as error:
+            fields = tuple(
+                PublicFieldErrorV1(
+                    path=".".join(str(part) for part in item["loc"]),
+                    code=str(item["type"]),
+                    message="Invalid review field.",
+                )
+                for item in error.errors(include_url=False)
+            )
+            return _review_operation_error(
+                payload,
+                code="INVALID_REVIEW_REQUEST",
+                message="The StoryPlan review request is malformed.",
+                status="FAILED",
+                field_errors=fields,
+            )
+        if run.status is not PlanOnlyStatus.PLANNED:
+            return _review_operation_error(
+                payload,
+                code="RUN_NOT_ACCEPTABLE",
+                message="Only a valid planned run can be accepted for scene planning.",
+            )
+        if self._review_statuses[run_id] is StoryPlanReviewStatus.ACCEPTED_FOR_SCENE_PLANNING:
+            return _review_operation_error(
+                payload,
+                code="REVIEW_ALREADY_ACCEPTED",
+                message="This StoryPlan revision is already accepted for scene planning.",
+            )
+        if request.current_revision_id != review.current_revision_id:
+            return _review_operation_error(
+                payload,
+                code="STALE_STORYPLAN_REVISION",
+                message="The StoryPlan revision changed before acceptance.",
+            )
+        self._review_statuses[run_id] = StoryPlanReviewStatus.ACCEPTED_FOR_SCENE_PLANNING
+        self._accepted_revision_ids[run_id] = review.current_revision_id
+        updated = self._review(run_id)
+        assert updated is not None
+        return _json_detached(
+            StoryPlanReviewOperationResultV1(
+                review=updated,
+                revision=updated.current_revision,
+            )
+        )
+
+    def request_replan(self, run_id: str, payload: object) -> dict[str, object] | None:
+        run = self._runs.get(run_id)
+        review = self._review(run_id)
+        request_source = self._requests.get(run_id)
+        if run is None or review is None or request_source is None:
+            return None
+        try:
+            request = ReplanRequestV1.model_validate(payload)
+        except ValidationError as error:
+            fields = tuple(
+                PublicFieldErrorV1(
+                    path=".".join(str(part) for part in item["loc"]),
+                    code=str(item["type"]),
+                    message="Invalid replan field.",
+                )
+                for item in error.errors(include_url=False)
+            )
+            return _review_operation_error(
+                payload,
+                code="INVALID_REPLAN_REQUEST",
+                message="The replan request is malformed.",
+                status="FAILED",
+                field_errors=fields,
+            )
+        if run.status is not PlanOnlyStatus.PLANNED:
+            return _review_operation_error(
+                payload,
+                code="RUN_NOT_REPLANNABLE",
+                message="Only a valid planned run can request a revision.",
+            )
+        if request.base_revision_id != review.current_revision_id:
+            return _review_operation_error(
+                payload,
+                code="STALE_STORYPLAN_REVISION",
+                message="The StoryPlan revision changed before replanning.",
+            )
+        try:
+            normalized, story_plan = self._produce(request_source)
+            next_number = len(self._revisions[run_id]) + 1
+            projected_run = _project_run(request_source, normalized, story_plan)
+            run_payload = projected_run.model_dump(mode="python")
+            run_payload["created_at"] = run.created_at
+            run_payload["updated_at"] = _revision_timestamp(run.created_at, next_number)
+            updated_run = ProductionRunViewV1.model_validate(run_payload)
+            revision = _project_revision(
+                run=updated_run,
+                request=request_source,
+                story_plan=story_plan,
+                revision_number=next_number,
+                reasons=tuple(item.value for item in request.feedback),
+                custom_note=request.custom_note,
+            )
+        except Exception:
+            return _review_operation_error(
+                payload,
+                code="PLAN_ONLY_REPLAN_FAILED",
+                message="The StoryPlan revision could not be produced.",
+                status="FAILED",
+            )
+        self._runs[run_id] = updated_run
+        self._revisions[run_id] = (*self._revisions[run_id], revision)
+        self._review_statuses[run_id] = StoryPlanReviewStatus.REPLAN_REQUESTED
+        self._accepted_revision_ids[run_id] = None
+        updated_review = self._review(run_id)
+        assert updated_review is not None
+        return _json_detached(
+            StoryPlanReviewOperationResultV1(
+                review=updated_review,
+                revision=revision,
+            )
+        )
+
+    def list_revisions(self, run_id: str) -> dict[str, object] | None:
+        revisions = self._revisions.get(run_id)
+        if not revisions:
+            return None
+        return _json_detached(
+            StoryPlanRevisionHistoryV1(
+                run_id=run_id,
+                current_revision_id=revisions[-1].revision_id,
+                revisions=tuple(_revision_summary(item) for item in revisions),
+            )
+        )
+
+    def get_revision(
+        self,
+        run_id: str,
+        revision_id: str,
+    ) -> dict[str, object] | None:
+        revisions = self._revisions.get(run_id)
+        if not revisions:
+            return None
+        revision = next(
+            (item for item in revisions if item.revision_id == revision_id),
+            None,
+        )
+        return None if revision is None else _json_detached(revision)
 
 
 class PlanOnlyFacadeResponse(_ContractModel):
@@ -618,11 +1246,45 @@ def dispatch_plan_only_request(
             payload=application.create_run(body),
         )
     prefix = f"{PLAN_ONLY_API_PREFIX}/runs/"
-    if method == "GET" and path.startswith(prefix) and "/" not in path[len(prefix) :]:
-        run = application.get_run(path[len(prefix) :])
+    if not path.startswith(prefix):
+        return PlanOnlyFacadeResponse(status_code=404, payload=None)
+    parts = path[len(prefix) :].split("/")
+    if len(parts) == 1 and method == "GET":
+        run = application.get_run(parts[0])
         return PlanOnlyFacadeResponse(
             status_code=200 if run is not None else 404,
             payload=run,
+        )
+    if len(parts) == 2 and parts[1] == "review" and method == "GET":
+        review = application.get_review(parts[0])
+        return PlanOnlyFacadeResponse(
+            status_code=200 if review is not None else 404,
+            payload=review,
+        )
+    if len(parts) == 3 and parts[1:] == ["review", "accept"] and method == "POST":
+        result = application.accept_story_plan(parts[0], body)
+        return PlanOnlyFacadeResponse(
+            status_code=200 if result is not None else 404,
+            payload=result,
+        )
+    if len(parts) == 2 and parts[1] == "revisions":
+        if method == "GET":
+            history = application.list_revisions(parts[0])
+            return PlanOnlyFacadeResponse(
+                status_code=200 if history is not None else 404,
+                payload=history,
+            )
+        if method == "POST":
+            result = application.request_replan(parts[0], body)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if result is not None else 404,
+                payload=result,
+            )
+    if len(parts) == 3 and parts[1] == "revisions" and method == "GET":
+        revision = application.get_revision(parts[0], parts[2])
+        return PlanOnlyFacadeResponse(
+            status_code=200 if revision is not None else 404,
+            payload=revision,
         )
     return PlanOnlyFacadeResponse(status_code=404, payload=None)
 
@@ -634,6 +1296,14 @@ __all__ = [
     "PlanOnlyCreateResultV1",
     "PlanOnlyDeterministicTopicProducer",
     "PlanOnlyFacadeResponse",
+    "AcceptStoryPlanRequestV1",
+    "ReplanFeedbackDimension",
+    "ReplanRequestV1",
+    "StoryPlanReviewOperationResultV1",
+    "StoryPlanReviewStatus",
+    "StoryPlanReviewViewV1",
+    "StoryPlanRevisionHistoryV1",
+    "StoryPlanRevisionV1",
     "ProductionCapabilitiesV1",
     "ProductionDashboardViewV1",
     "ProductionRunViewV1",

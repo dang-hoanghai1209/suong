@@ -858,6 +858,186 @@ thead th {
   gap: var(--space-3);
 }
 
+.story-review-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(17rem, 0.8fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.story-review-primary,
+.story-review-sections {
+  min-width: 0;
+}
+
+.story-review-sections {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.story-review-sidebar {
+  display: grid;
+  position: sticky;
+  top: var(--space-5);
+  gap: var(--space-4);
+}
+
+.copyable-run-id,
+.canonical-narration,
+.beat-narration,
+.condition-list code,
+.review-detail-grid dd,
+.revision-list {
+  overflow-wrap: anywhere;
+}
+
+.canonical-narration,
+.beat-narration {
+  white-space: pre-wrap;
+}
+
+.review-beat-list,
+.revision-list {
+  display: grid;
+  gap: var(--space-3);
+  padding: 0;
+  list-style: none;
+}
+
+.review-beat-list > li {
+  padding: var(--space-4);
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-medium);
+  scroll-margin-top: var(--space-5);
+}
+
+.review-item-heading {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.review-item-heading > span {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  color: white;
+  background: var(--color-accent-strong);
+  border-radius: 50%;
+  font-weight: 800;
+}
+
+.review-item-heading h3 {
+  margin-top: var(--space-2);
+}
+
+.review-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.review-detail-grid > div {
+  min-width: 0;
+  padding: var(--space-3);
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-small);
+}
+
+.condition-group + .condition-group {
+  padding-top: var(--space-4);
+  margin-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+
+.condition-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.review-actions {
+  display: grid;
+  gap: var(--space-3);
+  margin: var(--space-4) 0;
+}
+
+.revision-list li {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-small);
+}
+
+.revision-list button {
+  text-align: left;
+}
+
+.revision-list button[aria-current="true"] {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.diagnostics-disclosure summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.diagnostics-disclosure dl {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.review-dialog-backdrop {
+  display: grid;
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  place-items: center;
+  padding: var(--space-4);
+  background: rgb(20 18 16 / 65%);
+}
+
+.review-dialog {
+  width: min(42rem, 100%);
+  max-height: calc(100vh - 2 * var(--space-4));
+  padding: var(--space-5);
+  overflow-y: auto;
+  background: var(--color-surface);
+  border-radius: var(--radius-large);
+  box-shadow: var(--shadow-medium);
+}
+
+.review-dialog fieldset {
+  margin: var(--space-4) 0;
+}
+
+.replan-reasons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.replan-reasons label {
+  display: flex;
+  gap: var(--space-2);
+  align-items: start;
+  padding: var(--space-3);
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-small);
+}
+
+.replan-review {
+  padding: var(--space-3);
+  margin: var(--space-4) 0;
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-small);
+}
+
 @media (max-width: 1023px) {
   .app-header {
     grid-template-columns: 1fr auto;
@@ -878,6 +1058,14 @@ thead th {
 
   .creation-workspace {
     grid-template-columns: 1fr;
+  }
+
+  .story-review-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .story-review-sidebar {
+    position: static;
   }
 
   .creation-steps ol {
@@ -919,8 +1107,18 @@ thead th {
   .mode-grid,
   .choice-grid,
   .profile-facts,
-  .review-list {
+  .review-list,
+  .review-detail-grid,
+  .replan-reasons {
     grid-template-columns: 1fr;
+  }
+
+  .review-item-heading {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .review-item-heading > code {
+    grid-column: 2;
   }
 
   .creation-steps ol {
