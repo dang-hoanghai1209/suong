@@ -284,6 +284,11 @@ export function CompositionPlanningPage() {
         <nav aria-label="Composition workspace navigation">
           <Link to={`/production/runs/${runId}/scenes`}>Scene planning</Link>
           <Link to={`/production/runs/${runId}`}>Run overview</Link>
+          {collection?.overall_ready_for_timeline_planning ? (
+            <Link to={`/production/runs/${runId}/timeline`}>
+              Open timeline planning
+            </Link>
+          ) : null}
         </nav>
       </header>
       <div aria-live="polite">{message}{dirty ? " Unsaved changes." : ""}</div>

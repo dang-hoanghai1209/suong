@@ -35,12 +35,20 @@ import type {
   CompositionEditV1,
   CompositionOperationResultV1,
   CompositionReviewReasonV1,
+  TimelineAccessV1,
+  TimelineOperationResultV1,
+  TimelineReviewReasonV1,
 } from "../contracts/v1/production";
 import {
   validateCompositionAccess,
   validateCompositionOperation,
   validateSceneComposition,
 } from "./compositionValidation";
+import {
+  validateTimelineAccess,
+  validateTimelineOperation,
+  validateTimelineSegment,
+} from "./timelineValidation";
 import {
   validateSceneHistory,
   validateScenePlanCollection,
@@ -197,6 +205,55 @@ export interface ProductionRepository {
     readonly run_id: string;
     readonly scene_id: string;
     readonly revisions: readonly import("../contracts/v1/production").SceneCompositionV1[];
+  } | null>;
+  getTimelineAccess?(runId: string): Promise<TimelineAccessV1 | null>;
+  initializeTimeline?(
+    runId: string,
+    compositionCollectionRevisionId: string,
+  ): Promise<TimelineOperationResultV1>;
+  saveTimelineSegment?(
+    runId: string,
+    segmentId: string,
+    request: {
+      readonly schema_version: 1;
+      readonly base_collection_revision_id: string;
+      readonly base_segment_revision_id: string;
+      readonly changes: {
+        readonly narration_window_start_ms?: number;
+        readonly narration_window_end_ms?: number;
+        readonly note?: string | null;
+      };
+    },
+  ): Promise<TimelineOperationResultV1>;
+  restoreTimelineSegment?(
+    runId: string,
+    segmentId: string,
+    request: {
+      readonly schema_version: 1;
+      readonly base_collection_revision_id: string;
+      readonly base_segment_revision_id: string;
+      readonly restore_segment_revision_id: string;
+      readonly reason: string;
+    },
+  ): Promise<TimelineOperationResultV1>;
+  reviewTimeline?(
+    runId: string,
+    operation: "accept" | "request-revision",
+    request: {
+      readonly schema_version: 1;
+      readonly base_collection_revision_id: string;
+      readonly reason_code: TimelineReviewReasonV1;
+      readonly note: string | null;
+    },
+  ): Promise<TimelineOperationResultV1>;
+  getTimelineSegmentHistory?(
+    runId: string,
+    segmentId: string,
+  ): Promise<{
+    readonly schema_version: 1;
+    readonly run_id: string;
+    readonly segment_id: string;
+    readonly revisions: readonly import("../contracts/v1/production").TimelineSegmentV1[];
   } | null>;
 }
 
@@ -1638,6 +1695,107 @@ export class BackendProductionRepository implements ProductionRepository {
       run_id: runId,
       scene_id: sceneId,
       revisions: payload.revisions.map(validateSceneComposition),
+    };
+  }
+
+  async getTimelineAccess(runId: string) {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/timeline/access`,
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const access = validateTimelineAccess(response.payload);
+    if (access.run_id !== runId) throw new ProductionContractError();
+    return access;
+  }
+
+  async #timelineMutation(
+    runId: string,
+    path: string,
+    request: object,
+  ): Promise<TimelineOperationResultV1> {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/timeline/${path}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(request),
+      },
+    );
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const result = validateTimelineOperation(response.payload);
+    if (
+      (result.access !== null && result.access.run_id !== runId) ||
+      (result.collection !== null && result.collection.run_id !== runId)
+    ) {
+      throw new ProductionContractError();
+    }
+    return result;
+  }
+
+  initializeTimeline(runId: string, compositionCollectionRevisionId: string) {
+    return this.#timelineMutation(runId, "initialize", {
+      schema_version: 1,
+      composition_collection_revision_id: compositionCollectionRevisionId,
+    });
+  }
+
+  saveTimelineSegment(
+    runId: string,
+    segmentId: string,
+    request: Parameters<
+      NonNullable<ProductionRepository["saveTimelineSegment"]>
+    >[2],
+  ) {
+    return this.#timelineMutation(
+      runId,
+      `segments/${encodeURIComponent(segmentId)}/revisions`,
+      request,
+    );
+  }
+
+  restoreTimelineSegment(
+    runId: string,
+    segmentId: string,
+    request: Parameters<
+      NonNullable<ProductionRepository["restoreTimelineSegment"]>
+    >[2],
+  ) {
+    return this.#timelineMutation(
+      runId,
+      `segments/${encodeURIComponent(segmentId)}/restore`,
+      request,
+    );
+  }
+
+  reviewTimeline(
+    runId: string,
+    operation: "accept" | "request-revision",
+    request: Parameters<NonNullable<ProductionRepository["reviewTimeline"]>>[2],
+  ) {
+    return this.#timelineMutation(runId, operation, request);
+  }
+
+  async getTimelineSegmentHistory(runId: string, segmentId: string) {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/timeline/segments/${encodeURIComponent(segmentId)}/history`,
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const payload = response.payload as Record<string, unknown>;
+    if (
+      payload.schema_version !== 1 ||
+      payload.run_id !== runId ||
+      payload.segment_id !== segmentId ||
+      !Array.isArray(payload.revisions)
+    ) {
+      throw new ProductionContractError();
+    }
+    return {
+      schema_version: 1 as const,
+      run_id: runId,
+      segment_id: segmentId,
+      revisions: payload.revisions.map(validateTimelineSegment),
     };
   }
 }

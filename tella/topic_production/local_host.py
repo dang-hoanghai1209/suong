@@ -98,6 +98,23 @@ def _known_api_methods(path: str) -> frozenset[str] | None:
                 "request-revision",
             }:
                 return frozenset({"POST"})
+    if len(parts) >= 2 and parts[1] == "timeline":
+        tail = parts[2:]
+        if not tail or tail == ["access"] or tail == ["revisions"]:
+            return frozenset({"GET"})
+        if tail == ["initialize"]:
+            return frozenset({"POST"})
+        if tail in (["accept"], ["request-revision"]):
+            return frozenset({"POST"})
+        if len(tail) == 2 and tail[0] == "revisions":
+            return frozenset({"GET"})
+        if len(tail) == 2 and tail[0] == "segments":
+            return frozenset({"GET"})
+        if len(tail) == 3 and tail[0] == "segments":
+            if tail[2] == "history":
+                return frozenset({"GET"})
+            if tail[2] in {"revisions", "restore"}:
+                return frozenset({"POST"})
     if len(parts) >= 2 and parts[1] == "scene-plan":
         tail = parts[2:]
         if not tail:

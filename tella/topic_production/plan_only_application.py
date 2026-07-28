@@ -48,6 +48,7 @@ from .script_input import (
 )
 from .scene_planning import ScenePlanningStore
 from .composition_planning import CompositionPlanningStore
+from .timeline_planning import TimelinePlanningStore
 from .story_plan_producer import ApprovedStoryPlanProducer
 from .timing import build_scene_timings
 from .visual_candidates import (
@@ -956,6 +957,7 @@ class PlanOnlyApplication:
         self._accepted_revision_ids: dict[str, str | None] = {}
         self._scene_planning = ScenePlanningStore()
         self._composition_planning = CompositionPlanningStore()
+        self._timeline_planning = TimelinePlanningStore()
         if visual_provider is None:
             configured = get_image_provider()
             visual_provider = configured if configured.is_configured() else None
@@ -1511,6 +1513,124 @@ class PlanOnlyApplication:
             return None
         return self._composition_planning.collection_revision(run_id, revision_id)
 
+    def _timeline_context(
+        self, run_id: str
+    ) -> (
+        tuple[
+            dict[str, object],
+            dict[str, object],
+            dict[str, object],
+            dict[str, object],
+        ]
+        | None
+    ):
+        run = self.get_run(run_id)
+        review = self._review_payload(run_id)
+        scene_access = self.get_scene_plan(run_id)
+        composition_access = self.get_composition_access(run_id)
+        if run is None or review is None or scene_access is None or composition_access is None:
+            return None
+        return run, review, scene_access, composition_access
+
+    def get_timeline_access(self, run_id: str) -> dict[str, object] | None:
+        context = self._timeline_context(run_id)
+        if context is None:
+            return None
+        run, review, scene_access, composition_access = context
+        return self._timeline_planning.access(
+            run=run,
+            review=review,
+            scene_access=scene_access,
+            composition_access=composition_access,
+        )
+
+    def initialize_timeline(self, run_id: str, payload: object) -> dict[str, object] | None:
+        context = self._timeline_context(run_id)
+        if context is None:
+            return None
+        run, review, scene_access, composition_access = context
+        return self._timeline_planning.initialize(
+            run=run,
+            review=review,
+            scene_access=scene_access,
+            composition_access=composition_access,
+            payload=payload,
+        )
+
+    def mutate_timeline_segment(
+        self,
+        run_id: str,
+        segment_id: str,
+        operation: Literal["save", "restore"],
+        payload: object,
+    ) -> dict[str, object] | None:
+        access = self.get_timeline_access(run_id)
+        if access is None:
+            return None
+        if access.get("editable") is not True:
+            return {
+                "schema_version": 1,
+                "access": None,
+                "collection": None,
+                "error": {
+                    "schema_version": 1,
+                    "code": "TIMELINE_NOT_AUTHORIZED",
+                    "message": "Current upstream authority does not permit timeline mutation.",
+                    "retryable": False,
+                },
+            }
+        if operation == "save":
+            return self._timeline_planning.save(run_id, segment_id, payload)
+        return self._timeline_planning.restore(run_id, segment_id, payload)
+
+    def review_timeline(
+        self,
+        run_id: str,
+        operation: Literal["accept", "request-revision"],
+        payload: object,
+    ) -> dict[str, object] | None:
+        access = self.get_timeline_access(run_id)
+        if access is None:
+            return None
+        if access.get("editable") is not True:
+            return {
+                "schema_version": 1,
+                "access": None,
+                "collection": None,
+                "error": {
+                    "schema_version": 1,
+                    "code": "TIMELINE_NOT_AUTHORIZED",
+                    "message": "Current upstream authority does not permit timeline review.",
+                    "retryable": False,
+                },
+            }
+        return self._timeline_planning.review(run_id, operation, payload)
+
+    def get_timeline_segment(self, run_id: str, segment_id: str) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        self.get_timeline_access(run_id)
+        return self._timeline_planning.segment(run_id, segment_id)
+
+    def get_timeline_segment_history(
+        self, run_id: str, segment_id: str
+    ) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        return self._timeline_planning.segment_history(run_id, segment_id)
+
+    def get_timeline_collection_history(self, run_id: str) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        return self._timeline_planning.collection_history(run_id)
+
+    def get_timeline_collection_revision(
+        self, run_id: str, revision_id: str
+    ) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        return self._timeline_planning.collection_revision(run_id, revision_id)
+
 
 class PlanOnlyFacadeResponse(_ContractModel):
     status_code: int = Field(ge=200, le=599)
@@ -1626,6 +1746,64 @@ def dispatch_plan_only_request(
             operation = operation_by_tail.get(tuple(tail[2:]))
             if operation is not None and method == "POST":
                 result = application.mutate_composition(run_id, scene_id, operation, body)
+                return PlanOnlyFacadeResponse(
+                    status_code=200 if result is not None else 404,
+                    payload=result,
+                )
+    if len(parts) >= 2 and parts[1] == "timeline":
+        run_id = parts[0]
+        tail = parts[2:]
+        if tail in ([], ["access"]) and method == "GET":
+            access = application.get_timeline_access(run_id)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if access is not None else 404,
+                payload=access,
+            )
+        if tail == ["initialize"] and method == "POST":
+            result = application.initialize_timeline(run_id, body)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if result is not None else 404,
+                payload=result,
+            )
+        if tail == ["revisions"] and method == "GET":
+            history = application.get_timeline_collection_history(run_id)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if history is not None else 404,
+                payload=history,
+            )
+        if len(tail) == 2 and tail[0] == "revisions" and method == "GET":
+            revision = application.get_timeline_collection_revision(run_id, tail[1])
+            return PlanOnlyFacadeResponse(
+                status_code=200 if revision is not None else 404,
+                payload=revision,
+            )
+        if tail in (["accept"], ["request-revision"]) and method == "POST":
+            result = application.review_timeline(run_id, tail[0], body)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if result is not None else 404,
+                payload=result,
+            )
+        if len(tail) >= 2 and tail[0] == "segments":
+            segment_id = tail[1]
+            if len(tail) == 2 and method == "GET":
+                segment = application.get_timeline_segment(run_id, segment_id)
+                return PlanOnlyFacadeResponse(
+                    status_code=200 if segment is not None else 404,
+                    payload=segment,
+                )
+            if tail[2:] == ["history"] and method == "GET":
+                history = application.get_timeline_segment_history(run_id, segment_id)
+                return PlanOnlyFacadeResponse(
+                    status_code=200 if history is not None else 404,
+                    payload=history,
+                )
+            operation_by_tail = {
+                ("revisions",): "save",
+                ("restore",): "restore",
+            }
+            operation = operation_by_tail.get(tuple(tail[2:]))
+            if operation is not None and method == "POST":
+                result = application.mutate_timeline_segment(run_id, segment_id, operation, body)
                 return PlanOnlyFacadeResponse(
                     status_code=200 if result is not None else 404,
                     payload=result,

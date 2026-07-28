@@ -906,3 +906,175 @@ export interface CompositionOperationResultV1 {
     readonly retryable: false;
   } | null;
 }
+
+export type TimelineStatusV1 =
+  | "VALID"
+  | "WARNING"
+  | "BLOCKED"
+  | "ACCEPTED_FOR_EXECUTION_REVIEW"
+  | "REVISION_REQUESTED"
+  | "SUPERSEDED";
+export type NarrationAlignmentStatusV1 =
+  | "ALIGNED"
+  | "WARNING"
+  | "BLOCKED"
+  | "REVISION_REQUESTED"
+  | "SUPERSEDED";
+export type TimelineReviewReasonV1 =
+  | "DURATION_OUT_OF_RANGE"
+  | "NARRATION_WINDOW_UNSUITABLE"
+  | "TRANSITION_TIMING_UNSUITABLE"
+  | "SOURCE_ALIGNMENT_MISMATCH"
+  | "CONTINUITY_MISMATCH"
+  | "OTHER_BOUNDED_NOTE";
+
+export interface TimelineSegmentV1 {
+  readonly schema_version: 1;
+  readonly segment_id: string;
+  readonly segment_revision_id: string;
+  readonly segment_revision_number: number;
+  readonly position: number;
+  readonly run_id: string;
+  readonly story_revision_id: string;
+  readonly narration_source_sha256: string;
+  readonly scene_plan_collection_revision_id: string;
+  readonly scene_id: string;
+  readonly scene_revision_id: string;
+  readonly visual_collection_revision_id: string;
+  readonly accepted_candidate_id: string;
+  readonly accepted_candidate_revision_id: string;
+  readonly candidate_artifact_sha256: string;
+  readonly composition_collection_revision_id: string;
+  readonly composition_id: string;
+  readonly composition_revision_id: string;
+  readonly semantic_beat_id: string;
+  readonly source_coverage: { readonly start: number; readonly end: number };
+  readonly canonical_narration_segment: string;
+  readonly scene_planned_duration_ms: number;
+  readonly duration_ms: number;
+  readonly start_ms: number;
+  readonly end_ms: number;
+  readonly transition_in_intent: string;
+  readonly transition_in_ms: number;
+  readonly transition_out_intent: string;
+  readonly transition_out_ms: number;
+  readonly effective_visible_duration_ms: number;
+  readonly narration_alignment: {
+    readonly alignment_id: string;
+    readonly canonical_narration_segment: string;
+    readonly source_coverage: { readonly start: number; readonly end: number };
+    readonly semantic_beat_id: string;
+    readonly timeline_start_ms: number;
+    readonly timeline_end_ms: number;
+    readonly planned_window_start_ms: number;
+    readonly planned_window_end_ms: number;
+    readonly status: NarrationAlignmentStatusV1;
+    readonly source_coverage_valid: boolean;
+    readonly warning_codes: readonly string[];
+    readonly blocker_codes: readonly string[];
+    readonly measured_audio_alignment_available: false;
+    readonly tts_alignment_available: false;
+  };
+  readonly motion_intent_summary: string;
+  readonly continuity_codes: readonly string[];
+  readonly warning_codes: readonly string[];
+  readonly blocker_codes: readonly string[];
+  readonly status: TimelineStatusV1;
+  readonly note: string | null;
+  readonly changed_fields: readonly string[];
+  readonly superseded_reason: string | null;
+  readonly created_at: string;
+  readonly timeline_contract_version: "timeline_planning_v1";
+  readonly accepted_for_execution_review: false;
+  readonly timeline_execution_authority: false;
+  readonly narration_generation_capability: false;
+  readonly tts_capability: false;
+  readonly audio_generation_capability: false;
+  readonly renderer_execution_authority: false;
+  readonly render_authority: false;
+  readonly video_render_authority: false;
+  readonly final_media_capability: false;
+}
+
+export interface TimelineCollectionV1 {
+  readonly schema_version: 1;
+  readonly collection_id: string;
+  readonly collection_revision_id: string;
+  readonly collection_revision_number: number;
+  readonly run_id: string;
+  readonly story_revision_id: string;
+  readonly narration_source_sha256: string;
+  readonly source_authority_sha256: string;
+  readonly scene_plan_collection_revision_id: string;
+  readonly composition_collection_revision_id: string;
+  readonly segments: readonly TimelineSegmentV1[];
+  readonly total_segment_count: number;
+  readonly total_planned_duration_ms: number;
+  readonly total_transition_overlap_ms: number;
+  readonly effective_timeline_duration_ms: number;
+  readonly target_min_ms: number;
+  readonly target_max_ms: number;
+  readonly narration_coverage_valid: boolean;
+  readonly ordering_valid: boolean;
+  readonly duration_valid: boolean;
+  readonly transition_valid: boolean;
+  readonly warning_segment_count: number;
+  readonly blocked_segment_count: number;
+  readonly overall_ready_for_execution_review: boolean;
+  readonly status: TimelineStatusV1;
+  readonly accepted_for_execution_review: boolean;
+  readonly accepted_timeline_revision_id: string | null;
+  readonly review_history: readonly {
+    readonly review_id: string;
+    readonly action: "ACCEPTED" | "REVISION_REQUESTED" | "SUPERSEDED";
+    readonly reason_code: string;
+    readonly note: string | null;
+    readonly collection_revision_id: string;
+    readonly created_at: string;
+  }[];
+  readonly created_at: string;
+  readonly process_local: true;
+  readonly full_render_enabled: false;
+  readonly timeline_execution_authority: false;
+  readonly narration_generation_capability: false;
+  readonly tts_capability: false;
+  readonly audio_generation_capability: false;
+  readonly renderer_execution_authority: false;
+  readonly render_authority: false;
+  readonly video_render_authority: false;
+  readonly final_media_capability: false;
+}
+
+export interface TimelineAccessV1 {
+  readonly schema_version: 1;
+  readonly run_id: string;
+  readonly editable: boolean;
+  readonly initialization_authorized: boolean;
+  readonly blocker_codes: readonly string[];
+  readonly current_story_revision_id: string | null;
+  readonly current_scene_plan_collection_revision_id: string | null;
+  readonly current_composition_collection_revision_id: string | null;
+  readonly collection: TimelineCollectionV1 | null;
+  readonly process_local: true;
+  readonly full_render_enabled: false;
+  readonly timeline_execution_authority: false;
+  readonly narration_generation_capability: false;
+  readonly tts_capability: false;
+  readonly audio_generation_capability: false;
+  readonly renderer_execution_authority: false;
+  readonly render_authority: false;
+  readonly video_render_authority: false;
+  readonly final_media_capability: false;
+}
+
+export interface TimelineOperationResultV1 {
+  readonly schema_version: 1;
+  readonly access: TimelineAccessV1 | null;
+  readonly collection: TimelineCollectionV1 | null;
+  readonly error: {
+    readonly schema_version: 1;
+    readonly code: string;
+    readonly message: string;
+    readonly retryable: false;
+  } | null;
+}

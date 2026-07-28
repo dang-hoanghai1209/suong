@@ -1457,6 +1457,120 @@ thead th {
   }
 }
 
+.timeline-page {
+  display: grid;
+  gap: var(--space-5);
+  min-width: 0;
+  overflow-x: clip;
+}
+
+.timeline-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.timeline-header nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.timeline-overview {
+  min-width: 0;
+}
+
+.timeline-track {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  min-width: 42rem;
+  gap: 0.15rem;
+}
+
+.timeline-overview {
+  overflow-x: auto;
+}
+
+.timeline-block {
+  display: grid;
+  min-width: 5rem;
+  min-height: 4rem;
+  padding: var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.timeline-block--active {
+  outline: 0.2rem solid var(--color-accent);
+}
+
+.timeline-workspace {
+  display: grid;
+  grid-template-columns: minmax(13rem, 0.75fr) minmax(20rem, 1.4fr) minmax(17rem, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+  min-width: 0;
+}
+
+.timeline-workspace > * {
+  min-width: 0;
+}
+
+.timeline-nav {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.timeline-nav button {
+  display: grid;
+  min-height: 4rem;
+  gap: 0.2rem;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.timeline-nav button[aria-current="true"] {
+  outline: 0.2rem solid var(--color-accent);
+}
+
+.timeline-editor fieldset,
+.timeline-editor label {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.timeline-editor fieldset {
+  margin-block: var(--space-4);
+}
+
+.timeline-authority dd {
+  margin-inline-start: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 70rem) {
+  .timeline-workspace {
+    grid-template-columns: minmax(13rem, 0.75fr) minmax(20rem, 1.4fr);
+  }
+
+  .timeline-authority {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 44rem) {
+  .timeline-header,
+  .timeline-workspace {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .timeline-authority {
+    grid-column: auto;
+  }
+}
+
 .primary-link-action {
   align-self: flex-start;
   border-radius: 0.7rem;
