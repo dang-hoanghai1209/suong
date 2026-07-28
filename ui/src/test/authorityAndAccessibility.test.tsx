@@ -4,15 +4,19 @@ import { afterEach, describe, expect, it } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 
 import { App } from "../app/App";
+import { ProductionRepositoryProvider } from "../app/ProductionRepositoryContext";
+import { mockProductionRepository } from "../mock/mockProductionRepository";
 import globalCss from "../styles/global.css?inline";
 
 afterEach(cleanup);
 
 function renderRoute(path: string) {
   return render(
-    <MemoryRouter initialEntries={[path]}>
-      <App />
-    </MemoryRouter>,
+    <ProductionRepositoryProvider repository={mockProductionRepository}>
+      <MemoryRouter initialEntries={[path]}>
+        <App />
+      </MemoryRouter>
+    </ProductionRepositoryProvider>,
   );
 }
 

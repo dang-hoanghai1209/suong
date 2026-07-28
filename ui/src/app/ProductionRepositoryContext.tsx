@@ -1,10 +1,9 @@
 import { createContext, useContext, type ReactNode } from "react";
 
 import type { ProductionRepository } from "../api/productionClient";
-import { mockProductionRepository } from "../mock/mockProductionRepository";
 
 const ProductionRepositoryContext =
-  createContext<ProductionRepository>(mockProductionRepository);
+  createContext<ProductionRepository | null>(null);
 
 export function ProductionRepositoryProvider({
   children,
@@ -21,5 +20,9 @@ export function ProductionRepositoryProvider({
 }
 
 export function useProductionRepository(): ProductionRepository {
-  return useContext(ProductionRepositoryContext);
+  const repository = useContext(ProductionRepositoryContext);
+  if (repository === null) {
+    throw new Error("ProductionRepositoryProvider is required");
+  }
+  return repository;
 }

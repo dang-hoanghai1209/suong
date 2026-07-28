@@ -4,6 +4,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 
 import { App } from "../app/App";
+import {
+  ProductionRepositoryProvider,
+  useProductionRepository,
+} from "../app/ProductionRepositoryContext";
+import { mockProductionRepository } from "../mock/mockProductionRepository";
 
 afterEach(() => {
   cleanup();
@@ -13,13 +18,26 @@ afterEach(() => {
 
 function renderRoute(path: string) {
   return render(
-    <MemoryRouter initialEntries={[path]}>
-      <App />
-    </MemoryRouter>,
+    <ProductionRepositoryProvider repository={mockProductionRepository}>
+      <MemoryRouter initialEntries={[path]}>
+        <App />
+      </MemoryRouter>
+    </ProductionRepositoryProvider>,
   );
 }
 
 describe("routing and shell", () => {
+  it("requires an explicit repository provider", () => {
+    function RepositoryConsumer() {
+      useProductionRepository();
+      return null;
+    }
+
+    expect(() => render(<RepositoryConsumer />)).toThrow(
+      "ProductionRepositoryProvider is required",
+    );
+  });
+
   it.each([
     ["/production", "Video plans"],
     ["/production/new", "Start with a clear plan"],

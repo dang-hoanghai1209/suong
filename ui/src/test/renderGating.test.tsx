@@ -4,10 +4,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 
 import { App } from "../app/App";
+import { ProductionRepositoryProvider } from "../app/ProductionRepositoryContext";
 import { RenderReadinessSummary } from "../components/readiness/RenderReadinessSummary";
 import { evaluateRenderGate } from "../components/readiness/renderGating";
 import type { ProductionCapabilitiesV1 } from "../contracts/v1/production";
 import { loadRenderDisabledCapabilitiesFixture } from "../fixtures/v1/fixtureManifest";
+import { mockProductionRepository } from "../mock/mockProductionRepository";
 
 afterEach(() => {
   cleanup();
@@ -104,17 +106,19 @@ describe("defensive render presentation gate", () => {
     localStorage.setItem("full_render_enabled", "true");
     localStorage.setItem("backend_render_capability", "true");
     render(
-      <MemoryRouter
-        initialEntries={[
-          {
-            pathname: "/production/new",
-            search: "?full_render_enabled=true",
-            state: { full_render_enabled: true, backend_render_capability: true },
-          },
-        ]}
-      >
-        <App />
-      </MemoryRouter>,
+      <ProductionRepositoryProvider repository={mockProductionRepository}>
+        <MemoryRouter
+          initialEntries={[
+            {
+              pathname: "/production/new",
+              search: "?full_render_enabled=true",
+              state: { full_render_enabled: true, backend_render_capability: true },
+            },
+          ]}
+        >
+          <App />
+        </MemoryRouter>
+      </ProductionRepositoryProvider>,
     );
 
     await userEvent.type(
