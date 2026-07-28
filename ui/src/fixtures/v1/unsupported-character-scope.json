@@ -1,0 +1,8 @@
+{
+  "code": "UNSUPPORTED_CHARACTER_SCOPE",
+  "title": "Character scope is unavailable",
+  "detail": "Family and child continuity are not supported by the current identity policy.",
+  "severity": "BLOCKED",
+  "scene_ids": [],
+  "beat_ids": []
+}

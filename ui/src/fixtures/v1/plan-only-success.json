@@ -1,0 +1,200 @@
+{
+  "schema_version": 1,
+  "run_id": "mock-plan-2026-01",
+  "execution_mode": "MOCK",
+  "status": "COMPLETED",
+  "current_stage": "plan_generated",
+  "created_at": "2026-01-15T08:00:00Z",
+  "updated_at": "2026-01-15T08:00:04Z",
+  "normalized_input": {
+    "input_mode": "TOPIC",
+    "source_content": "Learning to make room for uncertainty",
+    "language": "en",
+    "visual_mode": "illustrated_scene",
+    "character_scope": "recurring_female"
+  },
+  "story_plan": {
+    "schema_version": 1,
+    "topic": "Learning to make room for uncertainty",
+    "language": "en",
+    "aspect_ratio": "9:16",
+    "target_duration_seconds": 35,
+    "narration_text": "Uncertainty can feel like a closed door. We pause before it. We notice the urge to know. We soften our grip. A little space appears. Curiosity enters. The next step becomes enough. We move with quiet trust.",
+    "emotional_arc": ["tension", "awareness", "softening", "trust"],
+    "semantic_beats": [
+      {
+        "beat_id": "beat_01",
+        "order": 1,
+        "narration_segment": "Uncertainty can feel like a closed door.",
+        "semantic_purpose": "Name the tension",
+        "emotional_state": "uneasy",
+        "visual_intent": "A woman pauses before a softly lit doorway",
+        "duration_seconds": 4.25
+      },
+      {
+        "beat_id": "beat_02",
+        "order": 2,
+        "narration_segment": "We pause before it.",
+        "semantic_purpose": "Create stillness",
+        "emotional_state": "hesitant",
+        "visual_intent": "A quiet close framing of her pause",
+        "duration_seconds": 4.5
+      },
+      {
+        "beat_id": "beat_03",
+        "order": 3,
+        "narration_segment": "We notice the urge to know.",
+        "semantic_purpose": "Recognize control",
+        "emotional_state": "aware",
+        "visual_intent": "Her hand relaxes beside an unopened letter",
+        "duration_seconds": 4.25
+      },
+      {
+        "beat_id": "beat_04",
+        "order": 4,
+        "narration_segment": "We soften our grip.",
+        "semantic_purpose": "Release pressure",
+        "emotional_state": "softening",
+        "visual_intent": "Open hands in warm morning light",
+        "duration_seconds": 4.5
+      },
+      {
+        "beat_id": "beat_05",
+        "order": 5,
+        "narration_segment": "A little space appears.",
+        "semantic_purpose": "Reveal possibility",
+        "emotional_state": "relieved",
+        "visual_intent": "The room opens into a wider calm composition",
+        "duration_seconds": 4.25
+      },
+      {
+        "beat_id": "beat_06",
+        "order": 6,
+        "narration_segment": "Curiosity enters.",
+        "semantic_purpose": "Invite exploration",
+        "emotional_state": "curious",
+        "visual_intent": "She notices a small path beyond the doorway",
+        "duration_seconds": 4.5
+      },
+      {
+        "beat_id": "beat_07",
+        "order": 7,
+        "narration_segment": "The next step becomes enough.",
+        "semantic_purpose": "Make action manageable",
+        "emotional_state": "grounded",
+        "visual_intent": "One deliberate step onto the path",
+        "duration_seconds": 4.25
+      },
+      {
+        "beat_id": "beat_08",
+        "order": 8,
+        "narration_segment": "We move with quiet trust.",
+        "semantic_purpose": "Close with confidence",
+        "emotional_state": "trusting",
+        "visual_intent": "She walks forward under a calm open sky",
+        "duration_seconds": 4.5
+      }
+    ],
+    "scenes": [
+      {
+        "scene_id": "scene_01",
+        "order": 1,
+        "source_beat_id": "beat_01",
+        "meaning": "Uncertainty first appears as resistance.",
+        "emotional_tone": ["uneasy", "quiet"],
+        "visual_intent": "A woman pauses before a softly lit doorway",
+        "planned_duration_seconds": 4.25
+      },
+      {
+        "scene_id": "scene_02",
+        "order": 2,
+        "source_beat_id": "beat_02",
+        "meaning": "A pause interrupts automatic reaction.",
+        "emotional_tone": ["hesitant", "still"],
+        "visual_intent": "A quiet close framing of her pause",
+        "planned_duration_seconds": 4.5
+      },
+      {
+        "scene_id": "scene_03",
+        "order": 3,
+        "source_beat_id": "beat_03",
+        "meaning": "Awareness makes the need for certainty visible.",
+        "emotional_tone": ["aware", "reflective"],
+        "visual_intent": "Her hand relaxes beside an unopened letter",
+        "planned_duration_seconds": 4.25
+      },
+      {
+        "scene_id": "scene_04",
+        "order": 4,
+        "source_beat_id": "beat_04",
+        "meaning": "Releasing pressure creates emotional room.",
+        "emotional_tone": ["softening", "warm"],
+        "visual_intent": "Open hands in warm morning light",
+        "planned_duration_seconds": 4.5
+      },
+      {
+        "scene_id": "scene_05",
+        "order": 5,
+        "source_beat_id": "beat_05",
+        "meaning": "Space reveals possibility.",
+        "emotional_tone": ["relieved", "open"],
+        "visual_intent": "The room opens into a wider calm composition",
+        "planned_duration_seconds": 4.25
+      },
+      {
+        "scene_id": "scene_06",
+        "order": 6,
+        "source_beat_id": "beat_06",
+        "meaning": "Curiosity replaces the demand for certainty.",
+        "emotional_tone": ["curious", "hopeful"],
+        "visual_intent": "She notices a small path beyond the doorway",
+        "planned_duration_seconds": 4.5
+      },
+      {
+        "scene_id": "scene_07",
+        "order": 7,
+        "source_beat_id": "beat_07",
+        "meaning": "A single next step is sufficient.",
+        "emotional_tone": ["grounded", "steady"],
+        "visual_intent": "One deliberate step onto the path",
+        "planned_duration_seconds": 4.25
+      },
+      {
+        "scene_id": "scene_08",
+        "order": 8,
+        "source_beat_id": "beat_08",
+        "meaning": "Trust permits forward movement.",
+        "emotional_tone": ["trusting", "calm"],
+        "visual_intent": "She walks forward under a calm open sky",
+        "planned_duration_seconds": 4.5
+      }
+    ]
+  },
+  "timeline": {
+    "schema_version": 1,
+    "authority": "PLANNED",
+    "transition_profile_id": null,
+    "configured_transition_seconds": null,
+    "effective_transition_seconds": null,
+    "total_duration_seconds": 35,
+    "rows": [
+      { "scene_id": "scene_01", "order": 1, "start_seconds": 0, "narration_slot_duration_seconds": 4.25, "render_clip_duration_seconds": null, "end_seconds": 4.25 },
+      { "scene_id": "scene_02", "order": 2, "start_seconds": 4.25, "narration_slot_duration_seconds": 4.5, "render_clip_duration_seconds": null, "end_seconds": 8.75 },
+      { "scene_id": "scene_03", "order": 3, "start_seconds": 8.75, "narration_slot_duration_seconds": 4.25, "render_clip_duration_seconds": null, "end_seconds": 13 },
+      { "scene_id": "scene_04", "order": 4, "start_seconds": 13, "narration_slot_duration_seconds": 4.5, "render_clip_duration_seconds": null, "end_seconds": 17.5 },
+      { "scene_id": "scene_05", "order": 5, "start_seconds": 17.5, "narration_slot_duration_seconds": 4.25, "render_clip_duration_seconds": null, "end_seconds": 21.75 },
+      { "scene_id": "scene_06", "order": 6, "start_seconds": 21.75, "narration_slot_duration_seconds": 4.5, "render_clip_duration_seconds": null, "end_seconds": 26.25 },
+      { "scene_id": "scene_07", "order": 7, "start_seconds": 26.25, "narration_slot_duration_seconds": 4.25, "render_clip_duration_seconds": null, "end_seconds": 30.5 },
+      { "scene_id": "scene_08", "order": 8, "start_seconds": 30.5, "narration_slot_duration_seconds": 4.5, "render_clip_duration_seconds": null, "end_seconds": 35 }
+    ]
+  },
+  "warnings": {
+    "schema_version": 1,
+    "warning_count": 0,
+    "conditions": []
+  },
+  "render_readiness": {
+    "ready": false,
+    "reason_codes": ["FULL_RENDER_LOCKED"]
+  }
+}

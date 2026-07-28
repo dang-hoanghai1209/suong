@@ -1,0 +1,8 @@
+{
+  "code": "UNSUPPORTED_IDENTITY_POLICY",
+  "title": "Identity request is blocked",
+  "detail": "The declared recurring character scope is outside the supported female-only policy.",
+  "severity": "BLOCKED",
+  "scene_ids": ["scene_01"],
+  "beat_ids": ["beat_01"]
+}
