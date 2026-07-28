@@ -2,16 +2,28 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from copy import deepcopy
+from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_EVEN
 import hashlib
+import json
 import math
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
 from typing import Any, Literal, Self
+import weakref
 
 from PIL import Image, UnidentifiedImageError
-from pydantic import BaseModel, ConfigDict, Field, StrictFloat, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictFloat,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from tella.composer.timing import DEFAULT_TIMING_TOLERANCE_SECONDS
 from tella.planner.models import MediaSource, Scene, TellaScenePlan
@@ -28,7 +40,7 @@ from .narration_measurement import (
     _stream_sha256,
 )
 from .runtime import _revalidate_execution_state, evaluate_execution_readiness
-from .runtime_models import ExecutionRunState
+from .runtime_models import ExecutionRunState, ProcessedNarrationDurationMeasurement
 from .story_plan_identity import canonical_story_plan_sha256
 from .strategy import VisualExecutionMode
 
@@ -39,6 +51,26 @@ _TRANSITION_DURATIONS_SECONDS = MappingProxyType(
         "subtle_crossfade": Decimal("0.800000"),
         "clean_soft_cut": Decimal("0.000000"),
         "clean_progressive_cut": Decimal("0.000000"),
+    }
+)
+_BUILDER_AUTHORIZATION_SEAL = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _AuthorizedBridgeRegistration:
+    reference: weakref.ReferenceType[Any]
+    payload_sha256: str
+
+
+_AUTHORIZED_BRIDGE_REFS: dict[int, _AuthorizedBridgeRegistration] = {}
+_WINDOWS_RESERVED_JOB_NAMES = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        *(f"COM{number}" for number in range(1, 10)),
+        *(f"LPT{number}" for number in range(1, 10)),
     }
 )
 
@@ -618,9 +650,7 @@ def build_authoritative_narration_timeline(
     )
 
 
-class RendererAcceptedCandidateInput(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
+class RendererAcceptedCandidateInput(_StrictFrozenRendererAuthorityModel):
     scene_id: str = Field(pattern=r"^scene_[0-9]{2}$")
     order: int = Field(ge=1)
     candidate_id: str = Field(min_length=1)
@@ -636,18 +666,273 @@ class RendererAcceptedCandidateInput(BaseModel):
     planning_request_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     logical_request_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     provider_request_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    reference_hashes: list[str] = Field(default_factory=list)
+    reference_hashes: tuple[str, ...] = Field(default_factory=tuple)
     qc_record_id: str = Field(min_length=1)
 
+    @field_validator("reference_hashes", mode="before")
+    @classmethod
+    def freeze_reference_hashes(cls, value: object) -> object:
+        if isinstance(value, (list, tuple)):
+            return tuple(value)
+        return value
 
-class AcceptedCandidateRendererBridge(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    @field_validator("reference_hashes")
+    @classmethod
+    def validate_reference_hashes(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if any(
+            len(value) != 64 or any(character not in "0123456789abcdef" for character in value)
+            for value in values
+        ):
+            raise ValueError("reference hashes must be lowercase SHA-256 digests")
+        return values
 
-    renderer_plan: TellaScenePlan
-    accepted_inputs: list[RendererAcceptedCandidateInput]
+
+class AcceptedCandidateRendererBridge(_StrictFrozenRendererAuthorityModel):
+    """Portable narration and accepted-image authority for one renderer plan."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        revalidate_instances="always",
+        strict=True,
+        serialize_by_alias=True,
+        validate_by_alias=True,
+        validate_by_name=True,
+    )
+
+    job_id: str
+    processed_narration_measurement: ProcessedNarrationDurationMeasurement
+    renderer_plan_snapshot: str = Field(
+        validation_alias="renderer_plan",
+        serialization_alias="renderer_plan",
+    )
+    accepted_inputs: tuple[RendererAcceptedCandidateInput, ...] = Field(min_length=1)
     source_state_ready: Literal[True] = True
     external_calls: Literal[0] = 0
     files_written: Literal[0] = 0
+
+    @property
+    def renderer_plan(self) -> TellaScenePlan:
+        return TellaScenePlan.model_validate_json(self.renderer_plan_snapshot)
+
+    def __iter__(self) -> Iterator[tuple[str, object]]:
+        yield from self.model_dump(mode="python").items()
+
+    def model_copy(
+        self,
+        *,
+        update: dict[str, Any] | None = None,
+        deep: bool = False,
+    ) -> "AcceptedCandidateRendererBridge":
+        if update:
+            raise ValueError(
+                "AcceptedCandidateRendererBridge authority cannot be changed through model_copy"
+            )
+        registration = _AUTHORIZED_BRIDGE_REFS.get(id(self))
+        if registration is not None and registration.reference() is self:
+            raise ValueError("sealed AcceptedCandidateRendererBridge authority cannot be copied")
+        return super().model_copy(deep=deep)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, AcceptedCandidateRendererBridge):
+            return NotImplemented
+        return self.model_dump(mode="json") == other.model_dump(mode="json")
+
+    def require_builder_authorization(self) -> "AcceptedCandidateRendererBridge":
+        bridge_id = id(self)
+        registration = _AUTHORIZED_BRIDGE_REFS.get(bridge_id)
+        if registration is None or registration.reference() is not self:
+            raise ValueError("renderer bridge was not authorized by the accepted-candidate builder")
+        try:
+            snapshot, payload_sha256 = _validated_bridge_payload_snapshot(self)
+        except Exception as error:
+            if _AUTHORIZED_BRIDGE_REFS.get(bridge_id) is registration:
+                _AUTHORIZED_BRIDGE_REFS.pop(bridge_id, None)
+            raise ValueError("renderer bridge authorized payload is malformed") from error
+        if payload_sha256 != registration.payload_sha256:
+            if _AUTHORIZED_BRIDGE_REFS.get(bridge_id) is registration:
+                _AUTHORIZED_BRIDGE_REFS.pop(bridge_id, None)
+            raise ValueError("renderer bridge authorized payload does not match minted authority")
+        return snapshot
+
+    @classmethod
+    def _mint_builder_authorized(
+        cls,
+        *,
+        _mint_authority: object,
+        **data: object,
+    ) -> "AcceptedCandidateRendererBridge":
+        if _mint_authority is not _BUILDER_AUTHORIZATION_SEAL:
+            raise ValueError("invalid renderer bridge mint authority")
+        bridge = cls.model_validate(data)
+        _, payload_sha256 = _validated_bridge_payload_snapshot(bridge)
+        bridge_id = id(bridge)
+
+        def release_authorization(
+            reference: weakref.ReferenceType[AcceptedCandidateRendererBridge],
+        ) -> None:
+            registration = _AUTHORIZED_BRIDGE_REFS.get(bridge_id)
+            if registration is not None and registration.reference is reference:
+                _AUTHORIZED_BRIDGE_REFS.pop(bridge_id, None)
+
+        reference = weakref.ref(bridge, release_authorization)
+        _AUTHORIZED_BRIDGE_REFS[bridge_id] = _AuthorizedBridgeRegistration(
+            reference=reference,
+            payload_sha256=payload_sha256,
+        )
+        return bridge
+
+    @field_validator("processed_narration_measurement", mode="before")
+    @classmethod
+    def detach_authority_model(cls, value: object) -> object:
+        if isinstance(value, BaseModel):
+            return value.model_dump(mode="python")
+        return deepcopy(value)
+
+    @field_validator("renderer_plan_snapshot", mode="before")
+    @classmethod
+    def snapshot_renderer_plan(cls, value: object) -> str:
+        if isinstance(value, TellaScenePlan):
+            plan = TellaScenePlan.model_validate(value.model_dump(mode="python"))
+        elif isinstance(value, str):
+            plan = TellaScenePlan.model_validate_json(value)
+        else:
+            plan = TellaScenePlan.model_validate(deepcopy(value))
+        return plan.model_dump_json()
+
+    @field_serializer("renderer_plan_snapshot")
+    def serialize_renderer_plan_snapshot(self, value: str) -> dict[str, object]:
+        decoded = json.loads(value)
+        if not isinstance(decoded, dict):
+            raise ValueError("renderer plan snapshot must serialize as an object")
+        return decoded
+
+    @field_validator("accepted_inputs", mode="before")
+    @classmethod
+    def detach_accepted_inputs(cls, value: object) -> object:
+        if isinstance(value, (list, tuple)):
+            return tuple(
+                item.model_dump(mode="python") if isinstance(item, BaseModel) else deepcopy(item)
+                for item in value
+            )
+        return deepcopy(value)
+
+    @field_validator("job_id")
+    @classmethod
+    def require_canonical_job_id(cls, value: str) -> str:
+        if not value or value != value.strip() or value in {".", ".."}:
+            raise ValueError("renderer bridge job ID must be one portable directory basename")
+        if any(character in '<>:"/\\|?*' or ord(character) < 32 for character in value):
+            raise ValueError("renderer bridge job ID must be one portable directory basename")
+        posix_path = PurePosixPath(value)
+        windows_path = PureWindowsPath(value)
+        if (
+            posix_path.is_absolute()
+            or len(posix_path.parts) != 1
+            or windows_path.drive
+            or windows_path.root
+            or len(windows_path.parts) != 1
+            or value.rstrip(" .") != value
+            or value.split(".", 1)[0].upper() in _WINDOWS_RESERVED_JOB_NAMES
+        ):
+            raise ValueError("renderer bridge job ID must be one portable directory basename")
+        return value
+
+    @model_validator(mode="after")
+    def validate_authority_correspondence(self) -> "AcceptedCandidateRendererBridge":
+        measurement = self.processed_narration_measurement
+        measured_duration = measurement.measured_duration_assessment.actual_duration_seconds
+        plan = self.renderer_plan
+        if (
+            plan.narration_duration != measured_duration
+            or plan.processed_narration_duration != measured_duration
+            or plan.total_duration != measured_duration
+        ):
+            raise ValueError("renderer plan duration does not match narration measurement")
+        if not plan.global_narration_text:
+            raise ValueError("renderer plan requires authoritative global narration text")
+
+        contract = AuthoritativeRenderTimingContract.model_validate(
+            plan.render_timing_contract,
+            strict=True,
+        )
+        if (
+            contract.narration_duration_seconds != measured_duration
+            or contract.authoritative_duration_seconds != measured_duration
+            or contract.expected_final_timeline_duration_seconds != measured_duration
+        ):
+            raise ValueError("renderer timing contract does not match narration measurement")
+
+        inputs = self.accepted_inputs
+        scenes = tuple(plan.scenes)
+        if len(inputs) != len(scenes):
+            raise ValueError("accepted input count does not match renderer plan scene count")
+        input_identity = tuple((item.scene_id, item.order) for item in inputs)
+        if len({item.scene_id for item in inputs}) != len(inputs):
+            raise ValueError("accepted inputs contain duplicate scene IDs")
+        if len({item.candidate_id for item in inputs}) != len(inputs):
+            raise ValueError("accepted inputs contain duplicate candidate IDs")
+        expected_identity = tuple(
+            (f"scene_{order:02d}", order) for order in range(1, len(scenes) + 1)
+        )
+        renderer_identity = tuple(
+            (f"scene_{scene.scene_index:02d}", scene.scene_index) for scene in scenes
+        )
+        if renderer_identity != expected_identity:
+            raise ValueError("renderer plan scenes are not in canonical order")
+        if input_identity != expected_identity:
+            raise ValueError("accepted input scene IDs/order do not match renderer plan")
+
+        timing_map = tuple(plan.scene_timing_map)
+        if len(timing_map) != len(scenes):
+            raise ValueError("renderer timing map does not match renderer plan scene count")
+        for index, (item, scene, timing) in enumerate(zip(inputs, scenes, timing_map, strict=True)):
+            artifact_text = str(item.artifact_path)
+            if (
+                scene.asset_path != artifact_text
+                or scene.selected_attempt_path != artifact_text
+                or scene.image_filenames != [artifact_text]
+            ):
+                raise ValueError("accepted input artifact path does not match renderer plan")
+            if scene.image_provider != item.provider or scene.provider != item.provider:
+                raise ValueError("accepted input provider does not match renderer plan")
+            expected_timing = {
+                "scene_index": item.order,
+                "start": contract.scene_start_times_seconds[index],
+                "duration": contract.scene_timeline_durations_seconds[index],
+                "timeline_duration": contract.scene_timeline_durations_seconds[index],
+                "render_clip_duration": contract.scene_clip_durations_seconds[index],
+                "outgoing_transition_overlap": round(
+                    contract.scene_clip_durations_seconds[index]
+                    - contract.scene_timeline_durations_seconds[index],
+                    6,
+                ),
+                "end": contract.scene_end_times_seconds[index],
+            }
+            if timing != expected_timing:
+                raise ValueError("accepted input timing does not match renderer plan")
+            if (
+                scene.start != expected_timing["start"]
+                or scene.duration != expected_timing["duration"]
+                or scene.audio_duration != expected_timing["duration"]
+                or scene.render_clip_duration != expected_timing["render_clip_duration"]
+            ):
+                raise ValueError("renderer scene timing does not match timing contract")
+        return self
+
+
+def _validated_bridge_payload_snapshot(
+    bridge: AcceptedCandidateRendererBridge,
+) -> tuple[AcceptedCandidateRendererBridge, str]:
+    snapshot = AcceptedCandidateRendererBridge.model_validate_json(bridge.model_dump_json())
+    canonical_payload = json.dumps(
+        snapshot.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return snapshot, hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
 
 
 def _sha256_file(path: Path) -> str:
@@ -1095,9 +1380,12 @@ def build_renderer_plan_from_accepted_candidates(
         local_fallback_allowed=profile.local_fallback_allowed,
         used_local_fallback=profile.used_local_fallback,
     )
-    return AcceptedCandidateRendererBridge(
+    return AcceptedCandidateRendererBridge._mint_builder_authorized(
+        _mint_authority=_BUILDER_AUTHORIZATION_SEAL,
+        job_id=state.run_plan.job_id,
+        processed_narration_measurement=state.processed_narration_measurement,
         renderer_plan=renderer_plan,
-        accepted_inputs=inputs,
+        accepted_inputs=tuple(inputs),
     )
 
 

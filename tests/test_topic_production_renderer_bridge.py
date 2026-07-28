@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import copy
+from copy import deepcopy
+from dataclasses import FrozenInstanceError
+import gc
 import hashlib
+import json
 from pathlib import Path
+import weakref
 
 from PIL import Image
 import pytest
@@ -10,6 +16,7 @@ from pydantic import ValidationError
 from tella.composer.timing import DEFAULT_TIMING_TOLERANCE_SECONDS
 import tella.topic_production.renderer_bridge as renderer_bridge
 from tella.topic_production import (
+    AcceptedCandidateRendererBridge,
     AuthoritativeNarrationTimeline,
     AuthorizedCandidateRequest,
     GenerationAttempt,
@@ -18,6 +25,7 @@ from tella.topic_production import (
     QCChecks,
     QCDecision,
     RendererBridgeAuthorization,
+    RendererAcceptedCandidateInput,
     RendererPlanProfile,
     TechnicalStatus,
     ExecutionRunState,
@@ -331,6 +339,579 @@ def test_bridge_maps_validated_images_without_side_effects(tmp_path: Path) -> No
     assert bridge.renderer_plan.ai_images_generated == 0
     assert bridge.renderer_plan.ai_images_reused == 8
     assert not bridge.renderer_plan.used_local_fallback
+
+
+def test_bridge_embeds_portable_narration_identity(tmp_path: Path) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    measurement = state.processed_narration_measurement
+    assert measurement is not None
+
+    bridge = _bridge(state, authorization)
+
+    assert bridge.job_id == state.run_plan.job_id
+    assert bridge.processed_narration_measurement == measurement
+    assert bridge.processed_narration_measurement is not measurement
+    assert bridge.processed_narration_measurement.artifact_relative_path == "narration/final.mp3"
+    assert bridge.processed_narration_measurement.artifact_sha256 == measurement.artifact_sha256
+    assert bridge.processed_narration_measurement.story_plan_sha256 == canonical_story_plan_sha256(
+        state.run_plan.story_plan
+    )
+    assert (
+        bridge.processed_narration_measurement.measurement_method
+        == "ffprobe_single_audio_stream_v1"
+    )
+    assert (
+        bridge.processed_narration_measurement.measured_duration_assessment.value_authority
+        is DurationValueAuthority.MEASURED
+    )
+    assert (
+        bridge.processed_narration_measurement.measured_duration_assessment.actual_duration_seconds
+        == bridge.renderer_plan.processed_narration_duration
+        == bridge.renderer_plan.total_duration
+    )
+    assert "artifact_root" not in bridge.model_dump(mode="json")
+    assert "job_dir" not in bridge.model_dump(mode="json")
+
+
+def test_bridge_detaches_all_nested_caller_owned_authority(tmp_path: Path) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    source = _bridge(state, authorization)
+    payload = source.model_dump(mode="python")
+    caller_plan = source.renderer_plan
+    caller_inputs = list(payload["accepted_inputs"])
+    caller_inputs[0]["reference_hashes"] = list(caller_inputs[0]["reference_hashes"])
+    caller_measurement = deepcopy(payload["processed_narration_measurement"])
+    bridge = AcceptedCandidateRendererBridge(
+        job_id=source.job_id,
+        processed_narration_measurement=caller_measurement,
+        renderer_plan=caller_plan,
+        accepted_inputs=caller_inputs,
+    )
+    original = bridge.model_dump(mode="python")
+
+    caller_plan.scenes.clear()
+    caller_inputs.clear()
+    caller_measurement["artifact_relative_path"] = "foreign.mp3"
+    payload["accepted_inputs"][0]["reference_hashes"] = ("f" * 64,)
+    bridge.renderer_plan.scenes.clear()
+    bridge.renderer_plan.render_timing_contract.clear()
+    bridge.renderer_plan.scene_timing_map.clear()
+    dict(bridge)["renderer_plan"]["scenes"].clear()
+
+    assert bridge.model_dump(mode="python") == original
+    assert isinstance(bridge.accepted_inputs, tuple)
+    assert isinstance(bridge.accepted_inputs[0].reference_hashes, tuple)
+    with pytest.raises(ValidationError, match="frozen"):
+        bridge.accepted_inputs[0].reference_hashes = ()
+    with pytest.raises(ValidationError, match="frozen"):
+        bridge.processed_narration_measurement.artifact_relative_path = "foreign.mp3"
+
+
+def test_bridge_serialization_copy_and_existing_instance_validation_are_safe(
+    tmp_path: Path,
+) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    bridge = _bridge(state, authorization)
+    original = bridge.model_dump(mode="python")
+    json_payload = bridge.model_dump(mode="json")
+    json_text = bridge.model_dump_json()
+
+    public_fields = {
+        "job_id",
+        "processed_narration_measurement",
+        "renderer_plan",
+        "accepted_inputs",
+        "source_state_ready",
+        "external_calls",
+        "files_written",
+    }
+    assert set(original) == public_fields
+    assert set(json_payload) == public_fields
+    assert json.loads(json_text) == json_payload
+    assert not any(name.startswith("_") for name in original)
+    restored = AcceptedCandidateRendererBridge.model_validate_json(json_text)
+    validated = AcceptedCandidateRendererBridge.model_validate(bridge)
+    assert restored == bridge
+    assert validated == bridge
+    assert validated is not bridge
+    for unsealed in (restored, validated):
+        with pytest.raises(ValueError, match="not authorized"):
+            unsealed.require_builder_authorization()
+
+    with pytest.raises(ValueError, match="sealed.*cannot be copied"):
+        bridge.model_copy()
+    with pytest.raises(ValueError, match="sealed.*cannot be copied"):
+        bridge.model_copy(deep=True)
+    for copied in (restored.model_copy(), restored.model_copy(deep=True)):
+        assert copied == bridge
+        assert copied is not restored
+        copied.renderer_plan.scenes.clear()
+        assert copied.model_dump(mode="python") == original
+        with pytest.raises(ValueError, match="not authorized"):
+            copied.require_builder_authorization()
+
+    original["renderer_plan"]["scenes"].clear()
+    json_payload["accepted_inputs"].clear()
+    parsed = json.loads(json_text)
+    parsed["processed_narration_measurement"]["artifact_relative_path"] = "foreign.mp3"
+    assert bridge == _bridge(state, authorization)
+    assert bridge.model_dump(mode="python") != original
+    assert "_builder_authorization" not in repr(bridge)
+    assert "_BUILDER_AUTHORIZATION_SEAL" not in repr(bridge)
+
+    with pytest.raises(ValueError, match="cannot be changed through model_copy"):
+        bridge.model_copy(
+            update={
+                "processed_narration_measurement": {
+                    **bridge.processed_narration_measurement.model_dump(mode="python"),
+                    "measured_duration_assessment": assess_mvp_duration_target(
+                        34.0,
+                        value_authority=DurationValueAuthority.MEASURED,
+                    ),
+                }
+            }
+        )
+    with pytest.raises(ValueError, match="cannot be changed through model_copy"):
+        bridge.model_copy(update={"artifact_root": tmp_path})
+    with pytest.raises(ValueError, match="cannot be changed through model_copy"):
+        bridge.model_copy(update={"job_id": "foreign-job"})
+
+
+def test_builder_mints_only_ephemeral_authorized_bridge_capability(tmp_path: Path) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    bridge = _bridge(state, authorization)
+    payload = bridge.model_dump(mode="python")
+
+    bridge.require_builder_authorization()
+    snapshots = (
+        AcceptedCandidateRendererBridge(**payload),
+        AcceptedCandidateRendererBridge.model_validate(payload),
+        AcceptedCandidateRendererBridge.model_validate_json(bridge.model_dump_json()),
+        AcceptedCandidateRendererBridge.model_validate(dict(bridge)),
+    )
+    for snapshot in snapshots:
+        assert snapshot == bridge
+        with pytest.raises(ValueError, match="not authorized"):
+            snapshot.require_builder_authorization()
+
+    assert "_builder_authorization" not in payload
+    assert "_builder_authorization" not in bridge.model_dump_json()
+    assert "_BUILDER_AUTHORIZATION_SEAL" not in repr(bridge)
+    assert "_AUTHORIZED_BRIDGE_REFS" not in repr(bridge)
+    assert not hasattr(bridge, "_builder_authorization")
+    assert not any("authorization" in name or "seal" in name for name in vars(bridge))
+    for seal_field in (
+        "_builder_authorization",
+        "_mint_authority",
+        "builder_authorization",
+        "seal",
+    ):
+        with pytest.raises(ValidationError, match="extra_forbidden"):
+            AcceptedCandidateRendererBridge.model_validate(
+                {
+                    **payload,
+                    seal_field: True,
+                }
+            )
+
+
+def _assert_authorized_payload_mutation_is_permanently_revoked(
+    bridge: AcceptedCandidateRendererBridge,
+    *,
+    owner: object,
+    field: str,
+    replacement: object,
+) -> None:
+    original_payload = bridge.model_dump(mode="python")
+    storage = vars(owner)
+    original_value = storage[field]
+    registration = renderer_bridge._AUTHORIZED_BRIDGE_REFS[id(bridge)]
+    result: object = None
+
+    storage[field] = replacement
+    with pytest.raises(
+        ValueError,
+        match="authorized payload (is malformed|does not match minted authority)",
+    ):
+        result = bridge.require_builder_authorization()
+    assert result is None
+    assert id(bridge) not in renderer_bridge._AUTHORIZED_BRIDGE_REFS
+
+    storage[field] = original_value
+    assert bridge.model_dump(mode="python") == original_payload
+    with pytest.raises(ValueError, match="not authorized"):
+        bridge.require_builder_authorization()
+    assert registration.reference() is bridge
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "job_id",
+        "renderer_plan_snapshot",
+        "narration_path",
+        "narration_sha",
+        "story_plan_sha",
+        "measured_duration",
+        "scene_id",
+        "candidate_id",
+        "artifact_path",
+        "artifact_sha",
+        "provider",
+        "reference_hashes",
+        "source_state_ready",
+        "external_calls",
+        "files_written",
+    ],
+)
+def test_builder_authorization_is_bound_to_complete_public_payload(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    bridge = _bridge(state, authorization)
+    measurement = bridge.processed_narration_measurement
+    candidate = bridge.accepted_inputs[0]
+    mutated_plan = bridge.renderer_plan
+    vars(mutated_plan)["title"] = "Foreign renderer plan"
+    targets = {
+        "job_id": (bridge, "job_id", "foreign-job"),
+        "renderer_plan_snapshot": (
+            bridge,
+            "renderer_plan_snapshot",
+            mutated_plan.model_dump_json(),
+        ),
+        "narration_path": (
+            measurement,
+            "artifact_relative_path",
+            "narration/foreign.mp3",
+        ),
+        "narration_sha": (measurement, "artifact_sha256", "0" * 64),
+        "story_plan_sha": (measurement, "story_plan_sha256", "1" * 64),
+        "measured_duration": (
+            measurement.measured_duration_assessment,
+            "actual_duration_seconds",
+            33.125,
+        ),
+        "scene_id": (candidate, "scene_id", "scene_99"),
+        "candidate_id": (candidate, "candidate_id", "foreign-candidate"),
+        "artifact_path": (candidate, "artifact_path", tmp_path / "foreign.png"),
+        "artifact_sha": (candidate, "artifact_sha256", "2" * 64),
+        "provider": (candidate, "provider", "foreign-provider"),
+        "reference_hashes": (candidate, "reference_hashes", ("3" * 64,)),
+        "source_state_ready": (bridge, "source_state_ready", False),
+        "external_calls": (bridge, "external_calls", 1),
+        "files_written": (bridge, "files_written", 1),
+    }
+    owner, field, replacement = targets[mutation]
+
+    _assert_authorized_payload_mutation_is_permanently_revoked(
+        bridge,
+        owner=owner,
+        field=field,
+        replacement=replacement,
+    )
+
+
+def test_authorization_atomically_returns_detached_unsealed_snapshot(tmp_path: Path) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    bridge = _bridge(state, authorization)
+    original = bridge.model_dump(mode="python")
+
+    snapshot = bridge.require_builder_authorization()
+
+    assert snapshot == bridge
+    assert snapshot is not bridge
+    assert snapshot.processed_narration_measurement is not bridge.processed_narration_measurement
+    assert (
+        snapshot.processed_narration_measurement.measured_duration_assessment
+        is not bridge.processed_narration_measurement.measured_duration_assessment
+    )
+    assert snapshot.accepted_inputs is not bridge.accepted_inputs
+    assert snapshot.accepted_inputs[0] is not bridge.accepted_inputs[0]
+    with pytest.raises(ValueError, match="not authorized"):
+        snapshot.require_builder_authorization()
+
+    vars(snapshot)["job_id"] = "snapshot-only"
+    vars(snapshot.processed_narration_measurement)["artifact_sha256"] = "0" * 64
+    vars(snapshot.accepted_inputs[0])["provider"] = "snapshot-only"
+    assert bridge.model_dump(mode="python") == original
+    assert bridge.require_builder_authorization() == bridge
+
+
+def test_builder_authorization_registration_is_immutable_and_weak(tmp_path: Path) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    bridge = _bridge(state, authorization)
+    bridge_id = id(bridge)
+    registration = renderer_bridge._AUTHORIZED_BRIDGE_REFS[bridge_id]
+    bridge_reference = weakref.ref(bridge)
+    canonical_payload = json.dumps(
+        bridge.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+
+    assert registration.reference() is bridge
+    assert (
+        registration.payload_sha256 == hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+    )
+    with pytest.raises(FrozenInstanceError):
+        registration.payload_sha256 = "0" * 64
+
+    del bridge
+    gc.collect()
+
+    assert bridge_reference() is None
+    assert bridge_id not in renderer_bridge._AUTHORIZED_BRIDGE_REFS
+
+
+def test_python_copy_protocol_cannot_inherit_builder_authorization(tmp_path: Path) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    bridge = _bridge(state, authorization)
+
+    shallow = copy.copy(bridge)
+    deep = copy.deepcopy(bridge)
+
+    for copied in (shallow, deep):
+        assert copied == bridge
+        assert copied is not bridge
+        with pytest.raises(ValueError, match="not authorized"):
+            copied.require_builder_authorization()
+    assert bridge.require_builder_authorization() == bridge
+
+
+def test_malformed_renderer_plan_snapshot_revocation_is_permanent(tmp_path: Path) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    bridge = _bridge(state, authorization)
+    original_snapshot = vars(bridge)["renderer_plan_snapshot"]
+
+    vars(bridge)["renderer_plan_snapshot"] = '{"scenes":[]}'
+    with pytest.raises(ValueError, match="authorized payload is malformed"):
+        bridge.require_builder_authorization()
+    assert id(bridge) not in renderer_bridge._AUTHORIZED_BRIDGE_REFS
+
+    vars(bridge)["renderer_plan_snapshot"] = original_snapshot
+    with pytest.raises(ValueError, match="not authorized"):
+        bridge.require_builder_authorization()
+
+
+def test_equal_python_and_json_reconstructions_remain_unsealed(tmp_path: Path) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    bridge = _bridge(state, authorization)
+    reconstructions = (
+        AcceptedCandidateRendererBridge.model_validate(bridge.model_dump(mode="python")),
+        AcceptedCandidateRendererBridge.model_validate_json(bridge.model_dump_json()),
+    )
+
+    for reconstructed in reconstructions:
+        assert reconstructed == bridge
+        assert reconstructed is not bridge
+        with pytest.raises(ValueError, match="not authorized"):
+            reconstructed.require_builder_authorization()
+    assert bridge.require_builder_authorization() == bridge
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("job_id", "foreign-job"),
+        ("artifact_relative_path", "narration/foreign.mp3"),
+        ("artifact_sha256", "0" * 64),
+        ("story_plan_sha256", "1" * 64),
+        ("candidate_id", "foreign-candidate"),
+        ("candidate_artifact_sha256", "2" * 64),
+        ("reference_hashes", ("3" * 64,)),
+    ],
+)
+def test_foreign_payload_reconstruction_never_mints_authorization(
+    tmp_path: Path,
+    field: str,
+    replacement: object,
+) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    bridge = _bridge(state, authorization)
+    payload = bridge.model_dump(mode="python")
+    if field == "job_id":
+        payload["job_id"] = replacement
+    elif field in {"artifact_relative_path", "artifact_sha256", "story_plan_sha256"}:
+        payload["processed_narration_measurement"][field] = replacement
+    elif field == "candidate_artifact_sha256":
+        payload["accepted_inputs"][0]["artifact_sha256"] = replacement
+    else:
+        payload["accepted_inputs"][0][field] = replacement
+
+    reconstructed = AcceptedCandidateRendererBridge.model_validate(payload)
+
+    with pytest.raises(ValueError, match="not authorized"):
+        reconstructed.require_builder_authorization()
+
+
+@pytest.mark.parametrize(
+    "job_id",
+    [
+        "",
+        " ",
+        ".",
+        "..",
+        "job/child",
+        "job\\child",
+        "C:job",
+        "C:\\job",
+        "/job",
+        "\\\\server\\share",
+        " job",
+        "job ",
+    ],
+)
+def test_bridge_rejects_nonportable_job_ids(tmp_path: Path, job_id: str) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    payload = _bridge(state, authorization).model_dump(mode="python")
+    payload["job_id"] = job_id
+
+    with pytest.raises(ValidationError, match="portable directory basename"):
+        AcceptedCandidateRendererBridge.model_validate(payload)
+
+
+def test_bridge_accepts_portable_job_id(tmp_path: Path) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    payload = _bridge(state, authorization).model_dump(mode="python")
+    payload["job_id"] = "valid-job_01"
+
+    snapshot = AcceptedCandidateRendererBridge.model_validate(payload)
+
+    assert snapshot.job_id == "valid-job_01"
+    with pytest.raises(ValueError, match="not authorized"):
+        snapshot.require_builder_authorization()
+
+
+def test_renderer_plan_canonical_snapshot_has_no_mutable_storage_escape(
+    tmp_path: Path,
+) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    bridge = _bridge(state, authorization)
+    original = bridge.model_dump(mode="python")
+    first = bridge.renderer_plan
+    second = bridge.renderer_plan
+
+    assert first == second
+    assert first is not second
+    assert not any(isinstance(value, type(first)) for value in vars(bridge).values())
+    assert isinstance(vars(bridge)["renderer_plan_snapshot"], str)
+
+    first.scenes.clear()
+    second.render_timing_contract.clear()
+    second.scene_timing_map.clear()
+    dict_payload = dict(bridge)
+    dict_payload["renderer_plan"]["scenes"].clear()
+    dumped = bridge.model_dump(mode="python")
+    dumped["renderer_plan"]["render_timing_contract"].clear()
+    dumped["renderer_plan"]["scene_timing_map"].clear()
+
+    assert bridge.model_dump(mode="python") == original
+    assert len(bridge.renderer_plan.scenes) == 8
+    bridge.require_builder_authorization()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("missing", "count"),
+        ("extra", "count"),
+        ("duplicate", "scene IDs|scene IDs/order"),
+        ("reordered", "scene IDs/order"),
+        ("foreign_path", "artifact path"),
+        ("foreign_provider", "provider"),
+        ("foreign_duration", "duration"),
+        ("foreign_timing", "timing"),
+    ],
+)
+def test_bridge_direct_construction_rejects_representable_foreign_correspondence(
+    tmp_path: Path,
+    mutation: str,
+    message: str,
+) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    bridge = _bridge(state, authorization)
+    payload = bridge.model_dump(mode="python")
+    inputs = list(payload["accepted_inputs"])
+    plan = payload["renderer_plan"]
+    if mutation == "missing":
+        inputs.pop()
+    elif mutation == "extra":
+        inputs.append(deepcopy(inputs[-1]))
+    elif mutation == "duplicate":
+        inputs[-1] = deepcopy(inputs[-2])
+    elif mutation == "reordered":
+        inputs[0], inputs[1] = inputs[1], inputs[0]
+    elif mutation == "foreign_path":
+        inputs[0]["artifact_path"] = tmp_path / "foreign.png"
+    elif mutation == "foreign_provider":
+        inputs[0]["provider"] = "foreign-provider"
+    elif mutation == "foreign_duration":
+        plan["total_duration"] = 34.0
+    elif mutation == "foreign_timing":
+        plan["scene_timing_map"][0]["duration"] = 1.0
+
+    with pytest.raises(ValidationError, match=message):
+        AcceptedCandidateRendererBridge.model_validate(
+            {
+                **payload,
+                "accepted_inputs": inputs,
+                "renderer_plan": plan,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("missing_measurement", "processed_narration_measurement"),
+        ("malformed_measurement", "artifact_relative_path"),
+        ("non_measured", "MEASURED"),
+    ],
+)
+def test_bridge_rejects_invalid_identity_payloads(
+    tmp_path: Path,
+    mutation: str,
+    message: str,
+) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    bridge = _bridge(state, authorization)
+    payload = bridge.model_dump(mode="python")
+    if mutation == "missing_measurement":
+        payload.pop("processed_narration_measurement")
+    elif mutation == "malformed_measurement":
+        payload["processed_narration_measurement"]["artifact_relative_path"] = "../foreign.mp3"
+    elif mutation == "non_measured":
+        payload["processed_narration_measurement"]["measured_duration_assessment"][
+            "value_authority"
+        ] = DurationValueAuthority.PLANNED
+
+    with pytest.raises(ValidationError, match=message):
+        AcceptedCandidateRendererBridge.model_validate(payload)
+
+
+def test_renderer_accepted_input_revalidates_and_freezes_reference_hashes(
+    tmp_path: Path,
+) -> None:
+    state, authorization = _accepted_state_with_valid_images(tmp_path)
+    source = _bridge(state, authorization).accepted_inputs[0]
+    payload = source.model_dump(mode="python")
+    references = list(payload["reference_hashes"])
+    constructed = RendererAcceptedCandidateInput.model_validate(
+        {**payload, "reference_hashes": references}
+    )
+
+    references.append("f" * 64)
+
+    assert constructed.reference_hashes == source.reference_hashes
+    assert isinstance(constructed.reference_hashes, tuple)
+    with pytest.raises(ValidationError, match="frozen"):
+        constructed.reference_hashes = ()
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        constructed.model_copy(update={"foreign": True})
 
 
 @pytest.mark.parametrize("mutation", ["missing", "duplicate", "wrong_order", "extra"])
