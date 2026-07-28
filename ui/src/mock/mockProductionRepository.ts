@@ -2,6 +2,7 @@ import type { ProductionRepository } from "../api/productionClient";
 import type {
   PlanOnlyCreateRequestV1,
   PlanOnlyCreateResultV1,
+  PlanOnlyHealthV1,
   ProductionCapabilitiesV1,
   ProductionDashboardViewV1,
   ProductionRunSummaryV1,
@@ -147,6 +148,17 @@ export class MockProductionRepository implements ProductionRepository {
   async getCapabilities(): Promise<ProductionCapabilitiesV1> {
     await this.#wait();
     return loadRenderDisabledCapabilitiesFixture();
+  }
+
+  async getHealth(): Promise<PlanOnlyHealthV1> {
+    await this.#wait();
+    return {
+      schema_version: 1,
+      status: "ok",
+      contract_version: "v1",
+      plan_only_available: true,
+      render_available: false,
+    };
   }
 
   async getRun(runId: string): Promise<ProductionRunViewV1 | null> {

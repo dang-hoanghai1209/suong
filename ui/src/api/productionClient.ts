@@ -1,6 +1,7 @@
 import type {
   PlanOnlyCreateRequestV1,
   PlanOnlyCreateResultV1,
+  PlanOnlyHealthV1,
   ProductionCapabilitiesV1,
   ProductionDashboardViewV1,
   ProductionRunViewV1,
@@ -13,6 +14,7 @@ export interface ProductionRepository {
   createPlanOnlyRun(request: PlanOnlyCreateRequestV1): Promise<PlanOnlyCreateResultV1>;
   getDashboard(): Promise<ProductionDashboardViewV1>;
   getCapabilities(): Promise<ProductionCapabilitiesV1>;
+  getHealth(): Promise<PlanOnlyHealthV1>;
   getRun(runId: string): Promise<ProductionRunViewV1 | null>;
 }
 
@@ -48,6 +50,7 @@ export function defineNativeFetchClient(
       const exactCollection = path === `${apiPrefix}/runs`;
       const exactCapabilities =
         method === "GET" && path === `${apiPrefix}/capabilities`;
+      const exactHealth = method === "GET" && path === `${apiPrefix}/health`;
       const exactLookup =
         method === "GET" &&
         path.startsWith(`${apiPrefix}/runs/`) &&
@@ -57,7 +60,7 @@ export function defineNativeFetchClient(
       const exactList = method === "GET" && exactCollection;
       if (
         path.includes("://") ||
-        !(exactCapabilities || exactLookup || exactCreate || exactList)
+        !(exactCapabilities || exactHealth || exactLookup || exactCreate || exactList)
       ) {
         throw new ProductionContractError("Only the local PLAN_ONLY contract is allowed.");
       }
@@ -377,6 +380,26 @@ function validateCapabilities(value: unknown): ProductionCapabilitiesV1 {
   }) as ProductionCapabilitiesV1;
 }
 
+function validateHealth(value: unknown): PlanOnlyHealthV1 {
+  const health = record(value);
+  requireSchemaOne(health);
+  if (
+    health.status !== "ok" ||
+    health.contract_version !== "v1" ||
+    health.plan_only_available !== true ||
+    health.render_available !== false
+  ) {
+    throw new ProductionContractError("The PLAN_ONLY health response is invalid.");
+  }
+  return structuredClone({
+    schema_version: 1,
+    status: "ok",
+    contract_version: "v1",
+    plan_only_available: true,
+    render_available: false,
+  });
+}
+
 function validateError(value: unknown): PublicApiErrorV1 {
   const error = record(value);
   requireSchemaOne(error);
@@ -474,6 +497,14 @@ export class BackendProductionRepository implements ProductionRepository {
       throw new ProductionBackendUnavailableError();
     }
     return validateCapabilities(response.payload);
+  }
+
+  async getHealth(): Promise<PlanOnlyHealthV1> {
+    const response = await this.#transport.request(`${apiPrefix}/health`);
+    if (response.status !== 200) {
+      throw new ProductionBackendUnavailableError();
+    }
+    return validateHealth(response.payload);
   }
 
   async getRun(runId: string): Promise<ProductionRunViewV1 | null> {

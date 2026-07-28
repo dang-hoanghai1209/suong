@@ -461,6 +461,25 @@ dd {
   color: var(--color-success);
 }
 
+.connection-state {
+  display: grid;
+  justify-items: end;
+  gap: var(--space-1);
+}
+
+.connection-state p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.connection-state button {
+  min-height: auto;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.75rem;
+}
+
 .status-badge--planned {
   color: var(--color-success);
 }

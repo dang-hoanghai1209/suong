@@ -8,12 +8,37 @@ import { useProductionRepository } from "./ProductionRepositoryContext";
 
 export function AppShell() {
   const repository = useProductionRepository();
+  const [connectionAttempt, setConnectionAttempt] = useState(0);
+  const [connectionState, setConnectionState] = useState<
+    "connecting" | "connected" | "unavailable"
+  >("connecting");
   const [capabilities, setCapabilities] = useState<
     ProductionCapabilitiesV1 | null | undefined
   >(undefined);
 
   useEffect(() => {
     let active = true;
+    setConnectionState("connecting");
+    void repository
+      .getHealth()
+      .then(() => {
+        if (active) {
+          setConnectionState("connected");
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setConnectionState("unavailable");
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [connectionAttempt, repository]);
+
+  useEffect(() => {
+    let active = true;
+    setCapabilities(undefined);
     void repository
       .getCapabilities()
       .then((value) => {
@@ -29,7 +54,7 @@ export function AppShell() {
     return () => {
       active = false;
     };
-  }, [repository]);
+  }, [connectionAttempt, repository]);
 
   return (
     <>
@@ -41,7 +66,25 @@ export function AppShell() {
           <p className="product-name">Tella Production</p>
           <p className="product-subtitle">Plan emotional video stories with clear authority.</p>
         </div>
-        <span className="environment-label">PLAN_ONLY</span>
+        <div className="connection-state">
+          <p role="status" aria-live="polite">
+            {connectionState === "connecting"
+              ? "Connecting"
+              : connectionState === "connected"
+                ? "Connected — PLAN_ONLY"
+                : "Backend unavailable"}
+          </p>
+          {connectionState === "unavailable" ? (
+            <button
+              type="button"
+              onClick={() => {
+                setConnectionAttempt((value) => value + 1);
+              }}
+            >
+              Retry connection
+            </button>
+          ) : null}
+        </div>
         <PrimaryNavigation />
       </header>
       <div className="app-layout">

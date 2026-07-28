@@ -13,6 +13,7 @@ import { ProductionRepositoryProvider } from "../app/ProductionRepositoryContext
 import type {
   PlanOnlyCreateRequestV1,
   PlanOnlyCreateResultV1,
+  PlanOnlyHealthV1,
   ProductionCapabilitiesV1,
   ProductionDashboardViewV1,
   ProductionRunViewV1,
@@ -59,10 +60,18 @@ class TestRepository implements ProductionRepository {
   >();
   readonly dashboard = vi.fn<() => Promise<ProductionDashboardViewV1>>();
   readonly capabilities = vi.fn<() => Promise<ProductionCapabilitiesV1>>();
+  readonly health = vi.fn<() => Promise<PlanOnlyHealthV1>>();
   readonly run = vi.fn<(runId: string) => Promise<ProductionRunViewV1 | null>>();
 
   constructor() {
     this.capabilities.mockResolvedValue(lockedCapabilities());
+    this.health.mockResolvedValue({
+      schema_version: 1,
+      status: "ok",
+      contract_version: "v1",
+      plan_only_available: true,
+      render_available: false,
+    });
     this.dashboard.mockResolvedValue({ schema_version: 1, runs: [] });
     this.run.mockResolvedValue(null);
   }
@@ -77,6 +86,10 @@ class TestRepository implements ProductionRepository {
 
   getCapabilities() {
     return this.capabilities();
+  }
+
+  getHealth() {
+    return this.health();
   }
 
   getRun(requestedRunId: string) {

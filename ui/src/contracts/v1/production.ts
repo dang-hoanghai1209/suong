@@ -35,6 +35,14 @@ export interface ProductionCapabilitiesV1 {
   readonly render_lock_reason_codes: readonly string[];
 }
 
+export interface PlanOnlyHealthV1 {
+  readonly schema_version: 1;
+  readonly status: "ok";
+  readonly contract_version: "v1";
+  readonly plan_only_available: true;
+  readonly render_available: false;
+}
+
 export interface SemanticBeatViewV1 {
   readonly beat_id: string;
   readonly order: number;

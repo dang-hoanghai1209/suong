@@ -71,6 +71,56 @@ function capabilities() {
 }
 
 describe("backend production repository", () => {
+  it("uses the exact same-origin health path and validates render unavailability", async () => {
+    const transport = new StaticTransport({
+      "GET /api/v1/plan-only/health": {
+        status: 200,
+        payload: {
+          schema_version: 1,
+          status: "ok",
+          contract_version: "v1",
+          plan_only_available: true,
+          render_available: false,
+        },
+      },
+    });
+
+    await expect(new BackendProductionRepository(transport).getHealth()).resolves.toEqual({
+      schema_version: 1,
+      status: "ok",
+      contract_version: "v1",
+      plan_only_available: true,
+      render_available: false,
+    });
+    expect(transport.calls[0]?.path).toBe("/api/v1/plan-only/health");
+  });
+
+  it.each([
+    ["plan_only_available", "true"],
+    ["plan_only_available", false],
+    ["render_available", true],
+    ["render_available", 0],
+    ["contract_version", "v2"],
+  ])("rejects malformed health field %s=%j", async (field, malformed) => {
+    const transport = new StaticTransport({
+      "GET /api/v1/plan-only/health": {
+        status: 200,
+        payload: {
+          schema_version: 1,
+          status: "ok",
+          contract_version: "v1",
+          plan_only_available: true,
+          render_available: false,
+          [field]: malformed,
+        },
+      },
+    });
+
+    await expect(
+      new BackendProductionRepository(transport).getHealth(),
+    ).rejects.toBeInstanceOf(ProductionContractError);
+  });
+
   it("uses exact local paths and validates detached creation output", async () => {
     const payload = {
       schema_version: 1,
