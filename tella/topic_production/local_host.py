@@ -88,6 +88,22 @@ def _known_api_methods(path: str) -> frozenset[str] | None:
             return frozenset({"GET"})
         if len(tail) == 2 and tail[0] == "revisions":
             return frozenset({"GET"})
+        if len(tail) >= 3 and tail[0] == "scenes" and tail[2] == "visual-candidates":
+            visual_tail = tail[3:]
+            if not visual_tail:
+                return frozenset({"GET"})
+            if visual_tail == ["generate"]:
+                return frozenset({"POST"})
+            if len(visual_tail) == 1:
+                return frozenset({"GET"})
+            if len(visual_tail) == 2 and visual_tail[1] == "artifact":
+                return frozenset({"GET"})
+            if len(visual_tail) == 2 and visual_tail[1] in {
+                "accept",
+                "reject",
+                "request-revision",
+            }:
+                return frozenset({"POST"})
         if len(tail) == 1 and tail[0] in {
             "reorder",
             "split",
@@ -107,6 +123,23 @@ def _known_api_methods(path: str) -> frozenset[str] | None:
                 "request-revision",
             }:
                 return frozenset({"POST"})
+    return None
+
+
+def _visual_artifact_identity(path: str) -> tuple[str, str, str] | None:
+    prefix = f"{PLAN_ONLY_API_PREFIX}/runs/"
+    if not path.startswith(prefix):
+        return None
+    parts = path[len(prefix) :].split("/")
+    if (
+        len(parts) == 7
+        and parts[1] == "scene-plan"
+        and parts[2] == "scenes"
+        and parts[4] == "visual-candidates"
+        and parts[6] == "artifact"
+        and all(parts)
+    ):
+        return parts[0], parts[3], parts[5]
     return None
 
 
@@ -271,6 +304,44 @@ class _PlanOnlyRequestHandler(BaseHTTPRequestHandler):
                 "The local host could not complete the request.",
             )
 
+    def _serve_visual_artifact(self, path: str) -> None:
+        identity = _visual_artifact_identity(path)
+        if identity is None:
+            self._send_error(
+                HTTPStatus.NOT_FOUND,
+                "PLAN_ONLY_ROUTE_NOT_FOUND",
+                "The requested PLAN_ONLY route was not found.",
+            )
+            return
+        run_id, scene_id, candidate_id = identity
+        try:
+            with self.server.plan_only_application_lock:
+                artifact = self.server.plan_only_application.get_visual_candidate_artifact(
+                    run_id,
+                    scene_id,
+                    candidate_id,
+                )
+        except Exception:
+            artifact = None
+        if artifact is None:
+            self._send_error(
+                HTTPStatus.NOT_FOUND,
+                "VISUAL_ARTIFACT_NOT_FOUND",
+                "The requested visual candidate artifact was not found.",
+            )
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", artifact.mime_type)
+        self.send_header("Content-Length", str(len(artifact.content)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("ETag", f'"sha256-{artifact.sha256}"')
+        self.end_headers()
+        try:
+            self.wfile.write(artifact.content)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+
     def do_GET(self) -> None:
         try:
             path = self._request_path()
@@ -294,6 +365,9 @@ class _PlanOnlyRequestHandler(BaseHTTPRequestHandler):
                 return
             if "GET" not in methods:
                 self._method_not_allowed(methods)
+                return
+            if _visual_artifact_identity(path) is not None:
+                self._serve_visual_artifact(path)
                 return
             self._dispatch_api("GET", path)
             return

@@ -495,3 +495,204 @@ export interface ScenePlanCollectionHistoryV1 {
   readonly current_collection_revision_id: string;
   readonly revisions: readonly ScenePlanRevisionSummaryV1[];
 }
+
+export type VisualCandidateStatusV1 =
+  | "REVIEW_PENDING"
+  | "ACCEPTED_FOR_COMPOSITION_PLANNING"
+  | "REJECTED"
+  | "REVISION_REQUESTED"
+  | "INVALID"
+  | "SUPERSEDED";
+
+export type VisualRejectionReasonV1 =
+  | "CHARACTER_IDENTITY_MISMATCH"
+  | "POSE_MISMATCH"
+  | "ACTION_MISMATCH"
+  | "ENVIRONMENT_MISMATCH"
+  | "OBJECT_MISMATCH"
+  | "COMPOSITION_MISMATCH"
+  | "STYLE_MISMATCH"
+  | "CONTINUITY_MISMATCH"
+  | "TEXT_OR_WATERMARK_PRESENT"
+  | "INVALID_ANATOMY"
+  | "LOW_IMAGE_QUALITY"
+  | "DUPLICATE_CANDIDATE"
+  | "OTHER_BOUNDED_NOTE";
+
+export interface VisualReviewEntryV1 {
+  readonly review_id: string;
+  readonly review_number: number;
+  readonly candidate_id: string;
+  readonly candidate_revision_id: string;
+  readonly action: "ACCEPTED" | "REJECTED" | "REVISION_REQUESTED" | "SUPERSEDED";
+  readonly reason_code: string;
+  readonly note: string | null;
+  readonly created_at: string;
+}
+
+export interface VisualCandidateV1 {
+  readonly schema_version: 1;
+  readonly candidate_id: string;
+  readonly candidate_revision_id: string;
+  readonly candidate_revision_number: number;
+  readonly request_id: string;
+  readonly attempt_id: string;
+  readonly run_id: string;
+  readonly story_revision_id: string;
+  readonly scene_plan_collection_revision_id: string;
+  readonly scene_id: string;
+  readonly scene_revision_id: string;
+  readonly semantic_beat_id: string;
+  readonly source_coverage: { readonly start: number; readonly end: number };
+  readonly status: VisualCandidateStatusV1;
+  readonly artifact_url: string;
+  readonly provider_capability_label: string;
+  readonly model_label: string;
+  readonly mime_type: "image/png" | "image/jpeg" | "image/webp";
+  readonly extension: ".png" | ".jpg" | ".webp";
+  readonly width: number;
+  readonly height: number;
+  readonly sha256: string;
+  readonly logical_request_hash: string;
+  readonly provider_request_hash: string;
+  readonly technical_validation: {
+    readonly passed: boolean;
+    readonly mime_valid: boolean;
+    readonly dimensions_valid: boolean;
+    readonly non_empty: boolean;
+    readonly animation_free: boolean;
+    readonly duplicate_free: boolean;
+    readonly blocker_codes: readonly string[];
+  };
+  readonly visual_qc: {
+    readonly blocker_codes: readonly string[];
+    readonly warning_codes: readonly string[];
+    readonly information_codes: readonly string[];
+  };
+  readonly review_history: readonly VisualReviewEntryV1[];
+  readonly accepted_for_composition_planning: boolean;
+  readonly superseded_reason: string | null;
+  readonly created_at: string;
+}
+
+export interface VisualGenerationRequestV1 {
+  readonly request_id: string;
+  readonly request_number: number;
+  readonly visual_collection_revision_id: string;
+  readonly candidate_count: number;
+  readonly aspect_ratio: "9:16";
+  readonly composition_emphasis: string | null;
+  readonly correction_dimensions: readonly VisualRejectionReasonV1[];
+  readonly note: string | null;
+  readonly prompt_projection: string;
+  readonly logical_request_hash: string;
+  readonly attempt_ids: readonly string[];
+  readonly status: "SUCCESS" | "PARTIAL_SUCCESS" | "FAILED";
+  readonly created_at: string;
+}
+
+export interface VisualGenerationAttemptV1 {
+  readonly attempt_id: string;
+  readonly attempt_number: number;
+  readonly request_id: string;
+  readonly candidate_ids: readonly string[];
+  readonly requested_candidate_count: number;
+  readonly returned_candidate_count: number;
+  readonly invalid_candidate_count: number;
+  readonly provider_capability_label: string;
+  readonly model_label: string;
+  readonly status: "SUCCESS" | "PARTIAL_SUCCESS" | "FAILED";
+  readonly reason_code: string;
+  readonly created_at: string;
+}
+
+export interface VisualCandidateCollectionV1 {
+  readonly schema_version: 1;
+  readonly run_id: string;
+  readonly story_revision_id: string;
+  readonly scene_plan_collection_revision_id: string;
+  readonly scene_id: string;
+  readonly scene_revision_id: string;
+  readonly semantic_beat_id: string;
+  readonly source_coverage: { readonly start: number; readonly end: number };
+  readonly visual_authority_version: "visual_candidate_authority_v1";
+  readonly visual_collection_id: string;
+  readonly visual_collection_revision_id: string;
+  readonly visual_collection_revision_number: number;
+  readonly current_request_id: string | null;
+  readonly current_accepted_candidate_id: string | null;
+  readonly requests: readonly VisualGenerationRequestV1[];
+  readonly attempts: readonly VisualGenerationAttemptV1[];
+  readonly candidates: readonly VisualCandidateV1[];
+  readonly render_authority: false;
+  readonly video_render_authority: false;
+  readonly final_media_capability: false;
+  readonly narration_generation_capability: false;
+  readonly tts_capability: false;
+  readonly process_local: true;
+  readonly created_at: string;
+}
+
+export interface VisualCandidateAccessV1 {
+  readonly schema_version: 1;
+  readonly run_id: string;
+  readonly scene_id: string;
+  readonly request_authorized: boolean;
+  readonly review_authorized: boolean;
+  readonly blocker_codes: readonly string[];
+  readonly current_story_revision_id: string | null;
+  readonly accepted_story_revision_id: string | null;
+  readonly current_scene_plan_collection_revision_id: string | null;
+  readonly current_scene_revision_id: string | null;
+  readonly current_visual_collection_revision_id: string | null;
+  readonly current_request_id: string | null;
+  readonly current_accepted_candidate_id: string | null;
+  readonly provider_capability: {
+    readonly available: boolean;
+    readonly capability_label: string;
+    readonly supports_9_16: true;
+    readonly maximum_candidate_count: 4;
+    readonly external_provider: true;
+    readonly reason_code: string | null;
+  };
+  readonly collection: VisualCandidateCollectionV1 | null;
+  readonly render_authority: false;
+  readonly video_render_authority: false;
+  readonly final_media_capability: false;
+  readonly narration_generation_capability: false;
+  readonly tts_capability: false;
+  readonly process_local: true;
+}
+
+export interface GenerateVisualCandidatesRequestV1 {
+  readonly schema_version: 1;
+  readonly visual_collection_revision_id: string;
+  readonly scene_plan_collection_revision_id: string;
+  readonly scene_revision_id: string;
+  readonly candidate_count: number;
+  readonly aspect_ratio: "9:16";
+  readonly composition_emphasis: string | null;
+  readonly correction_dimensions: readonly VisualRejectionReasonV1[];
+  readonly note: string | null;
+}
+
+export interface VisualCandidateMutationRequestV1 {
+  readonly schema_version: 1;
+  readonly visual_collection_revision_id: string;
+  readonly scene_plan_collection_revision_id: string;
+  readonly scene_revision_id: string;
+  readonly candidate_revision_id: string;
+  readonly reason_code: VisualRejectionReasonV1;
+  readonly note: string | null;
+}
+
+export interface VisualCandidateOperationResultV1 {
+  readonly schema_version: 1;
+  readonly access: VisualCandidateAccessV1 | null;
+  readonly error: {
+    readonly schema_version: 1;
+    readonly code: string;
+    readonly message: string;
+    readonly retryable: boolean;
+  } | null;
+}

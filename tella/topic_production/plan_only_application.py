@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 import hashlib
 import json
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import (
@@ -22,6 +23,8 @@ from pydantic import (
     ValidationError,
     model_validator,
 )
+
+from tella.media.image_provider import get_image_provider
 
 from .duration_policy import (
     DurationAssessmentStatus,
@@ -46,6 +49,11 @@ from .script_input import (
 from .scene_planning import ScenePlanningStore
 from .story_plan_producer import ApprovedStoryPlanProducer
 from .timing import build_scene_timings
+from .visual_candidates import (
+    VisualArtifact,
+    VisualCandidateProvider,
+    VisualCandidateStore,
+)
 
 
 PLAN_ONLY_API_PREFIX = "/api/v1/plan-only"
@@ -930,9 +938,15 @@ def _review_operation_error(
 
 
 class PlanOnlyApplication:
-    """In-memory, detached, provider-free planning application boundary."""
+    """In-memory PLAN_ONLY application with bounded still-image candidate capability."""
 
-    def __init__(self, producer: ApprovedStoryPlanProducer | None = None) -> None:
+    def __init__(
+        self,
+        producer: ApprovedStoryPlanProducer | None = None,
+        *,
+        visual_provider: VisualCandidateProvider | None = None,
+        visual_artifact_root: Path | None = None,
+    ) -> None:
         self._producer = producer or PlanOnlyDeterministicTopicProducer()
         self._runs: dict[str, ProductionRunViewV1] = {}
         self._requests: dict[str, PlanOnlyCreateRequestV1] = {}
@@ -940,6 +954,13 @@ class PlanOnlyApplication:
         self._review_statuses: dict[str, StoryPlanReviewStatus] = {}
         self._accepted_revision_ids: dict[str, str | None] = {}
         self._scene_planning = ScenePlanningStore()
+        if visual_provider is None:
+            configured = get_image_provider()
+            visual_provider = configured if configured.is_configured() else None
+        self._visual_candidates = VisualCandidateStore(
+            provider=visual_provider,
+            artifact_root=visual_artifact_root,
+        )
 
     def _produce(
         self,
@@ -1281,6 +1302,95 @@ class PlanOnlyApplication:
             return None
         return self._scene_planning.scene_history(run_id, scene_id)
 
+    def _visual_context(
+        self, run_id: str
+    ) -> tuple[dict[str, object], dict[str, object], dict[str, object]] | None:
+        run = self.get_run(run_id)
+        review = self._review_payload(run_id)
+        scene_access = self.get_scene_plan(run_id)
+        if run is None or review is None or scene_access is None:
+            return None
+        return run, review, scene_access
+
+    def get_visual_candidate_access(self, run_id: str, scene_id: str) -> dict[str, object] | None:
+        context = self._visual_context(run_id)
+        if context is None:
+            return None
+        run, review, scene_access = context
+        return self._visual_candidates.access(
+            run=run,
+            review=review,
+            scene_access=scene_access,
+            scene_id=scene_id,
+        )
+
+    def generate_visual_candidates(
+        self, run_id: str, scene_id: str, payload: object
+    ) -> dict[str, object] | None:
+        context = self._visual_context(run_id)
+        if context is None:
+            return None
+        run, review, scene_access = context
+        return self._visual_candidates.generate(
+            run=run,
+            review=review,
+            scene_access=scene_access,
+            scene_id=scene_id,
+            payload=payload,
+        )
+
+    def mutate_visual_candidate(
+        self,
+        run_id: str,
+        scene_id: str,
+        candidate_id: str,
+        operation: Literal["accept", "reject", "request-revision"],
+        payload: object,
+    ) -> dict[str, object] | None:
+        context = self._visual_context(run_id)
+        if context is None:
+            return None
+        run, review, scene_access = context
+        return self._visual_candidates.mutate(
+            run=run,
+            review=review,
+            scene_access=scene_access,
+            scene_id=scene_id,
+            candidate_id=candidate_id,
+            operation=operation,
+            payload=payload,
+        )
+
+    def get_visual_candidate(
+        self, run_id: str, scene_id: str, candidate_id: str
+    ) -> dict[str, object] | None:
+        context = self._visual_context(run_id)
+        if context is None:
+            return None
+        run, review, scene_access = context
+        return self._visual_candidates.candidate(
+            run=run,
+            review=review,
+            scene_access=scene_access,
+            scene_id=scene_id,
+            candidate_id=candidate_id,
+        )
+
+    def get_visual_candidate_artifact(
+        self, run_id: str, scene_id: str, candidate_id: str
+    ) -> VisualArtifact | None:
+        context = self._visual_context(run_id)
+        if context is None:
+            return None
+        run, review, scene_access = context
+        return self._visual_candidates.artifact(
+            run=run,
+            review=review,
+            scene_access=scene_access,
+            scene_id=scene_id,
+            candidate_id=candidate_id,
+        )
+
 
 class PlanOnlyFacadeResponse(_ContractModel):
     status_code: int = Field(ge=200, le=599)
@@ -1375,6 +1485,42 @@ def dispatch_plan_only_request(
             )
         if len(tail) >= 2 and tail[0] == "scenes":
             scene_id = tail[1]
+            if len(tail) >= 3 and tail[2] == "visual-candidates":
+                visual_tail = tail[3:]
+                if not visual_tail and method == "GET":
+                    access = application.get_visual_candidate_access(run_id, scene_id)
+                    return PlanOnlyFacadeResponse(
+                        status_code=200 if access is not None else 404,
+                        payload=access,
+                    )
+                if visual_tail == ["generate"] and method == "POST":
+                    result = application.generate_visual_candidates(run_id, scene_id, body)
+                    return PlanOnlyFacadeResponse(
+                        status_code=200 if result is not None else 404,
+                        payload=result,
+                    )
+                if len(visual_tail) == 1 and method == "GET":
+                    candidate = application.get_visual_candidate(run_id, scene_id, visual_tail[0])
+                    return PlanOnlyFacadeResponse(
+                        status_code=200 if candidate is not None else 404,
+                        payload=candidate,
+                    )
+                if (
+                    len(visual_tail) == 2
+                    and visual_tail[1] in {"accept", "reject", "request-revision"}
+                    and method == "POST"
+                ):
+                    result = application.mutate_visual_candidate(
+                        run_id,
+                        scene_id,
+                        visual_tail[0],
+                        visual_tail[1],
+                        body,
+                    )
+                    return PlanOnlyFacadeResponse(
+                        status_code=200 if result is not None else 404,
+                        payload=result,
+                    )
             if len(tail) == 2 and method == "GET":
                 scene = application.get_planned_scene(run_id, scene_id)
                 return PlanOnlyFacadeResponse(

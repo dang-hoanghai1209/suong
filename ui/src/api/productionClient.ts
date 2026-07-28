@@ -26,6 +26,11 @@ import type {
   StoryPlanReviewViewV1,
   StoryPlanRevisionHistoryV1,
   StoryPlanRevisionV1,
+  GenerateVisualCandidatesRequestV1,
+  VisualCandidateAccessV1,
+  VisualCandidateMutationRequestV1,
+  VisualCandidateOperationResultV1,
+  VisualCandidateV1,
 } from "../contracts/v1/production";
 import {
   validateSceneHistory,
@@ -35,6 +40,11 @@ import {
   validateScenePlanAccess,
   validateScenePlanOperation,
 } from "./scenePlanValidation";
+import {
+  validateVisualCandidate,
+  validateVisualCandidateAccess,
+  validateVisualCandidateOperation,
+} from "./visualCandidateValidation";
 
 const apiPrefix = "/api/v1/plan-only";
 
@@ -111,6 +121,27 @@ export interface ProductionRepository {
     runId: string,
     revisionId: string,
   ): Promise<ScenePlanCollectionV1 | null>;
+  getVisualCandidateAccess?(
+    runId: string,
+    sceneId: string,
+  ): Promise<VisualCandidateAccessV1 | null>;
+  generateVisualCandidates?(
+    runId: string,
+    sceneId: string,
+    request: GenerateVisualCandidatesRequestV1,
+  ): Promise<VisualCandidateOperationResultV1>;
+  getVisualCandidate?(
+    runId: string,
+    sceneId: string,
+    candidateId: string,
+  ): Promise<VisualCandidateV1 | null>;
+  mutateVisualCandidate?(
+    runId: string,
+    sceneId: string,
+    candidateId: string,
+    operation: "accept" | "reject" | "request-revision",
+    request: VisualCandidateMutationRequestV1,
+  ): Promise<VisualCandidateOperationResultV1>;
 }
 
 export class ProductionContractError extends Error {
@@ -216,6 +247,32 @@ export function defineNativeFetchClient(
             sceneTail[1] !== "" &&
             ["revisions", "restore", "accept", "request-revision"].includes(
               sceneTail[2] ?? "",
+            )) ||
+          (method === "GET" &&
+            sceneTail.length === 3 &&
+            sceneTail[0] === "scenes" &&
+            sceneTail[1] !== "" &&
+            sceneTail[2] === "visual-candidates") ||
+          (method === "POST" &&
+            sceneTail.length === 4 &&
+            sceneTail[0] === "scenes" &&
+            sceneTail[1] !== "" &&
+            sceneTail[2] === "visual-candidates" &&
+            sceneTail[3] === "generate") ||
+          (method === "GET" &&
+            sceneTail.length === 4 &&
+            sceneTail[0] === "scenes" &&
+            sceneTail[1] !== "" &&
+            sceneTail[2] === "visual-candidates" &&
+            sceneTail[3] !== "") ||
+          (method === "POST" &&
+            sceneTail.length === 5 &&
+            sceneTail[0] === "scenes" &&
+            sceneTail[1] !== "" &&
+            sceneTail[2] === "visual-candidates" &&
+            sceneTail[3] !== "" &&
+            ["accept", "reject", "request-revision"].includes(
+              sceneTail[4] ?? "",
             )));
       const exactCreate = method === "POST" && exactCollection;
       const exactList = method === "GET" && exactCollection;
@@ -1342,6 +1399,88 @@ export class BackendProductionRepository implements ProductionRepository {
       throw new ProductionContractError();
     }
     return collection;
+  }
+
+  async getVisualCandidateAccess(runId: string, sceneId: string) {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/scene-plan/scenes/${encodeURIComponent(sceneId)}/visual-candidates`,
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const access = validateVisualCandidateAccess(response.payload);
+    if (access.run_id !== runId || access.scene_id !== sceneId) {
+      throw new ProductionContractError();
+    }
+    return access;
+  }
+
+  async #visualMutation(
+    runId: string,
+    sceneId: string,
+    path: string,
+    request: object,
+  ) {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/scene-plan/scenes/${encodeURIComponent(sceneId)}/visual-candidates/${path}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(request),
+      },
+    );
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const result = validateVisualCandidateOperation(response.payload);
+    if (
+      result.access !== null &&
+      (result.access.run_id !== runId || result.access.scene_id !== sceneId)
+    ) {
+      throw new ProductionContractError();
+    }
+    return result;
+  }
+
+  generateVisualCandidates(
+    runId: string,
+    sceneId: string,
+    request: GenerateVisualCandidatesRequestV1,
+  ) {
+    return this.#visualMutation(runId, sceneId, "generate", request);
+  }
+
+  async getVisualCandidate(
+    runId: string,
+    sceneId: string,
+    candidateId: string,
+  ) {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/scene-plan/scenes/${encodeURIComponent(sceneId)}/visual-candidates/${encodeURIComponent(candidateId)}`,
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const candidate = validateVisualCandidate(response.payload);
+    if (
+      candidate.run_id !== runId ||
+      candidate.scene_id !== sceneId ||
+      candidate.candidate_id !== candidateId
+    ) {
+      throw new ProductionContractError();
+    }
+    return candidate;
+  }
+
+  mutateVisualCandidate(
+    runId: string,
+    sceneId: string,
+    candidateId: string,
+    operation: "accept" | "reject" | "request-revision",
+    request: VisualCandidateMutationRequestV1,
+  ) {
+    return this.#visualMutation(
+      runId,
+      sceneId,
+      `${encodeURIComponent(candidateId)}/${operation}`,
+      request,
+    );
   }
 }
 

@@ -417,6 +417,14 @@ export function ScenePlanningPage() {
               <button type="button" disabled={dirty || busy || !!scene.blocker_codes.length || !!scene.warning_codes.length} onClick={acceptScene}>Accept for visual planning</button>
               <button ref={revisionTrigger} type="button" disabled={dirty || busy} onClick={() => setRevisionOpen(true)}>Request revision</button>
             </div>
+            {scene.status === "ACCEPTED_FOR_VISUAL_PLANNING" ? (
+              <Link
+                className="primary-link-action"
+                to={`/production/runs/${encodeURIComponent(runId)}/scenes/${encodeURIComponent(scene.scene_id)}/visuals`}
+              >
+                Open visual candidate workspace
+              </Link>
+            ) : null}
           </section>
           <section className="surface" aria-labelledby="scene-history-title">
             <h2 id="scene-history-title">Scene revision history</h2>
