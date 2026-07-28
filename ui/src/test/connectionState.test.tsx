@@ -127,6 +127,8 @@ describe("local backend connection state", () => {
     renderShell(repository, "/production/new");
 
     expect(await screen.findByText("Connected — PLAN_ONLY")).toBeVisible();
+    await userEvent.type(screen.getByLabelText("Topic content"), "A careful topic");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(screen.getByRole("radio", { name: /FULL_RENDER/ })).toBeDisabled();
     expect(webSocket).not.toHaveBeenCalled();
     expect(eventSource).not.toHaveBeenCalled();

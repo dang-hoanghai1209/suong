@@ -1,4 +1,5 @@
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 
@@ -85,6 +86,8 @@ describe("zero-network UI.1", () => {
     renderRoute("/production/new");
     await screen.findByRole("heading", { name: "Start with a clear plan" });
 
+    await userEvent.type(screen.getByLabelText("Topic content"), "A careful topic");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(screen.getByRole("radio", { name: /PLAN_ONLY/ })).toBeEnabled();
     expect(screen.getByRole("radio", { name: /FULL_RENDER/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Render video" })).toBeDisabled();

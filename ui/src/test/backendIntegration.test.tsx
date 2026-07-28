@@ -107,6 +107,18 @@ function renderRoute(path: string, repository: ProductionRepository) {
   );
 }
 
+async function reachReview(
+  content = "Learning to make room for uncertainty",
+) {
+  await userEvent.type(await screen.findByLabelText("Topic content"), content);
+  await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+  await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+  await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+  expect(
+    await screen.findByRole("heading", { name: "Review StoryPlan request" }),
+  ).toBeVisible();
+}
+
 describe("PLAN_ONLY backend UI integration", () => {
   it("creates a backend-backed plan and navigates by exact run ID", async () => {
     const repository = new TestRepository();
@@ -117,9 +129,8 @@ describe("PLAN_ONLY backend UI integration", () => {
     );
     renderRoute("/production/new", repository);
 
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Create PLAN_ONLY run" }),
-    );
+    await reachReview();
+    await userEvent.click(screen.getByRole("button", { name: "Create StoryPlan" }));
 
     expect(await screen.findByRole("heading", { name: "Production run" })).toBeVisible();
     expect(screen.getByText(runId)).toBeVisible();
@@ -148,11 +159,10 @@ describe("PLAN_ONLY backend UI integration", () => {
     );
     renderRoute("/production/new", repository);
 
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Create PLAN_ONLY run" }),
-    );
+    await reachReview();
+    await userEvent.click(screen.getByRole("button", { name: "Create StoryPlan" }));
 
-    expect(screen.getByRole("button", { name: "Planning…" })).toBeDisabled();
+    expect(screen.getByText(/Planning/).closest('[role="status"]')).not.toBeNull();
     resolveCreate?.({
       schema_version: 1,
       run: planOnlyRun(),
@@ -181,9 +191,8 @@ describe("PLAN_ONLY backend UI integration", () => {
     });
     renderRoute("/production/new", repository);
 
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Create PLAN_ONLY run" }),
-    );
+    await reachReview();
+    await userEvent.click(screen.getByRole("button", { name: "Create StoryPlan" }));
 
     expect(await screen.findByRole("heading", { name: title })).toBeVisible();
     expect(screen.getByText(message)).toBeVisible();
@@ -200,9 +209,8 @@ describe("PLAN_ONLY backend UI integration", () => {
     });
     renderRoute("/production/new", repository);
 
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Create PLAN_ONLY run" }),
-    );
+    await reachReview();
+    await userEvent.click(screen.getByRole("button", { name: "Create StoryPlan" }));
 
     expect(
       await screen.findByRole("heading", { name: "Invalid backend response" }),
@@ -214,9 +222,8 @@ describe("PLAN_ONLY backend UI integration", () => {
     repository.create.mockRejectedValue(new ProductionBackendUnavailableError());
     renderRoute("/production/new", repository);
 
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Create PLAN_ONLY run" }),
-    );
+    await reachReview();
+    await userEvent.click(screen.getByRole("button", { name: "Create StoryPlan" }));
 
     expect(await screen.findByRole("heading", { name: "Backend unavailable" })).toBeVisible();
     expect(screen.queryByText(/stack|traceback/i)).not.toBeInTheDocument();

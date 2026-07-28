@@ -1,4 +1,5 @@
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 
@@ -116,7 +117,12 @@ describe("defensive render presentation gate", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByRole("radio", { name: /FULL_RENDER/ })).toBeDisabled();
+    await userEvent.type(
+      await screen.findByLabelText("Topic content"),
+      "A careful topic",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(screen.getByRole("radio", { name: /FULL_RENDER/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Render video" })).toBeDisabled();
   });
 });

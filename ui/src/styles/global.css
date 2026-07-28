@@ -593,6 +593,271 @@ thead th {
   padding-top: var(--space-7);
 }
 
+.creation-workflow {
+  max-width: 82rem;
+  margin: 0 auto;
+}
+
+.creation-steps {
+  padding-bottom: var(--space-2);
+}
+
+.creation-steps ol {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(9rem, 1fr));
+  gap: var(--space-2);
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.creation-steps li > div,
+.creation-steps li > button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 4.25rem;
+  justify-content: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-medium);
+  text-align: left;
+}
+
+.creation-steps li > button {
+  cursor: pointer;
+}
+
+.creation-steps li > div > span:first-child,
+.creation-steps li > button > span:first-child {
+  display: grid;
+  flex: 0 0 auto;
+  width: 1.8rem;
+  height: 1.8rem;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-weight: 800;
+}
+
+.creation-steps small {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.7rem;
+}
+
+.creation-step--current > div {
+  background: #efe2d7 !important;
+  color: var(--color-accent-strong) !important;
+  border-color: #d9baa9 !important;
+  font-weight: 750;
+}
+
+.creation-step--completed > button {
+  color: var(--color-success);
+  border-color: var(--color-success);
+}
+
+.current-step-announcement {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-weight: 700;
+}
+
+.creation-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(14rem, 19rem);
+  align-items: start;
+  gap: var(--space-5);
+}
+
+.creation-step-panel {
+  min-width: 0;
+  margin: 0;
+}
+
+.creation-step-panel > legend {
+  padding: 0 var(--space-2);
+  font-size: clamp(1.25rem, 2vw, 1.65rem);
+  font-weight: 760;
+}
+
+.nested-fieldset {
+  display: grid;
+  gap: var(--space-3);
+  padding: 0;
+  margin: var(--space-5) 0;
+  border: 0;
+}
+
+.nested-fieldset > legend {
+  margin-bottom: var(--space-2);
+  font-weight: 750;
+}
+
+.choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+}
+
+.choice-card {
+  display: flex;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-4);
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-medium);
+  cursor: pointer;
+}
+
+.choice-card:has(input:checked) {
+  border-color: var(--color-accent);
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+
+.choice-card input {
+  flex: 0 0 auto;
+  margin-top: 0.3rem;
+}
+
+.choice-card span {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.choice-card small {
+  color: var(--color-text-muted);
+  font-weight: 500;
+}
+
+.field-stack {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.field-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+
+.field-error {
+  margin: 0;
+  color: var(--color-danger);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+[aria-invalid="true"] {
+  border-color: var(--color-danger);
+  box-shadow: 0 0 0 1px var(--color-danger);
+}
+
+.profile-facts,
+.draft-summary dl,
+.review-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin: var(--space-5) 0;
+}
+
+.profile-facts div,
+.draft-summary dl div,
+.review-list > div {
+  min-width: 0;
+  padding: var(--space-3);
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-small);
+}
+
+.profile-facts dd,
+.draft-summary dd,
+.review-list dd {
+  overflow-wrap: anywhere;
+}
+
+.creation-step-panel .mode-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.draft-summary {
+  position: sticky;
+  top: var(--space-5);
+  padding: var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-large);
+}
+
+.draft-summary h2 {
+  font-size: 1.15rem;
+}
+
+.draft-summary dl {
+  grid-template-columns: 1fr;
+  margin-bottom: 0;
+}
+
+.review-group + .review-group {
+  padding-top: var(--space-5);
+  margin-top: var(--space-5);
+  border-top: 1px solid var(--color-border);
+}
+
+.review-group__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.review-group__heading button,
+.secondary-action {
+  background: transparent;
+  color: var(--color-accent-strong);
+}
+
+.review-list {
+  margin-bottom: 0;
+}
+
+.review-content {
+  max-width: 100%;
+  margin: var(--space-2) 0 0;
+  overflow: visible;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.storyplan-only-notice {
+  padding: var(--space-4);
+  margin-top: var(--space-5);
+  background: #efe2d7;
+  border-left: 0.3rem solid var(--color-accent);
+  border-radius: var(--radius-small);
+}
+
+.storyplan-only-notice p {
+  margin: var(--space-2) 0 0;
+}
+
+.workflow-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
 @media (max-width: 1023px) {
   .app-header {
     grid-template-columns: 1fr auto;
@@ -607,6 +872,19 @@ thead th {
   }
 
   .context-sidebar {
+    position: static;
+    grid-row: 1;
+  }
+
+  .creation-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .creation-steps ol {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .draft-summary {
     position: static;
     grid-row: 1;
   }
@@ -638,8 +916,30 @@ thead th {
   }
 
   .field-grid,
-  .mode-grid {
+  .mode-grid,
+  .choice-grid,
+  .profile-facts,
+  .review-list {
     grid-template-columns: 1fr;
+  }
+
+  .creation-steps ol {
+    grid-template-columns: 1fr;
+  }
+
+  .creation-steps li {
+    width: auto;
+  }
+
+  .field-meta,
+  .review-group__heading,
+  .workflow-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .workflow-actions button {
+    width: 100%;
   }
 
   .run-card,

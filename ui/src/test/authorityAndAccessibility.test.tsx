@@ -1,4 +1,5 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 
@@ -58,35 +59,25 @@ describe("accessibility foundations", () => {
     await screen.findByRole("heading", { name: "Start with a clear plan" });
 
     expect(screen.getAllByRole("main")).toHaveLength(1);
-    expect(screen.getByLabelText("Topic or narration")).toBeEnabled();
-    expect(screen.getByLabelText("Aspect ratio")).toBeDisabled();
-    expect(screen.getByLabelText("Narration voice")).toBeDisabled();
-    const aspectRatio = screen.getByLabelText("Aspect ratio");
-    const voice = screen.getByLabelText("Narration voice");
+    expect(screen.getByLabelText("Topic content")).toBeEnabled();
+    await userEvent.type(screen.getByLabelText("Topic content"), "A careful topic");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     const planOnly = screen.getByRole("radio", { name: /PLAN_ONLY/ });
     const fullRender = screen.getByRole("radio", { name: /FULL_RENDER/ });
     expect(planOnly).toBeEnabled();
     expect(planOnly).toBeChecked();
-    expect(aspectRatio).toHaveAccessibleDescription(
-      "Locked by the current production contract.",
-    );
-    expect(voice).toHaveAccessibleDescription(
-      "No topic-production voice contract is available.",
-    );
     expect(planOnly).toHaveAccessibleDescription(
-      "Canonical planning only. Rendering remains unavailable.",
+      "Creates a StoryPlan only. No narration, media, or video is generated.",
     );
     expect(fullRender).toHaveAccessibleDescription(
-      "Locked until backend, synthetic closure, and live canary approval.",
+      "Disabled because this workflow has no render authority.",
     );
     expect(
       new Set([
-        aspectRatio.getAttribute("aria-describedby"),
-        voice.getAttribute("aria-describedby"),
         planOnly.getAttribute("aria-describedby"),
         fullRender.getAttribute("aria-describedby"),
       ]).size,
-    ).toBe(4);
+    ).toBe(2);
   });
 
   it("defines visible focus and reduced-motion behavior", () => {
