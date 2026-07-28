@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "request_id": "mock-request-planning-01",
+  "status": "FAILED",
+  "code": "STORYPLAN_TOPIC_PRODUCER_MISSING",
+  "message": "No approved production StoryPlan topic producer is available.",
+  "retryable": false,
+  "field_errors": [],
+  "details": {
+    "stage": "canonical_story_planning"
+  }
+}

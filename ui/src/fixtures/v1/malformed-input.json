@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "request_id": "mock-request-invalid-01",
+  "status": "FAILED",
+  "code": "INVALID_SCRIPT_INPUT",
+  "message": "The production input is malformed.",
+  "retryable": false,
+  "field_errors": [
+    {
+      "path": "input.source_content",
+      "code": "STRING_TOO_SHORT",
+      "message": "Enter a topic or narration."
+    }
+  ],
+  "details": {}
+}

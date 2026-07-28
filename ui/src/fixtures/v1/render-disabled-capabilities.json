@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "supported_execution_modes": ["MOCK"],
+  "supported_input_modes": ["TOPIC", "NARRATION", "NARRATION_WITH_SCENE_HINTS"],
+  "supported_languages": ["vi", "en"],
+  "supported_aspect_ratios": ["9:16"],
+  "supported_visual_modes": ["illustrated_scene"],
+  "supported_character_scopes": ["recurring_female", "female_with_anonymous_background"],
+  "backend_render_capability": false,
+  "synthetic_closure_passed": false,
+  "live_canary_passed": false,
+  "full_render_enabled": false,
+  "render_lock_reason_codes": [
+    "BACKEND_RENDER_CAPABILITY_DISABLED",
+    "SYNTHETIC_CLOSURE_PENDING",
+    "LIVE_CANARY_PENDING"
+  ]
+}

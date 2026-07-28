@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "warning_count": 1,
+  "conditions": [
+    {
+      "code": "OUTSIDE_DURATION_TARGET_WARNING",
+      "title": "Planned duration is outside the target",
+      "detail": "The backend supplied a planned duration of 41 seconds.",
+      "severity": "WARNING",
+      "scene_ids": [],
+      "beat_ids": []
+    }
+  ]
+}
