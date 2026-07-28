@@ -1,6 +1,8 @@
 export type ExecutionModeV1 = "MOCK" | "PLAN_ONLY" | "FULL_RENDER";
 
 export type ProductionSummaryStatusV1 =
+  | "PLANNING"
+  | "PLANNED"
   | "BLOCKED"
   | "FAILED"
   | "COMPLETED_WITH_WARNINGS"
@@ -144,4 +146,24 @@ export interface PublicApiErrorV1 {
     readonly message: string;
   }[];
   readonly details: Readonly<Record<string, unknown>>;
+}
+
+export interface PlanOnlyCreateRequestV1 {
+  readonly schema_version: 1;
+  readonly input_mode: InputModeV1;
+  readonly source_content: string;
+  readonly language: "en" | "vi";
+  readonly character_scope:
+    | "recurring_female"
+    | "female_with_anonymous_background"
+    | "recurring_male"
+    | "family"
+    | "unresolved";
+  readonly requested_scene_count: 7 | 8;
+}
+
+export interface PlanOnlyCreateResultV1 {
+  readonly schema_version: 1;
+  readonly run: ProductionRunViewV1 | null;
+  readonly error: PublicApiErrorV1 | null;
 }

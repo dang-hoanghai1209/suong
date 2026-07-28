@@ -2,7 +2,9 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 
+import { backendProductionRepository } from "./api/productionClient";
 import { App } from "./app/App";
+import { ProductionRepositoryProvider } from "./app/ProductionRepositoryContext";
 import "./styles/tokens.css";
 import "./styles/global.css";
 
@@ -14,8 +16,10 @@ if (root === null) {
 
 createRoot(root).render(
   <StrictMode>
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
+    <ProductionRepositoryProvider repository={backendProductionRepository}>
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
+    </ProductionRepositoryProvider>
   </StrictMode>,
 );

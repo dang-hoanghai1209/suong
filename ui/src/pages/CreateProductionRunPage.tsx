@@ -1,17 +1,70 @@
-import { Link } from "react-router-dom";
+import { useState, type FormEvent } from "react";
+import { useNavigate } from "react-router-dom";
+
+import { ProductionContractError } from "../api/productionClient";
+import { useProductionRepository } from "../app/ProductionRepositoryContext";
 
 export function CreateProductionRunPage() {
+  const repository = useProductionRepository();
+  const navigate = useNavigate();
+  const [sourceContent, setSourceContent] = useState(
+    "Learning to make room for uncertainty",
+  );
+  const [language, setLanguage] = useState<"en" | "vi">("en");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<{
+    readonly title: string;
+    readonly detail: string;
+  } | null>(null);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      const result = await repository.createPlanOnlyRun({
+        schema_version: 1,
+        input_mode: "TOPIC",
+        source_content: sourceContent,
+        language,
+        character_scope: "recurring_female",
+        requested_scene_count: 8,
+      });
+      if (result.error !== null) {
+        setError({
+          title: result.error.status === "BLOCKED" ? "Planning blocked" : "Planning failed",
+          detail: result.error.message,
+        });
+      } else if (result.run !== null) {
+        navigate(`/production/runs/${encodeURIComponent(result.run.run_id)}`);
+      }
+    } catch (caught) {
+      setError({
+        title:
+          caught instanceof ProductionContractError
+            ? "Invalid backend response"
+            : "Backend unavailable",
+        detail:
+          caught instanceof ProductionContractError
+            ? "The PLAN_ONLY backend response failed contract validation."
+            : "The PLAN_ONLY planning backend could not be reached safely.",
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
     <div className="page-stack">
       <header className="page-heading">
         <div>
           <p className="eyebrow">Create video</p>
           <h1>Start with a clear plan</h1>
-          <p>UI.1 provides structure only. No submission leaves this browser.</p>
+          <p>Create a backend-backed plan without generating narration, images, or video.</p>
         </div>
       </header>
 
-      <form className="form-stack" onSubmit={(event) => event.preventDefault()}>
+      <form className="form-stack" onSubmit={submit}>
         <section className="surface" aria-labelledby="input-section-title">
           <div className="section-heading">
             <span className="step-number">1</span>
@@ -25,7 +78,9 @@ export function CreateProductionRunPage() {
             id="source-content"
             name="source-content"
             rows={5}
-            defaultValue="Learning to make room for uncertainty"
+            value={sourceContent}
+            onChange={(event) => setSourceContent(event.currentTarget.value)}
+            required
           />
         </section>
 
@@ -40,7 +95,13 @@ export function CreateProductionRunPage() {
           <div className="field-grid">
             <div>
               <label htmlFor="language">Language</label>
-              <select id="language" defaultValue="en">
+              <select
+                id="language"
+                value={language}
+                onChange={(event) =>
+                  setLanguage(event.currentTarget.value === "vi" ? "vi" : "en")
+                }
+              >
                 <option value="en">English</option>
                 <option value="vi">Vietnamese</option>
               </select>
@@ -87,24 +148,32 @@ export function CreateProductionRunPage() {
           </div>
           <fieldset className="mode-grid">
             <legend className="sr-only">Execution mode</legend>
-            <label className="mode-option">
-              <input type="radio" name="execution-mode" value="MOCK" defaultChecked />
+            <label className="mode-option mode-option--disabled">
+              <input
+                type="radio"
+                name="execution-mode"
+                value="MOCK"
+                aria-describedby="mock-mode-help"
+                disabled
+              />
               <span>
                 <strong>MOCK</strong>
-                <small>Bundled fixtures. Zero network and no persistence.</small>
+                <small id="mock-mode-help">Available only through explicit test fixtures.</small>
               </span>
             </label>
-            <label className="mode-option mode-option--disabled">
+            <label className="mode-option">
               <input
                 type="radio"
                 name="execution-mode"
                 value="PLAN_ONLY"
                 aria-describedby="plan-only-mode-help"
-                disabled
+                defaultChecked
               />
               <span>
                 <strong>PLAN_ONLY</strong>
-                <small id="plan-only-mode-help">Backend integration pending.</small>
+                <small id="plan-only-mode-help">
+                  Canonical planning only. Rendering remains unavailable.
+                </small>
               </span>
             </label>
             <label className="mode-option mode-option--disabled">
@@ -127,13 +196,21 @@ export function CreateProductionRunPage() {
 
         <section className="surface submission-area" aria-labelledby="submission-title">
           <div>
-            <h2 id="submission-title">Review a synthetic plan</h2>
-            <p>This opens deterministic fixture data and performs no submission.</p>
+            <h2 id="submission-title">Create the plan</h2>
+            <p>The backend returns planning presentation data only.</p>
           </div>
-          <Link className="button-link" to="/production/runs/mock-plan-2026-01">
-            Open mock review
-          </Link>
+          <button type="submit" disabled={submitting}>
+            {submitting ? "Planning…" : "Create PLAN_ONLY run"}
+          </button>
         </section>
+        {error && (
+          <section className="surface status-callout status-callout--blocking" role="alert">
+            <div>
+              <h2>{error.title}</h2>
+              <p>{error.detail}</p>
+            </div>
+          </section>
+        )}
       </form>
     </div>
   );

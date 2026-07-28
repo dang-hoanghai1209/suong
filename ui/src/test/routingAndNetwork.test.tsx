@@ -85,6 +85,7 @@ describe("zero-network UI.1", () => {
     renderRoute("/production/new");
     await screen.findByRole("heading", { name: "Start with a clear plan" });
 
+    expect(screen.getByRole("radio", { name: /PLAN_ONLY/ })).toBeEnabled();
     expect(screen.getByRole("radio", { name: /FULL_RENDER/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Render video" })).toBeDisabled();
     expect(screen.queryByRole("link", { name: /render video/i })).not.toBeInTheDocument();
@@ -107,6 +108,6 @@ describe("zero-network UI.1", () => {
     ).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Scenes" })).not.toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
-    expect(screen.getByText("The requested mock production run is not registered.")).toBeVisible();
+    expect(screen.getByText("The requested production run is not registered.")).toBeVisible();
   });
 });

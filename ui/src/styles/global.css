@@ -461,6 +461,14 @@ dd {
   color: var(--color-success);
 }
 
+.status-badge--planned {
+  color: var(--color-success);
+}
+
+.status-badge--planning {
+  color: var(--color-focus);
+}
+
 .status-badge--completed_with_warnings {
   color: var(--color-warning);
 }

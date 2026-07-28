@@ -1,5 +1,7 @@
 import type { ProductionRepository } from "../api/productionClient";
 import type {
+  PlanOnlyCreateRequestV1,
+  PlanOnlyCreateResultV1,
   ProductionCapabilitiesV1,
   ProductionDashboardViewV1,
   ProductionRunSummaryV1,
@@ -114,6 +116,17 @@ export class MockProductionRepository implements ProductionRepository {
         window.setTimeout(resolve, this.#delayMs);
       });
     }
+  }
+
+  async createPlanOnlyRun(
+    _request: PlanOnlyCreateRequestV1,
+  ): Promise<PlanOnlyCreateResultV1> {
+    await this.#wait();
+    return {
+      schema_version: 1,
+      run: registeredRun("mock-plan-2026-01"),
+      error: null,
+    };
   }
 
   async getDashboard(scenario: MockScenario = "empty"): Promise<ProductionDashboardViewV1> {

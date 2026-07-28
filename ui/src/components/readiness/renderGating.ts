@@ -54,6 +54,7 @@ const reasonLabels: Readonly<Record<string, string>> = {
   BACKEND_RENDER_CAPABILITY_DISABLED: "Backend render capability is not approved.",
   SYNTHETIC_CLOSURE_PENDING: "Synthetic lifecycle closure has not passed.",
   LIVE_CANARY_PENDING: "Live canary approval is pending.",
+  PLAN_ONLY_NO_RENDER_AUTHORITY: "PLAN_ONLY does not grant render authority.",
   CAPABILITIES_INVALID: "Render capability data is invalid or incomplete.",
 };
 

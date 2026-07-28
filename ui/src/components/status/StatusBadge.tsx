@@ -1,6 +1,8 @@
 import type { ProductionSummaryStatusV1 } from "../../contracts/v1/production";
 
 const labels: Readonly<Record<ProductionSummaryStatusV1, string>> = {
+  PLANNING: "Planning",
+  PLANNED: "Planned",
   BLOCKED: "Blocked",
   FAILED: "Failed",
   COMPLETED_WITH_WARNINGS: "Completed with warnings",
@@ -8,6 +10,8 @@ const labels: Readonly<Record<ProductionSummaryStatusV1, string>> = {
 };
 
 const icons: Readonly<Record<ProductionSummaryStatusV1, string>> = {
+  PLANNING: "…",
+  PLANNED: "✓",
   BLOCKED: "■",
   FAILED: "×",
   COMPLETED_WITH_WARNINGS: "!",

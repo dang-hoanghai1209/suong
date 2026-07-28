@@ -4,22 +4,32 @@ import { Outlet } from "react-router-dom";
 import { PrimaryNavigation } from "../components/navigation/PrimaryNavigation";
 import { RenderReadinessSummary } from "../components/readiness/RenderReadinessSummary";
 import type { ProductionCapabilitiesV1 } from "../contracts/v1/production";
-import { mockProductionRepository } from "../mock/mockProductionRepository";
+import { useProductionRepository } from "./ProductionRepositoryContext";
 
 export function AppShell() {
-  const [capabilities, setCapabilities] = useState<ProductionCapabilitiesV1 | null>(null);
+  const repository = useProductionRepository();
+  const [capabilities, setCapabilities] = useState<
+    ProductionCapabilitiesV1 | null | undefined
+  >(undefined);
 
   useEffect(() => {
     let active = true;
-    void mockProductionRepository.getCapabilities().then((value) => {
-      if (active) {
-        setCapabilities(value);
-      }
-    });
+    void repository
+      .getCapabilities()
+      .then((value) => {
+        if (active) {
+          setCapabilities(value);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setCapabilities(null);
+        }
+      });
     return () => {
       active = false;
     };
-  }, []);
+  }, [repository]);
 
   return (
     <>
@@ -31,7 +41,7 @@ export function AppShell() {
           <p className="product-name">Tella Production</p>
           <p className="product-subtitle">Plan emotional video stories with clear authority.</p>
         </div>
-        <span className="environment-label">MOCK</span>
+        <span className="environment-label">PLAN_ONLY</span>
         <PrimaryNavigation />
       </header>
       <div className="app-layout">
@@ -39,7 +49,7 @@ export function AppShell() {
           <Outlet />
         </main>
         <aside className="context-sidebar" aria-label="Production context">
-          {capabilities === null ? (
+          {capabilities === undefined ? (
             <p className="loading-status" role="status" aria-live="polite">
               Loading render readiness…
             </p>

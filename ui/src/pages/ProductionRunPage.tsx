@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 
 import { StatusBadge } from "../components/status/StatusBadge";
 import type { ProductionRunViewV1, TimelineRowV1 } from "../contracts/v1/production";
-import { mockProductionRepository } from "../mock/mockProductionRepository";
+import { useProductionRepository } from "../app/ProductionRepositoryContext";
 
 function ExactDuration({ value }: { readonly value: number | null }) {
   return <code>{value === null ? "Not available" : `${value} s`}</code>;
@@ -32,21 +32,32 @@ function TimelineRow({ row }: { readonly row: TimelineRowV1 }) {
 }
 
 export function ProductionRunPage() {
+  const repository = useProductionRepository();
   const { runId = "mock-plan-2026-01" } = useParams();
   const [run, setRun] = useState<ProductionRunViewV1 | null | undefined>(undefined);
+  const [unavailable, setUnavailable] = useState(false);
 
   useEffect(() => {
     let active = true;
     setRun(undefined);
-    void mockProductionRepository.getRun(runId).then((value) => {
-      if (active) {
-        setRun(value);
-      }
-    });
+    setUnavailable(false);
+    void repository
+      .getRun(runId)
+      .then((value) => {
+        if (active) {
+          setRun(value);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setUnavailable(true);
+          setRun(null);
+        }
+      });
     return () => {
       active = false;
     };
-  }, [runId]);
+  }, [repository, runId]);
 
   if (run === undefined) {
     return (
@@ -59,12 +70,23 @@ export function ProductionRunPage() {
     );
   }
 
+  if (unavailable) {
+    return (
+      <div className="page-stack not-found" role="alert">
+        <p className="eyebrow">Unavailable</p>
+        <h1>PLAN_ONLY backend unavailable</h1>
+        <p>The production run could not be loaded safely.</p>
+        <Link to="/production">Return to production dashboard</Link>
+      </div>
+    );
+  }
+
   if (run === null) {
     return (
       <div className="page-stack not-found" role="alert">
         <p className="eyebrow">404</p>
         <h1>Production run not found</h1>
-        <p>The requested mock production run is not registered.</p>
+        <p>The requested production run is not registered.</p>
         <Link to="/production">Return to production dashboard</Link>
       </div>
     );
@@ -76,7 +98,9 @@ export function ProductionRunPage() {
     <div className="page-stack">
       <header className="page-heading">
         <div>
-          <p className="eyebrow">Synthetic UI mock</p>
+          <p className="eyebrow">
+            {run.execution_mode === "MOCK" ? "Synthetic UI mock" : "Backend PLAN_ONLY"}
+          </p>
           <h1>Production run</h1>
           <code>{run.run_id}</code>
         </div>
@@ -177,7 +201,7 @@ export function ProductionRunPage() {
             <div className="table-scroll">
               <table>
                 <caption className="sr-only">
-                  Scene timeline values supplied by the fixture
+                  Scene timeline values supplied by the planning backend
                 </caption>
                 <thead>
                   <tr>
@@ -234,7 +258,7 @@ export function ProductionRunPage() {
           <span>{run.warnings.warning_count}</span>
         </div>
         {run.warnings.conditions.length === 0 ? (
-          <p>No warnings were supplied for this fixture.</p>
+          <p>No warnings were supplied for this plan.</p>
         ) : (
           <ul className="condition-list">
             {run.warnings.conditions.map((condition) => (

@@ -65,14 +65,17 @@ describe("accessibility foundations", () => {
     const voice = screen.getByLabelText("Narration voice");
     const planOnly = screen.getByRole("radio", { name: /PLAN_ONLY/ });
     const fullRender = screen.getByRole("radio", { name: /FULL_RENDER/ });
-    expect(planOnly).toBeDisabled();
+    expect(planOnly).toBeEnabled();
+    expect(planOnly).toBeChecked();
     expect(aspectRatio).toHaveAccessibleDescription(
       "Locked by the current production contract.",
     );
     expect(voice).toHaveAccessibleDescription(
       "No topic-production voice contract is available.",
     );
-    expect(planOnly).toHaveAccessibleDescription("Backend integration pending.");
+    expect(planOnly).toHaveAccessibleDescription(
+      "Canonical planning only. Rendering remains unavailable.",
+    );
     expect(fullRender).toHaveAccessibleDescription(
       "Locked until backend, synthetic closure, and live canary approval.",
     );
