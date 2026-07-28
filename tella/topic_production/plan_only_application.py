@@ -47,6 +47,7 @@ from .script_input import (
     normalize_script_input,
 )
 from .scene_planning import ScenePlanningStore
+from .composition_planning import CompositionPlanningStore
 from .story_plan_producer import ApprovedStoryPlanProducer
 from .timing import build_scene_timings
 from .visual_candidates import (
@@ -954,6 +955,7 @@ class PlanOnlyApplication:
         self._review_statuses: dict[str, StoryPlanReviewStatus] = {}
         self._accepted_revision_ids: dict[str, str | None] = {}
         self._scene_planning = ScenePlanningStore()
+        self._composition_planning = CompositionPlanningStore()
         if visual_provider is None:
             configured = get_image_provider()
             visual_provider = configured if configured.is_configured() else None
@@ -1391,6 +1393,124 @@ class PlanOnlyApplication:
             candidate_id=candidate_id,
         )
 
+    def _composition_context(
+        self, run_id: str
+    ) -> (
+        tuple[
+            dict[str, object],
+            dict[str, object],
+            dict[str, object],
+            dict[str, dict[str, object]],
+            dict[str, bool],
+        ]
+        | None
+    ):
+        run = self.get_run(run_id)
+        review = self._review_payload(run_id)
+        scene_access = self.get_scene_plan(run_id)
+        if run is None or review is None or scene_access is None:
+            return None
+        collection = scene_access.get("collection")
+        visual_accesses: dict[str, dict[str, object]] = {}
+        artifact_validity: dict[str, bool] = {}
+        if isinstance(collection, dict):
+            for scene in collection.get("scenes", []):
+                scene_id = str(scene["scene_id"])
+                visual = self.get_visual_candidate_access(run_id, scene_id)
+                if visual is None:
+                    continue
+                visual_accesses[scene_id] = visual
+                visual_collection = visual.get("collection")
+                accepted_id = (
+                    visual_collection.get("current_accepted_candidate_id")
+                    if isinstance(visual_collection, dict)
+                    else None
+                )
+                artifact_validity[scene_id] = (
+                    isinstance(accepted_id, str)
+                    and self.get_visual_candidate_artifact(run_id, scene_id, accepted_id)
+                    is not None
+                )
+        return run, review, scene_access, visual_accesses, artifact_validity
+
+    def get_composition_access(self, run_id: str) -> dict[str, object] | None:
+        context = self._composition_context(run_id)
+        if context is None:
+            return None
+        run, review, scene_access, visual_accesses, artifact_validity = context
+        return self._composition_planning.access(
+            run=run,
+            review=review,
+            scene_access=scene_access,
+            visual_accesses=visual_accesses,
+            artifact_validity=artifact_validity,
+        )
+
+    def initialize_compositions(self, run_id: str, payload: object) -> dict[str, object] | None:
+        context = self._composition_context(run_id)
+        if context is None:
+            return None
+        run, review, scene_access, visual_accesses, artifact_validity = context
+        return self._composition_planning.initialize(
+            run=run,
+            review=review,
+            scene_access=scene_access,
+            visual_accesses=visual_accesses,
+            artifact_validity=artifact_validity,
+            payload=payload,
+        )
+
+    def mutate_composition(
+        self,
+        run_id: str,
+        scene_id: str,
+        operation: Literal["save", "restore", "accept", "request-revision"],
+        payload: object,
+    ) -> dict[str, object] | None:
+        access = self.get_composition_access(run_id)
+        if access is None:
+            return None
+        if access.get("editable") is not True:
+            return {
+                "schema_version": 1,
+                "access": None,
+                "collection": None,
+                "error": {
+                    "schema_version": 1,
+                    "code": "COMPOSITION_NOT_AUTHORIZED",
+                    "message": "Current upstream authority does not permit composition mutation.",
+                    "retryable": False,
+                },
+            }
+        if operation == "save":
+            return self._composition_planning.save(run_id, scene_id, payload)
+        if operation == "restore":
+            return self._composition_planning.restore(run_id, scene_id, payload)
+        return self._composition_planning.review(run_id, scene_id, operation, payload)
+
+    def get_composition(self, run_id: str, scene_id: str) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        self.get_composition_access(run_id)
+        return self._composition_planning.composition(run_id, scene_id)
+
+    def get_composition_history(self, run_id: str, scene_id: str) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        return self._composition_planning.composition_history(run_id, scene_id)
+
+    def get_composition_collection_history(self, run_id: str) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        return self._composition_planning.collection_history(run_id)
+
+    def get_composition_collection_revision(
+        self, run_id: str, revision_id: str
+    ) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        return self._composition_planning.collection_revision(run_id, revision_id)
+
 
 class PlanOnlyFacadeResponse(_ContractModel):
     status_code: int = Field(ge=200, le=599)
@@ -1456,6 +1576,60 @@ def dispatch_plan_only_request(
             status_code=200 if revision is not None else 404,
             payload=revision,
         )
+    if len(parts) >= 2 and parts[1] == "compositions":
+        run_id = parts[0]
+        tail = parts[2:]
+        if tail in ([], ["access"]) and method == "GET":
+            access = application.get_composition_access(run_id)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if access is not None else 404,
+                payload=access,
+            )
+        if tail == ["initialize"] and method == "POST":
+            result = application.initialize_compositions(run_id, body)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if result is not None else 404,
+                payload=result,
+            )
+        if tail == ["revisions"] and method == "GET":
+            history = application.get_composition_collection_history(run_id)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if history is not None else 404,
+                payload=history,
+            )
+        if len(tail) == 2 and tail[0] == "revisions" and method == "GET":
+            revision = application.get_composition_collection_revision(run_id, tail[1])
+            return PlanOnlyFacadeResponse(
+                status_code=200 if revision is not None else 404,
+                payload=revision,
+            )
+        if len(tail) >= 2 and tail[0] == "scenes":
+            scene_id = tail[1]
+            if len(tail) == 2 and method == "GET":
+                composition = application.get_composition(run_id, scene_id)
+                return PlanOnlyFacadeResponse(
+                    status_code=200 if composition is not None else 404,
+                    payload=composition,
+                )
+            if tail[2:] == ["history"] and method == "GET":
+                history = application.get_composition_history(run_id, scene_id)
+                return PlanOnlyFacadeResponse(
+                    status_code=200 if history is not None else 404,
+                    payload=history,
+                )
+            operation_by_tail = {
+                ("revisions",): "save",
+                ("restore",): "restore",
+                ("accept",): "accept",
+                ("request-revision",): "request-revision",
+            }
+            operation = operation_by_tail.get(tuple(tail[2:]))
+            if operation is not None and method == "POST":
+                result = application.mutate_composition(run_id, scene_id, operation, body)
+                return PlanOnlyFacadeResponse(
+                    status_code=200 if result is not None else 404,
+                    payload=result,
+                )
     if len(parts) >= 2 and parts[1] == "scene-plan":
         run_id = parts[0]
         tail = parts[2:]

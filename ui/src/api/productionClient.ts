@@ -31,7 +31,16 @@ import type {
   VisualCandidateMutationRequestV1,
   VisualCandidateOperationResultV1,
   VisualCandidateV1,
+  CompositionAccessV1,
+  CompositionEditV1,
+  CompositionOperationResultV1,
+  CompositionReviewReasonV1,
 } from "../contracts/v1/production";
+import {
+  validateCompositionAccess,
+  validateCompositionOperation,
+  validateSceneComposition,
+} from "./compositionValidation";
 import {
   validateSceneHistory,
   validateScenePlanCollection,
@@ -142,6 +151,53 @@ export interface ProductionRepository {
     operation: "accept" | "reject" | "request-revision",
     request: VisualCandidateMutationRequestV1,
   ): Promise<VisualCandidateOperationResultV1>;
+  getCompositionAccess?(runId: string): Promise<CompositionAccessV1 | null>;
+  initializeCompositions?(
+    runId: string,
+    scenePlanCollectionRevisionId: string,
+  ): Promise<CompositionOperationResultV1>;
+  saveComposition?(
+    runId: string,
+    sceneId: string,
+    request: {
+      readonly schema_version: 1;
+      readonly base_collection_revision_id: string;
+      readonly base_composition_revision_id: string;
+      readonly changes: CompositionEditV1;
+    },
+  ): Promise<CompositionOperationResultV1>;
+  reviewComposition?(
+    runId: string,
+    sceneId: string,
+    operation: "accept" | "request-revision",
+    request: {
+      readonly schema_version: 1;
+      readonly base_collection_revision_id: string;
+      readonly base_composition_revision_id: string;
+      readonly reason_code: CompositionReviewReasonV1;
+      readonly note: string | null;
+    },
+  ): Promise<CompositionOperationResultV1>;
+  restoreComposition?(
+    runId: string,
+    sceneId: string,
+    request: {
+      readonly schema_version: 1;
+      readonly base_collection_revision_id: string;
+      readonly base_composition_revision_id: string;
+      readonly restore_composition_revision_id: string;
+      readonly reason: string;
+    },
+  ): Promise<CompositionOperationResultV1>;
+  getCompositionHistory?(
+    runId: string,
+    sceneId: string,
+  ): Promise<{
+    readonly schema_version: 1;
+    readonly run_id: string;
+    readonly scene_id: string;
+    readonly revisions: readonly import("../contracts/v1/production").SceneCompositionV1[];
+  } | null>;
 }
 
 export class ProductionContractError extends Error {
@@ -1481,6 +1537,108 @@ export class BackendProductionRepository implements ProductionRepository {
       `${encodeURIComponent(candidateId)}/${operation}`,
       request,
     );
+  }
+
+  async getCompositionAccess(runId: string) {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/compositions/access`,
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const access = validateCompositionAccess(response.payload);
+    if (access.run_id !== runId) throw new ProductionContractError();
+    return access;
+  }
+
+  async #compositionMutation(
+    runId: string,
+    path: string,
+    request: object,
+  ): Promise<CompositionOperationResultV1> {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/compositions/${path}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(request),
+      },
+    );
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const result = validateCompositionOperation(response.payload);
+    if (
+      (result.access !== null && result.access?.run_id !== runId) ||
+      (result.collection !== null && result.collection?.run_id !== runId)
+    ) {
+      throw new ProductionContractError();
+    }
+    return result;
+  }
+
+  initializeCompositions(runId: string, scenePlanCollectionRevisionId: string) {
+    return this.#compositionMutation(runId, "initialize", {
+      schema_version: 1,
+      scene_plan_collection_revision_id: scenePlanCollectionRevisionId,
+    });
+  }
+
+  saveComposition(
+    runId: string,
+    sceneId: string,
+    request: Parameters<NonNullable<ProductionRepository["saveComposition"]>>[2],
+  ) {
+    return this.#compositionMutation(
+      runId,
+      `scenes/${encodeURIComponent(sceneId)}/revisions`,
+      request,
+    );
+  }
+
+  reviewComposition(
+    runId: string,
+    sceneId: string,
+    operation: "accept" | "request-revision",
+    request: Parameters<NonNullable<ProductionRepository["reviewComposition"]>>[3],
+  ) {
+    return this.#compositionMutation(
+      runId,
+      `scenes/${encodeURIComponent(sceneId)}/${operation}`,
+      request,
+    );
+  }
+
+  restoreComposition(
+    runId: string,
+    sceneId: string,
+    request: Parameters<NonNullable<ProductionRepository["restoreComposition"]>>[2],
+  ) {
+    return this.#compositionMutation(
+      runId,
+      `scenes/${encodeURIComponent(sceneId)}/restore`,
+      request,
+    );
+  }
+
+  async getCompositionHistory(runId: string, sceneId: string) {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/compositions/scenes/${encodeURIComponent(sceneId)}/history`,
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const payload = response.payload as Record<string, unknown>;
+    if (
+      payload.schema_version !== 1 ||
+      payload.run_id !== runId ||
+      payload.scene_id !== sceneId ||
+      !Array.isArray(payload.revisions)
+    ) {
+      throw new ProductionContractError();
+    }
+    return {
+      schema_version: 1 as const,
+      run_id: runId,
+      scene_id: sceneId,
+      revisions: payload.revisions.map(validateSceneComposition),
+    };
   }
 }
 

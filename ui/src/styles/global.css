@@ -1321,6 +1321,142 @@ thead th {
   }
 }
 
+.composition-page {
+  display: grid;
+  gap: var(--space-5);
+  min-width: 0;
+}
+
+.composition-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.composition-header nav,
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.composition-workspace {
+  display: grid;
+  grid-template-columns: minmax(12rem, 0.7fr) minmax(20rem, 1.5fr) minmax(16rem, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+  min-width: 0;
+}
+
+.composition-workspace > * {
+  min-width: 0;
+}
+
+.composition-nav {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.composition-nav button {
+  display: grid;
+  min-height: 3rem;
+  gap: 0.2rem;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.composition-nav button[aria-current="true"] {
+  outline: 0.2rem solid var(--color-focus);
+}
+
+.composition-center fieldset {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin-block: var(--space-4);
+}
+
+.composition-center label {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.composition-frame {
+  position: relative;
+  width: min(100%, 20rem);
+  aspect-ratio: 9 / 16;
+  margin-inline: auto;
+  overflow: hidden;
+  background: #111827;
+  border: 0.15rem solid var(--color-border-strong);
+}
+
+.composition-frame img,
+.composition-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.composition-frame img {
+  transform-origin: center;
+}
+
+.composition-overlay {
+  pointer-events: none;
+  opacity: 0.2;
+}
+
+.safe-zone {
+  position: absolute;
+  pointer-events: none;
+  border: 1px dashed rgba(255, 255, 255, 0.9);
+}
+
+.title-safe {
+  inset: 10%;
+}
+
+.subtitle-safe {
+  inset: 16% 6%;
+}
+
+.preview-disclaimer {
+  font-weight: 600;
+}
+
+.composition-authority dd {
+  margin-inline-start: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 70rem) {
+  .composition-workspace {
+    grid-template-columns: minmax(12rem, 0.7fr) minmax(20rem, 1.5fr);
+  }
+
+  .composition-authority {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 44rem) {
+  .composition-header {
+    display: grid;
+  }
+
+  .composition-workspace,
+  .composition-center fieldset {
+    grid-template-columns: 1fr;
+  }
+
+  .composition-authority {
+    grid-column: auto;
+  }
+}
+
 .primary-link-action {
   align-self: flex-start;
   border-radius: 0.7rem;

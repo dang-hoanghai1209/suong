@@ -696,3 +696,213 @@ export interface VisualCandidateOperationResultV1 {
     readonly retryable: boolean;
   } | null;
 }
+
+export type CompositionStatusV1 =
+  | "DRAFT"
+  | "VALID"
+  | "WARNING"
+  | "BLOCKED"
+  | "ACCEPTED_FOR_TIMELINE_PLANNING"
+  | "REVISION_REQUESTED"
+  | "SUPERSEDED";
+export type CompositionFitModeV1 =
+  | "CONTAIN"
+  | "COVER"
+  | "FIT_WIDTH"
+  | "FIT_HEIGHT"
+  | "MANUAL_CROP";
+export type CompositionMotionModeV1 =
+  | "STATIC"
+  | "SLOW_ZOOM_IN"
+  | "SLOW_ZOOM_OUT"
+  | "PAN_LEFT"
+  | "PAN_RIGHT"
+  | "PAN_UP"
+  | "PAN_DOWN"
+  | "CUSTOM_START_END";
+export type CompositionTransitionV1 =
+  | "CUT"
+  | "CROSSFADE"
+  | "FADE_THROUGH_COLOR"
+  | "DIP_TO_BLACK"
+  | "HOLD_THEN_CUT";
+export type CompositionReviewReasonV1 =
+  | "FRAMING_UNSUITABLE"
+  | "CROP_UNSUITABLE"
+  | "SUBJECT_POSITION_UNSUITABLE"
+  | "CHARACTER_SCALE_INCONSISTENT"
+  | "SAFE_ZONE_CONFLICT"
+  | "LAYER_ORDER_INCORRECT"
+  | "MOTION_INTENT_UNSUITABLE"
+  | "TRANSITION_INTENT_UNSUITABLE"
+  | "CONTINUITY_MISMATCH"
+  | "COLOR_TREATMENT_UNSUITABLE"
+  | "OTHER_BOUNDED_NOTE";
+
+export interface NormalizedGeometryV1 {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  readonly anchor_x: number;
+  readonly anchor_y: number;
+  readonly scale: number;
+  readonly rotation_degrees: number;
+  readonly opacity: number;
+}
+export interface NormalizedCropV1 {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+export interface CompositionMotionIntentV1 {
+  readonly mode: CompositionMotionModeV1;
+  readonly start_scale: number;
+  readonly end_scale: number;
+  readonly start_anchor_x: number;
+  readonly start_anchor_y: number;
+  readonly end_anchor_x: number;
+  readonly end_anchor_y: number;
+}
+export interface SceneCompositionV1 {
+  readonly schema_version: 1;
+  readonly composition_id: string;
+  readonly composition_revision_id: string;
+  readonly composition_revision_number: number;
+  readonly position: number;
+  readonly run_id: string;
+  readonly story_revision_id: string;
+  readonly scene_plan_collection_revision_id: string;
+  readonly scene_id: string;
+  readonly scene_revision_id: string;
+  readonly visual_collection_revision_id: string;
+  readonly accepted_candidate_id: string;
+  readonly accepted_candidate_revision_id: string;
+  readonly accepted_candidate_sha256: string;
+  readonly artifact_url: string;
+  readonly source_width: number;
+  readonly source_height: number;
+  readonly source_mime: "image/png" | "image/jpeg" | "image/webp";
+  readonly source_coverage: { readonly start: number; readonly end: number };
+  readonly semantic_beat_id: string;
+  readonly planned_duration_seconds: number;
+  readonly aspect_ratio: "9:16";
+  readonly composition_contract_version: "composition_planning_v1";
+  readonly status: CompositionStatusV1;
+  readonly fit_mode: CompositionFitModeV1;
+  readonly crop: NormalizedCropV1;
+  readonly placement: NormalizedGeometryV1;
+  readonly safe_margins: {
+    readonly top: 0.08;
+    readonly bottom: 0.12;
+    readonly left: 0.06;
+    readonly right: 0.06;
+    readonly title_safe: 0.1;
+    readonly subtitle_safe: 0.16;
+  };
+  readonly layers: readonly {
+    readonly layer_id: string;
+    readonly layer_type:
+      | "ACCEPTED_VISUAL"
+      | "SAFE_COLOR_WASH"
+      | "SAFE_GRADIENT_OVERLAY";
+    readonly z_order: number;
+    readonly enabled: boolean;
+    readonly geometry: NormalizedGeometryV1;
+    readonly opacity: number;
+    readonly color: string | null;
+  }[];
+  readonly motion_intent: CompositionMotionIntentV1;
+  readonly transition_intent: CompositionTransitionV1;
+  readonly transition_duration_seconds: number;
+  readonly note: string | null;
+  readonly validation: {
+    readonly valid: boolean;
+    readonly blocker_codes: readonly string[];
+    readonly warning_codes: readonly string[];
+    readonly information_codes: readonly string[];
+  };
+  readonly continuity_codes: readonly string[];
+  readonly changed_fields: readonly string[];
+  readonly review_history: readonly {
+    readonly review_id: string;
+    readonly action: "ACCEPTED" | "REVISION_REQUESTED" | "SUPERSEDED";
+    readonly reason_code: string;
+    readonly note: string | null;
+    readonly composition_revision_id: string;
+    readonly created_at: string;
+  }[];
+  readonly accepted_for_timeline_planning: boolean;
+  readonly superseded_reason: string | null;
+  readonly created_at: string;
+  readonly render_authority: false;
+  readonly renderer_execution_authority: false;
+  readonly video_render_authority: false;
+  readonly timeline_execution_authority: false;
+  readonly final_media_capability: false;
+  readonly narration_generation_capability: false;
+  readonly tts_capability: false;
+}
+export interface CompositionCollectionV1 {
+  readonly schema_version: 1;
+  readonly collection_id: string;
+  readonly collection_revision_id: string;
+  readonly collection_revision_number: number;
+  readonly run_id: string;
+  readonly story_revision_id: string;
+  readonly scene_plan_collection_revision_id: string;
+  readonly compositions: readonly SceneCompositionV1[];
+  readonly missing_scene_ids: readonly string[];
+  readonly total_scene_count: number;
+  readonly valid_composition_count: number;
+  readonly warning_composition_count: number;
+  readonly blocked_composition_count: number;
+  readonly accepted_for_timeline_planning_count: number;
+  readonly overall_ready_for_timeline_planning: boolean;
+  readonly created_at: string;
+  readonly render_authority: false;
+  readonly renderer_execution_authority: false;
+  readonly video_render_authority: false;
+  readonly timeline_execution_authority: false;
+  readonly final_media_capability: false;
+}
+export interface CompositionAccessV1 {
+  readonly schema_version: 1;
+  readonly run_id: string;
+  readonly editable: boolean;
+  readonly initialization_authorized: boolean;
+  readonly blocker_codes: readonly string[];
+  readonly current_story_revision_id: string | null;
+  readonly current_scene_plan_collection_revision_id: string | null;
+  readonly collection: CompositionCollectionV1 | null;
+  readonly process_local: true;
+  readonly render_authority: false;
+  readonly renderer_execution_authority: false;
+  readonly video_render_authority: false;
+  readonly timeline_execution_authority: false;
+  readonly final_media_capability: false;
+  readonly narration_generation_capability: false;
+  readonly tts_capability: false;
+}
+export interface CompositionEditV1 {
+  readonly fit_mode?: CompositionFitModeV1;
+  readonly crop?: NormalizedCropV1;
+  readonly placement?: NormalizedGeometryV1;
+  readonly motion_intent?: CompositionMotionIntentV1;
+  readonly transition_intent?: CompositionTransitionV1;
+  readonly transition_duration_seconds?: number;
+  readonly overlay_color?: string | null;
+  readonly note?: string | null;
+}
+export interface CompositionOperationResultV1 {
+  readonly schema_version: 1;
+  readonly access?: CompositionAccessV1 | null;
+  readonly collection?: CompositionCollectionV1 | null;
+  readonly error: {
+    readonly schema_version: 1;
+    readonly code: string;
+    readonly message: string;
+    readonly retryable: false;
+  } | null;
+}

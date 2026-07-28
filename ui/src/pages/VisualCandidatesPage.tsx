@@ -292,9 +292,16 @@ export function VisualCandidatesPage() {
           <h1>Visual candidate review</h1>
           <code>{runId}</code> · <code>{sceneId}</code>
         </div>
-        <Link to={`/production/runs/${encodeURIComponent(runId)}/scenes`}>
-          Back to scene planning
-        </Link>
+        <nav aria-label="Visual workspace navigation">
+          <Link to={`/production/runs/${encodeURIComponent(runId)}/scenes`}>
+            Back to scene planning
+          </Link>
+          {access.current_accepted_candidate_id ? (
+            <Link to={`/production/runs/${encodeURIComponent(runId)}/compositions`}>
+              Open composition planning
+            </Link>
+          ) : null}
+        </nav>
       </header>
 
       <p role="status" aria-live="polite">
