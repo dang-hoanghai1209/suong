@@ -1221,3 +1221,140 @@ thead th {
     animation-iteration-count: 1 !important;
   }
 }
+
+.primary-link-action {
+  align-self: flex-start;
+  border-radius: 0.7rem;
+  background: var(--color-accent);
+  color: white;
+  padding: 0.75rem 1rem;
+  text-decoration: none;
+}
+
+.scene-planning-layout {
+  display: grid;
+  grid-template-columns: minmax(14rem, 0.8fr) minmax(0, 2fr) minmax(17rem, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.scene-navigation {
+  position: sticky;
+  top: 1rem;
+}
+
+.scene-navigation ol {
+  display: grid;
+  gap: 0.5rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.scene-navigation button {
+  display: grid;
+  gap: 0.25rem;
+  width: 100%;
+  min-height: 3rem;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.scene-navigation button[aria-current="page"] {
+  outline: 0.2rem solid var(--color-accent);
+  outline-offset: 0.1rem;
+}
+
+.scene-planning-center,
+.scene-editor-fields,
+.scene-authority dl {
+  display: grid;
+  gap: 1rem;
+}
+
+.scene-editor-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.scene-editor-fields label,
+.review-dialog label {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.scene-editor-fields textarea {
+  min-height: 6rem;
+  resize: vertical;
+}
+
+.scene-operation-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.scene-authority-collapse {
+  min-width: 0;
+}
+
+.scene-authority-collapse > summary {
+  cursor: pointer;
+  font-weight: 700;
+  margin-bottom: 0.6rem;
+}
+
+.scene-authority code,
+.scene-planning-workspace code {
+  overflow-wrap: anywhere;
+}
+
+.small-screen-scene-back {
+  display: none;
+}
+
+@media (max-width: 1050px) {
+  .scene-planning-layout {
+    grid-template-columns: minmax(13rem, 0.8fr) minmax(0, 2fr);
+  }
+
+  .scene-authority-collapse {
+    grid-column: 1 / -1;
+  }
+
+  .scene-authority-collapse:not([open]) .scene-authority {
+    display: none;
+  }
+}
+
+@media (max-width: 700px) {
+  .scene-planning-layout,
+  .scene-editor-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .scene-navigation {
+    position: static;
+  }
+
+  .scene-authority-collapse {
+    grid-column: auto;
+  }
+
+  .small-screen-scene-back {
+    display: inline-flex;
+  }
+
+  .scene-planning-layout:not(.mobile-scene-detail) .scene-planning-center,
+  .scene-planning-layout:not(.mobile-scene-detail) .scene-authority-collapse {
+    display: none;
+  }
+
+  .scene-planning-layout.mobile-scene-detail .scene-navigation {
+    display: none;
+  }
+
+  .scene-operation-grid > button {
+    min-height: 2.75rem;
+    flex: 1 1 10rem;
+  }
+}

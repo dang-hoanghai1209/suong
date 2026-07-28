@@ -314,3 +314,184 @@ export interface StoryPlanReviewOperationResultV1 {
   readonly revision: StoryPlanRevisionV1 | null;
   readonly error: PublicApiErrorV1 | null;
 }
+
+export type ScenePlanStatusV1 =
+  | "DRAFT"
+  | "VALID"
+  | "WARNING"
+  | "BLOCKED"
+  | "ACCEPTED_FOR_VISUAL_PLANNING"
+  | "REVISION_REQUESTED";
+
+export interface ScenePlanV1 {
+  readonly schema_version: 1;
+  readonly run_id: string;
+  readonly source_story_revision_id: string;
+  readonly scene_id: string;
+  readonly scene_revision_id: string;
+  readonly scene_revision_number: number;
+  readonly order: number;
+  readonly source_beat_id: string;
+  readonly source_coverage: {
+    readonly start: number;
+    readonly end: number;
+    readonly overlap_draft: boolean;
+  };
+  readonly narration_segment: string;
+  readonly objective: string;
+  readonly emotional_intent: string;
+  readonly environment: string;
+  readonly character_action: string;
+  readonly objects: readonly string[];
+  readonly composition_guidance: string;
+  readonly continuity_notes: string;
+  readonly camera_motion_intent: string;
+  readonly transition_intent: string;
+  readonly planned_duration_seconds: number;
+  readonly planning_note: string;
+  readonly status: ScenePlanStatusV1;
+  readonly warning_codes: readonly string[];
+  readonly blocker_codes: readonly string[];
+  readonly continuity: {
+    readonly recurring_character_required: boolean;
+    readonly anonymous_background_allowed: boolean;
+    readonly identity_continuity_required: true;
+    readonly environment_continuity: "PLANNING_REQUIRED";
+    readonly object_continuity: "PLANNING_REQUIRED";
+    readonly visual_identity_verified: false;
+  };
+  readonly created_at: string;
+}
+
+export interface ScenePlanRevisionSummaryV1 {
+  readonly collection_revision_id: string;
+  readonly revision_number: number;
+  readonly created_at: string;
+  readonly reason: string;
+  readonly affected_scene_ids: readonly string[];
+}
+
+export interface ScenePlanCollectionV1 {
+  readonly schema_version: 1;
+  readonly run_id: string;
+  readonly source_story_revision_id: string;
+  readonly accepted_story_revision_id: string;
+  readonly collection_revision_id: string;
+  readonly collection_revision_number: number;
+  readonly created_at: string;
+  readonly reason: string;
+  readonly source_narration_length: number;
+  readonly scenes: readonly ScenePlanV1[];
+  readonly revision_history: readonly ScenePlanRevisionSummaryV1[];
+  readonly target_duration_seconds: number;
+  readonly target_min_seconds: 32;
+  readonly target_max_seconds: 38;
+  readonly total_planned_duration_seconds: number;
+  readonly duration_valid: boolean;
+  readonly source_coverage_valid: boolean;
+  readonly ready_for_visual_planning: boolean;
+  readonly render_authority: false;
+  readonly media_capability: false;
+  readonly process_local: true;
+}
+
+export interface ScenePlanAccessV1 {
+  readonly schema_version: 1;
+  readonly run_id: string;
+  readonly editable: boolean;
+  readonly blocker_codes: readonly string[];
+  readonly collection: ScenePlanCollectionV1 | null;
+  readonly render_authority: false;
+  readonly media_capability: false;
+  readonly process_local: true;
+}
+
+export interface ScenePlanOperationResultV1 {
+  readonly schema_version: 1;
+  readonly access: ScenePlanAccessV1 | null;
+  readonly error: PublicApiErrorV1 | null;
+}
+
+export interface ScenePlanEditChangesV1 {
+  readonly objective?: string;
+  readonly emotional_intent?: string;
+  readonly environment?: string;
+  readonly character_action?: string;
+  readonly objects?: readonly string[];
+  readonly composition_guidance?: string;
+  readonly continuity_notes?: string;
+  readonly camera_motion_intent?: string;
+  readonly transition_intent?: string;
+  readonly planned_duration_seconds?: number;
+  readonly planning_note?: string;
+}
+
+export interface SaveSceneRevisionRequestV1 {
+  readonly schema_version: 1;
+  readonly base_collection_revision_id: string;
+  readonly base_scene_revision_id: string;
+  readonly changes: ScenePlanEditChangesV1;
+}
+
+export interface ScenePlanMutationBaseV1 {
+  readonly schema_version: 1;
+  readonly base_collection_revision_id: string;
+}
+
+export interface SceneTransitionRequestV1 extends ScenePlanMutationBaseV1 {
+  readonly scene_id: string;
+  readonly base_scene_revision_id: string;
+}
+
+export interface RequestSceneRevisionV1 extends SceneTransitionRequestV1 {
+  readonly reason_code:
+    | "OBJECTIVE_NEEDS_REVISION"
+    | "CONTINUITY_NEEDS_REVISION"
+    | "DURATION_NEEDS_REVISION"
+    | "SOURCE_LINKAGE_NEEDS_REVISION"
+    | "OTHER_PLANNING_REVISION";
+  readonly note: string | null;
+}
+
+export interface ReorderSceneRequestV1 extends ScenePlanMutationBaseV1 {
+  readonly scene_id: string;
+  readonly direction: "UP" | "DOWN";
+}
+
+export interface SplitSceneRequestV1 extends ScenePlanMutationBaseV1 {
+  readonly scene_id: string;
+  readonly base_scene_revision_id: string;
+  readonly split_at: number;
+  readonly first_duration_seconds: number;
+  readonly second_duration_seconds: number;
+}
+
+export interface MergeScenesRequestV1 extends ScenePlanMutationBaseV1 {
+  readonly first_scene_id: string;
+  readonly second_scene_id: string;
+}
+
+export interface DuplicateSceneRequestV1 extends ScenePlanMutationBaseV1 {
+  readonly scene_id: string;
+}
+
+export interface RestoreSceneRevisionRequestV1 extends ScenePlanMutationBaseV1 {
+  readonly base_scene_revision_id: string;
+  readonly restore_scene_revision_id: string;
+  readonly reason: string;
+}
+
+export interface ScenePlanSceneHistoryV1 {
+  readonly schema_version: 1;
+  readonly run_id: string;
+  readonly scene_id: string;
+  readonly current_scene_revision_id: string;
+  readonly revisions: readonly ScenePlanV1[];
+}
+
+export interface ScenePlanCollectionHistoryV1 {
+  readonly schema_version: 1;
+  readonly run_id: string;
+  readonly current_collection_revision_id: string;
+  readonly revisions: readonly ScenePlanRevisionSummaryV1[];
+}

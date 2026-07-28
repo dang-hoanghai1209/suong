@@ -258,6 +258,56 @@ def test_review_revision_routes_methods_and_malformed_json_are_bounded(
     assert malformed["error"]["code"] == "MALFORMED_JSON"
 
 
+def test_scene_plan_routes_are_loopback_bounded_and_method_strict(
+    tmp_path: Path,
+) -> None:
+    with _running_host(tmp_path) as address:
+        _, created, _ = _json_request(
+            address,
+            "POST",
+            "/api/v1/plan-only/runs",
+            _request_payload(),
+        )
+        run_id = str(created["run"]["run_id"])
+        root = f"/api/v1/plan-only/runs/{run_id}"
+        _json_request(
+            address,
+            "POST",
+            f"{root}/review/accept",
+            {"schema_version": 1, "current_revision_id": "revision-0001"},
+        )
+        initialized_status, initialized, _ = _json_request(
+            address,
+            "POST",
+            f"{root}/scene-plan/initialize",
+            {"schema_version": 1, "accepted_story_revision_id": "revision-0001"},
+        )
+        access_status, access, _ = _http_request(address, "GET", f"{root}/scene-plan")
+        scene_status, scene, _ = _http_request(address, "GET", f"{root}/scene-plan/scenes/scene_01")
+        method_status, method_error, headers = _http_request(
+            address, "GET", f"{root}/scene-plan/initialize"
+        )
+        malformed_status, malformed, _ = _http_request(
+            address,
+            "POST",
+            f"{root}/scene-plan/reorder",
+            body=b"{",
+            headers={"Content-Type": "application/json", "Content-Length": "1"},
+        )
+
+    assert initialized_status == 200
+    assert initialized["access"]["collection"]["render_authority"] is False
+    assert access_status == 200
+    assert access["editable"] is True
+    assert scene_status == 200
+    assert scene["scene_revision_id"] == "scene-revision-0001-01"
+    assert method_status == 405
+    assert method_error["error"]["code"] == "METHOD_NOT_ALLOWED"
+    assert headers["Allow"] == "POST"
+    assert malformed_status == 400
+    assert malformed["error"]["code"] == "MALFORMED_JSON"
+
+
 @pytest.mark.parametrize(
     ("body", "expected_status", "expected_code"),
     [

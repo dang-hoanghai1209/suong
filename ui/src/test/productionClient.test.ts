@@ -241,6 +241,47 @@ describe("backend production repository", () => {
     ).rejects.toBeInstanceOf(ProductionContractError);
     expect(fetchSentinel).not.toHaveBeenCalled();
   });
+
+  it("allows only the exact bounded scene-planning route matrix", async () => {
+    const fetchSentinel = vi.fn(async () =>
+      new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const transport = defineNativeFetchClient(
+      fetchSentinel as unknown as typeof fetch,
+    );
+    const root = `/api/v1/plan-only/runs/${runId}/scene-plan`;
+    const routes: Array<[string, string]> = [
+      [root, "GET"],
+      [`${root}/initialize`, "POST"],
+      [`${root}/revisions`, "GET"],
+      [`${root}/revisions/scene-plan-revision-0001`, "GET"],
+      [`${root}/scenes/scene_01`, "GET"],
+      [`${root}/scenes/scene_01/history`, "GET"],
+      [`${root}/scenes/scene_01/revisions`, "POST"],
+      [`${root}/scenes/scene_01/restore`, "POST"],
+      [`${root}/scenes/scene_01/accept`, "POST"],
+      [`${root}/scenes/scene_01/request-revision`, "POST"],
+      [`${root}/reorder`, "POST"],
+      [`${root}/split`, "POST"],
+      [`${root}/merge`, "POST"],
+      [`${root}/duplicate`, "POST"],
+    ];
+    for (const [path, method] of routes) {
+      await transport.request(path, { method });
+    }
+    expect(fetchSentinel).toHaveBeenCalledTimes(routes.length);
+
+    await expect(
+      transport.request(`${root}/render`, { method: "POST" }),
+    ).rejects.toBeInstanceOf(ProductionContractError);
+    await expect(
+      transport.request(`${root}/initialize`, { method: "GET" }),
+    ).rejects.toBeInstanceOf(ProductionContractError);
+    expect(fetchSentinel).toHaveBeenCalledTimes(routes.length);
+  });
 });
 
 describe("StoryPlan review repository boundary", () => {

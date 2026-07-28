@@ -43,6 +43,7 @@ from .script_input import (
     TopicScriptInput,
     normalize_script_input,
 )
+from .scene_planning import ScenePlanningStore
 from .story_plan_producer import ApprovedStoryPlanProducer
 from .timing import build_scene_timings
 
@@ -938,6 +939,7 @@ class PlanOnlyApplication:
         self._revisions: dict[str, tuple[StoryPlanRevisionV1, ...]] = {}
         self._review_statuses: dict[str, StoryPlanReviewStatus] = {}
         self._accepted_revision_ids: dict[str, str | None] = {}
+        self._scene_planning = ScenePlanningStore()
 
     def _produce(
         self,
@@ -1221,6 +1223,64 @@ class PlanOnlyApplication:
         )
         return None if revision is None else _json_detached(revision)
 
+    def _review_payload(self, run_id: str) -> dict[str, object] | None:
+        review = self._review(run_id)
+        return None if review is None else review.model_dump(mode="json")
+
+    def get_scene_plan(self, run_id: str) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        return self._scene_planning.get_access(run_id, self._review_payload(run_id))
+
+    def initialize_scene_plan(self, run_id: str, payload: object) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        return self._scene_planning.initialize(run_id, self._review_payload(run_id), payload)
+
+    def mutate_scene_plan(
+        self,
+        run_id: str,
+        operation: str,
+        payload: object,
+        *,
+        scene_id: str | None = None,
+    ) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        review = self._review_payload(run_id)
+        if operation == "save" and scene_id is not None:
+            return self._scene_planning.save(run_id, review, scene_id, payload)
+        if operation == "restore" and scene_id is not None:
+            return self._scene_planning.restore(run_id, review, scene_id, payload)
+        if operation == "accept":
+            return self._scene_planning.transition(run_id, review, payload, accept=True)
+        if operation == "request-revision":
+            return self._scene_planning.transition(run_id, review, payload, accept=False)
+        method = getattr(self._scene_planning, operation, None)
+        if method is None:
+            return None
+        return method(run_id, review, payload)
+
+    def get_scene_plan_history(self, run_id: str) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        return self._scene_planning.collection_history(run_id)
+
+    def get_scene_plan_revision(self, run_id: str, revision_id: str) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        return self._scene_planning.collection_revision(run_id, revision_id)
+
+    def get_planned_scene(self, run_id: str, scene_id: str) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        return self._scene_planning.scene(run_id, scene_id)
+
+    def get_planned_scene_history(self, run_id: str, scene_id: str) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        return self._scene_planning.scene_history(run_id, scene_id)
+
 
 class PlanOnlyFacadeResponse(_ContractModel):
     status_code: int = Field(ge=200, le=599)
@@ -1286,6 +1346,81 @@ def dispatch_plan_only_request(
             status_code=200 if revision is not None else 404,
             payload=revision,
         )
+    if len(parts) >= 2 and parts[1] == "scene-plan":
+        run_id = parts[0]
+        tail = parts[2:]
+        if not tail and method == "GET":
+            access = application.get_scene_plan(run_id)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if access is not None else 404,
+                payload=access,
+            )
+        if tail == ["initialize"] and method == "POST":
+            result = application.initialize_scene_plan(run_id, body)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if result is not None else 404,
+                payload=result,
+            )
+        if tail == ["revisions"] and method == "GET":
+            history = application.get_scene_plan_history(run_id)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if history is not None else 404,
+                payload=history,
+            )
+        if len(tail) == 2 and tail[0] == "revisions" and method == "GET":
+            revision = application.get_scene_plan_revision(run_id, tail[1])
+            return PlanOnlyFacadeResponse(
+                status_code=200 if revision is not None else 404,
+                payload=revision,
+            )
+        if len(tail) >= 2 and tail[0] == "scenes":
+            scene_id = tail[1]
+            if len(tail) == 2 and method == "GET":
+                scene = application.get_planned_scene(run_id, scene_id)
+                return PlanOnlyFacadeResponse(
+                    status_code=200 if scene is not None else 404,
+                    payload=scene,
+                )
+            if tail[2:] == ["history"] and method == "GET":
+                history = application.get_planned_scene_history(run_id, scene_id)
+                return PlanOnlyFacadeResponse(
+                    status_code=200 if history is not None else 404,
+                    payload=history,
+                )
+            operation_by_tail = {
+                ("revisions",): "save",
+                ("restore",): "restore",
+                ("accept",): "accept",
+                ("request-revision",): "request-revision",
+            }
+            operation = operation_by_tail.get(tuple(tail[2:]))
+            if operation is not None and method == "POST":
+                result = application.mutate_scene_plan(
+                    run_id,
+                    operation,
+                    body,
+                    scene_id=scene_id,
+                )
+                return PlanOnlyFacadeResponse(
+                    status_code=200 if result is not None else 404,
+                    payload=result,
+                )
+        if (
+            len(tail) == 1
+            and tail[0]
+            in {
+                "reorder",
+                "split",
+                "merge",
+                "duplicate",
+            }
+            and method == "POST"
+        ):
+            result = application.mutate_scene_plan(run_id, tail[0], body)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if result is not None else 404,
+                payload=result,
+            )
     return PlanOnlyFacadeResponse(status_code=404, payload=None)
 
 

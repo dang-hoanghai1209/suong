@@ -372,6 +372,16 @@ export function ProductionRunPage() {
         </p>
       </section>
 
+      {review?.review_status === "ACCEPTED_FOR_SCENE_PLANNING" &&
+      review.accepted_revision_id === review.current_revision_id ? (
+        <Link
+          className="primary-link-action"
+          to={`/production/runs/${encodeURIComponent(run.run_id)}/scenes`}
+        >
+          Open scene planning workspace
+        </Link>
+      ) : null}
+
       <Link to="/production">Return to production dashboard</Link>
     </div>
   );

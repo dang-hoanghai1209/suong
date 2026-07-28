@@ -4,6 +4,7 @@ import { CreateProductionRunPage } from "../pages/CreateProductionRunPage";
 import { NotFoundPage } from "../pages/NotFoundPage";
 import { ProductionDashboardPage } from "../pages/ProductionDashboardPage";
 import { ProductionRunPage } from "../pages/ProductionRunPage";
+import { ScenePlanningPage } from "../pages/ScenePlanningPage";
 import { AppShell } from "./AppShell";
 
 export function AppRoutes() {
@@ -13,6 +14,10 @@ export function AppRoutes() {
         <Route path="/production" element={<ProductionDashboardPage />} />
         <Route path="/production/new" element={<CreateProductionRunPage />} />
         <Route path="/production/runs/:runId" element={<ProductionRunPage />} />
+        <Route
+          path="/production/runs/:runId/scenes"
+          element={<ScenePlanningPage />}
+        />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

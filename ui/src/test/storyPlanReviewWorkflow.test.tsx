@@ -351,6 +351,12 @@ describe("StoryPlan review workspace", () => {
       await screen.findByText("Review state:", { exact: false }),
     ).toHaveTextContent("ACCEPTED_FOR_SCENE_PLANNING");
     expect(screen.getAllByText(/does not authorize rendering/).length).toBeGreaterThan(0);
+    expect(
+      screen.getByRole("link", { name: "Open scene planning workspace" }),
+    ).toHaveAttribute(
+      "href",
+      `/production/runs/${runId}/scenes`,
+    );
   });
 
   it("validates bounded feedback and creates a selectable revision", async () => {

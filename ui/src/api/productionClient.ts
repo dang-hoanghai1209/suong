@@ -8,11 +8,33 @@ import type {
   ProductionRunViewV1,
   PublicApiErrorV1,
   ReplanRequestV1,
+  DuplicateSceneRequestV1,
+  MergeScenesRequestV1,
+  ReorderSceneRequestV1,
+  RequestSceneRevisionV1,
+  RestoreSceneRevisionRequestV1,
+  SaveSceneRevisionRequestV1,
+  ScenePlanAccessV1,
+  ScenePlanCollectionHistoryV1,
+  ScenePlanCollectionV1,
+  ScenePlanOperationResultV1,
+  ScenePlanSceneHistoryV1,
+  ScenePlanV1,
+  SceneTransitionRequestV1,
+  SplitSceneRequestV1,
   StoryPlanReviewOperationResultV1,
   StoryPlanReviewViewV1,
   StoryPlanRevisionHistoryV1,
   StoryPlanRevisionV1,
 } from "../contracts/v1/production";
+import {
+  validateSceneHistory,
+  validateScenePlanCollection,
+  validateScenePlanCollectionHistory,
+  validateScenePlan,
+  validateScenePlanAccess,
+  validateScenePlanOperation,
+} from "./scenePlanValidation";
 
 const apiPrefix = "/api/v1/plan-only";
 
@@ -36,6 +58,59 @@ export interface ProductionRepository {
     runId: string,
     revisionId: string,
   ): Promise<StoryPlanRevisionV1 | null>;
+  getScenePlan?(runId: string): Promise<ScenePlanAccessV1 | null>;
+  initializeScenePlan?(
+    runId: string,
+    acceptedStoryRevisionId: string,
+  ): Promise<ScenePlanOperationResultV1>;
+  saveSceneRevision?(
+    runId: string,
+    sceneId: string,
+    request: SaveSceneRevisionRequestV1,
+  ): Promise<ScenePlanOperationResultV1>;
+  reorderScene?(
+    runId: string,
+    request: ReorderSceneRequestV1,
+  ): Promise<ScenePlanOperationResultV1>;
+  splitScene?(
+    runId: string,
+    request: SplitSceneRequestV1,
+  ): Promise<ScenePlanOperationResultV1>;
+  mergeScenes?(
+    runId: string,
+    request: MergeScenesRequestV1,
+  ): Promise<ScenePlanOperationResultV1>;
+  duplicateScene?(
+    runId: string,
+    request: DuplicateSceneRequestV1,
+  ): Promise<ScenePlanOperationResultV1>;
+  acceptScene?(
+    runId: string,
+    sceneId: string,
+    request: SceneTransitionRequestV1,
+  ): Promise<ScenePlanOperationResultV1>;
+  requestSceneRevision?(
+    runId: string,
+    sceneId: string,
+    request: RequestSceneRevisionV1,
+  ): Promise<ScenePlanOperationResultV1>;
+  restoreSceneRevision?(
+    runId: string,
+    sceneId: string,
+    request: RestoreSceneRevisionRequestV1,
+  ): Promise<ScenePlanOperationResultV1>;
+  getPlannedScene?(runId: string, sceneId: string): Promise<ScenePlanV1 | null>;
+  getSceneHistory?(
+    runId: string,
+    sceneId: string,
+  ): Promise<ScenePlanSceneHistoryV1 | null>;
+  getScenePlanRevisions?(
+    runId: string,
+  ): Promise<ScenePlanCollectionHistoryV1 | null>;
+  getScenePlanCollectionRevision?(
+    runId: string,
+    revisionId: string,
+  ): Promise<ScenePlanCollectionV1 | null>;
 }
 
 export class ProductionContractError extends Error {
@@ -101,6 +176,47 @@ export function defineNativeFetchClient(
         runParts[0] !== "" &&
         runParts[1] === "revisions" &&
         runParts[2] !== "";
+      const sceneTail =
+        runParts.length >= 2 && runParts[1] === "scene-plan"
+          ? runParts.slice(2)
+          : [];
+      const exactScenePlan =
+        runParts.length >= 2 &&
+        runParts[0] !== "" &&
+        runParts[1] === "scene-plan" &&
+        ((method === "GET" && sceneTail.length === 0) ||
+          (method === "POST" &&
+            sceneTail.length === 1 &&
+            [
+              "initialize",
+              "reorder",
+              "split",
+              "merge",
+              "duplicate",
+            ].includes(sceneTail[0] ?? "")) ||
+          (method === "GET" &&
+            sceneTail.length === 1 &&
+            sceneTail[0] === "revisions") ||
+          (method === "GET" &&
+            sceneTail.length === 2 &&
+            sceneTail[0] === "revisions" &&
+            sceneTail[1] !== "") ||
+          (method === "GET" &&
+            sceneTail.length === 2 &&
+            sceneTail[0] === "scenes" &&
+            sceneTail[1] !== "") ||
+          (method === "GET" &&
+            sceneTail.length === 3 &&
+            sceneTail[0] === "scenes" &&
+            sceneTail[1] !== "" &&
+            sceneTail[2] === "history") ||
+          (method === "POST" &&
+            sceneTail.length === 3 &&
+            sceneTail[0] === "scenes" &&
+            sceneTail[1] !== "" &&
+            ["revisions", "restore", "accept", "request-revision"].includes(
+              sceneTail[2] ?? "",
+            )));
       const exactCreate = method === "POST" && exactCollection;
       const exactList = method === "GET" && exactCollection;
       if (
@@ -114,7 +230,8 @@ export function defineNativeFetchClient(
           exactReview ||
           exactAccept ||
           exactRevisions ||
-          exactRevision
+          exactRevision ||
+          exactScenePlan
         )
       ) {
         throw new ProductionContractError("Only the local PLAN_ONLY contract is allowed.");
@@ -1069,6 +1186,162 @@ export class BackendProductionRepository implements ProductionRepository {
       throw new ProductionContractError("Backend revision identity does not match the request.");
     }
     return revision;
+  }
+
+  async getScenePlan(runId: string): Promise<ScenePlanAccessV1 | null> {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/scene-plan`,
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const access = validateScenePlanAccess(response.payload);
+    if (access.run_id !== runId) throw new ProductionContractError();
+    return access;
+  }
+
+  async #sceneMutation(
+    runId: string,
+    path: string,
+    request: object,
+  ): Promise<ScenePlanOperationResultV1> {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/scene-plan/${path}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(request),
+      },
+    );
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const result = validateScenePlanOperation(response.payload);
+    if (result.access !== null && result.access.run_id !== runId) {
+      throw new ProductionContractError();
+    }
+    return result;
+  }
+
+  initializeScenePlan(runId: string, acceptedStoryRevisionId: string) {
+    return this.#sceneMutation(runId, "initialize", {
+      schema_version: 1,
+      accepted_story_revision_id: acceptedStoryRevisionId,
+    });
+  }
+
+  saveSceneRevision(
+    runId: string,
+    sceneId: string,
+    request: SaveSceneRevisionRequestV1,
+  ) {
+    return this.#sceneMutation(
+      runId,
+      `scenes/${encodeURIComponent(sceneId)}/revisions`,
+      request,
+    );
+  }
+
+  reorderScene(runId: string, request: ReorderSceneRequestV1) {
+    return this.#sceneMutation(runId, "reorder", request);
+  }
+
+  splitScene(runId: string, request: SplitSceneRequestV1) {
+    return this.#sceneMutation(runId, "split", request);
+  }
+
+  mergeScenes(runId: string, request: MergeScenesRequestV1) {
+    return this.#sceneMutation(runId, "merge", request);
+  }
+
+  duplicateScene(runId: string, request: DuplicateSceneRequestV1) {
+    return this.#sceneMutation(runId, "duplicate", request);
+  }
+
+  acceptScene(
+    runId: string,
+    sceneId: string,
+    request: SceneTransitionRequestV1,
+  ) {
+    return this.#sceneMutation(
+      runId,
+      `scenes/${encodeURIComponent(sceneId)}/accept`,
+      request,
+    );
+  }
+
+  requestSceneRevision(
+    runId: string,
+    sceneId: string,
+    request: RequestSceneRevisionV1,
+  ) {
+    return this.#sceneMutation(
+      runId,
+      `scenes/${encodeURIComponent(sceneId)}/request-revision`,
+      request,
+    );
+  }
+
+  restoreSceneRevision(
+    runId: string,
+    sceneId: string,
+    request: RestoreSceneRevisionRequestV1,
+  ) {
+    return this.#sceneMutation(
+      runId,
+      `scenes/${encodeURIComponent(sceneId)}/restore`,
+      request,
+    );
+  }
+
+  async getPlannedScene(runId: string, sceneId: string) {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/scene-plan/scenes/${encodeURIComponent(sceneId)}`,
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const scene = validateScenePlan(response.payload);
+    if (scene.run_id !== runId || scene.scene_id !== sceneId) {
+      throw new ProductionContractError();
+    }
+    return scene;
+  }
+
+  async getSceneHistory(runId: string, sceneId: string) {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/scene-plan/scenes/${encodeURIComponent(sceneId)}/history`,
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const history = validateSceneHistory(response.payload);
+    if (history.run_id !== runId || history.scene_id !== sceneId) {
+      throw new ProductionContractError();
+    }
+    return history;
+  }
+
+  async getScenePlanRevisions(runId: string) {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/scene-plan/revisions`,
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const history = validateScenePlanCollectionHistory(response.payload);
+    if (history.run_id !== runId) throw new ProductionContractError();
+    return history;
+  }
+
+  async getScenePlanCollectionRevision(runId: string, revisionId: string) {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/scene-plan/revisions/${encodeURIComponent(revisionId)}`,
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const collection = validateScenePlanCollection(response.payload);
+    if (
+      collection.run_id !== runId ||
+      collection.collection_revision_id !== revisionId
+    ) {
+      throw new ProductionContractError();
+    }
+    return collection;
   }
 }
 

@@ -78,6 +78,35 @@ def _known_api_methods(path: str) -> frozenset[str] | None:
         return frozenset({"GET", "POST"})
     if len(parts) == 3 and parts[1] == "revisions":
         return frozenset({"GET"})
+    if len(parts) >= 2 and parts[1] == "scene-plan":
+        tail = parts[2:]
+        if not tail:
+            return frozenset({"GET"})
+        if tail == ["initialize"]:
+            return frozenset({"POST"})
+        if tail == ["revisions"]:
+            return frozenset({"GET"})
+        if len(tail) == 2 and tail[0] == "revisions":
+            return frozenset({"GET"})
+        if len(tail) == 1 and tail[0] in {
+            "reorder",
+            "split",
+            "merge",
+            "duplicate",
+        }:
+            return frozenset({"POST"})
+        if len(tail) == 2 and tail[0] == "scenes":
+            return frozenset({"GET"})
+        if len(tail) == 3 and tail[0] == "scenes":
+            if tail[2] == "history":
+                return frozenset({"GET"})
+            if tail[2] in {
+                "revisions",
+                "restore",
+                "accept",
+                "request-revision",
+            }:
+                return frozenset({"POST"})
     return None
 
 
@@ -262,6 +291,9 @@ class _PlanOnlyRequestHandler(BaseHTTPRequestHandler):
                     "PLAN_ONLY_ROUTE_NOT_FOUND",
                     "The requested PLAN_ONLY route was not found.",
                 )
+                return
+            if "GET" not in methods:
+                self._method_not_allowed(methods)
                 return
             self._dispatch_api("GET", path)
             return

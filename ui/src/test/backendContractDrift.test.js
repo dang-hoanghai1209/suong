@@ -29,6 +29,17 @@ accepted = application.accept_story_plan(
     run_id,
     {"schema_version": 1, "current_revision_id": "revision-0001"},
 )
+initialized = application.initialize_scene_plan(
+    run_id,
+    {"schema_version": 1, "accepted_story_revision_id": "revision-0001"},
+)
+scene_access = application.get_scene_plan(run_id)
+scene = application.get_planned_scene(run_id, "scene_01")
+scene_history = application.get_planned_scene_history(run_id, "scene_01")
+scene_plan_history = application.get_scene_plan_history(run_id)
+scene_plan_revision = application.get_scene_plan_revision(
+    run_id, "scene-plan-revision-0001"
+)
 print(json.dumps({
     "created": created,
     "run": application.get_run(run_id),
@@ -38,6 +49,12 @@ print(json.dumps({
     "history": history,
     "revision": revision,
     "accepted": accepted,
+    "initialized": initialized,
+    "scene_access": scene_access,
+    "scene": scene,
+    "scene_history": scene_history,
+    "scene_plan_history": scene_plan_history,
+    "scene_plan_revision": scene_plan_revision,
 }, ensure_ascii=True, sort_keys=True))
 `;
 
@@ -75,6 +92,24 @@ describe("Python-to-TypeScript V1 contract drift", () => {
         if (requestPath.endsWith(`/runs/${runId}/review`)) {
           return { status: 200, payload: payload.review };
         }
+        if (requestPath.endsWith(`/runs/${runId}/scene-plan/initialize`)) {
+          return { status: 200, payload: payload.initialized };
+        }
+        if (requestPath.endsWith(`/runs/${runId}/scene-plan/scenes/scene_01/history`)) {
+          return { status: 200, payload: payload.scene_history };
+        }
+        if (requestPath.endsWith(`/runs/${runId}/scene-plan/scenes/scene_01`)) {
+          return { status: 200, payload: payload.scene };
+        }
+        if (requestPath.endsWith(`/runs/${runId}/scene-plan/revisions/scene-plan-revision-0001`)) {
+          return { status: 200, payload: payload.scene_plan_revision };
+        }
+        if (requestPath.endsWith(`/runs/${runId}/scene-plan/revisions`)) {
+          return { status: 200, payload: payload.scene_plan_history };
+        }
+        if (requestPath.endsWith(`/runs/${runId}/scene-plan`)) {
+          return { status: 200, payload: payload.scene_access };
+        }
         if (requestPath.endsWith(`/runs/${runId}/revisions/revision-0001`)) {
           return { status: 200, payload: payload.revision };
         }
@@ -107,6 +142,15 @@ describe("Python-to-TypeScript V1 contract drift", () => {
       schema_version: 1,
       current_revision_id: "revision-0001",
     });
+    const initialized = await repository.initializeScenePlan(runId, "revision-0001");
+    const sceneAccess = await repository.getScenePlan(runId);
+    const scene = await repository.getPlannedScene(runId, "scene_01");
+    const sceneHistory = await repository.getSceneHistory(runId, "scene_01");
+    const scenePlanHistory = await repository.getScenePlanRevisions(runId);
+    const scenePlanRevision = await repository.getScenePlanCollectionRevision(
+      runId,
+      "scene-plan-revision-0001",
+    );
 
     expect(created.run).toEqual(run);
     expect(run.run_id).toBe(runId);
@@ -134,5 +178,57 @@ describe("Python-to-TypeScript V1 contract drift", () => {
     expect(revision.revision_id).toBe("revision-0001");
     expect(accepted.review.review_status).toBe("ACCEPTED_FOR_SCENE_PLANNING");
     expect(accepted.review.render_authority).toBe(false);
+    expect(initialized.access.collection.collection_revision_id).toBe(
+      "scene-plan-revision-0001",
+    );
+    expect(sceneAccess.collection.scenes.map((item) => item.order)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8,
+    ]);
+    expect(sceneAccess.render_authority).toBe(false);
+    expect(sceneAccess.media_capability).toBe(false);
+    expect(scene.scene_revision_id).toBe("scene-revision-0001-01");
+    expect(sceneHistory.current_scene_revision_id).toBe(
+      "scene-revision-0001-01",
+    );
+    expect(scenePlanHistory.current_collection_revision_id).toBe(
+      "scene-plan-revision-0001",
+    );
+    expect(scenePlanRevision.collection_revision_id).toBe(
+      "scene-plan-revision-0001",
+    );
+
+    const malformed = [
+      (value) => {
+        value.collection.scenes[1].scene_id = value.collection.scenes[0].scene_id;
+      },
+      (value) => {
+        value.collection.scenes[1].order = 1;
+      },
+      (value) => {
+        value.collection.revision_history[0].collection_revision_id =
+          "scene-plan-revision-9999";
+      },
+      (value) => {
+        value.collection.scenes[0].status = "RENDER_READY";
+      },
+      (value) => {
+        value.render_authority = true;
+      },
+      (value) => {
+        value.collection.media_capability = "false";
+      },
+    ];
+    for (const mutate of malformed) {
+      const forged = structuredClone(payload.scene_access);
+      mutate(forged);
+      const strictRepository = new BackendProductionRepository({
+        async request() {
+          return { status: 200, payload: forged };
+        },
+      });
+      await expect(strictRepository.getScenePlan(runId)).rejects.toThrow(
+        "invalid production response",
+      );
+    }
   });
 });
