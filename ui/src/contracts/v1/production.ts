@@ -1078,3 +1078,197 @@ export interface TimelineOperationResultV1 {
     readonly retryable: false;
   } | null;
 }
+
+export type ReadinessStatusV1 =
+  | "LOCKED"
+  | "NOT_READY"
+  | "READY_FOR_EXECUTION_ENABLEMENT_REVIEW"
+  | "REVIEW_APPROVED_FOR_SEPARATE_TASK"
+  | "REVISION_REQUESTED"
+  | "REVIEW_REJECTED"
+  | "SUPERSEDED";
+export type ReadinessReviewReasonV1 =
+  | "STORY_PLAN_REVIEW_REQUIRED"
+  | "SCENE_PLANNING_REVIEW_REQUIRED"
+  | "VISUAL_REVIEW_REQUIRED"
+  | "COMPOSITION_REVIEW_REQUIRED"
+  | "TIMELINE_REVIEW_REQUIRED"
+  | "NARRATION_ALIGNMENT_REVIEW_REQUIRED"
+  | "OTHER_BOUNDED_NOTE";
+
+export interface ReadinessStageCheckV1 {
+  readonly schema_version: 1;
+  readonly check_id: string;
+  readonly stage: string;
+  readonly status: "PASS" | "WARNING" | "BLOCKED" | "NOT_EVALUATED" | "SUPERSEDED";
+  readonly blocker_codes: readonly string[];
+  readonly warning_codes: readonly string[];
+  readonly informational_codes: readonly string[];
+  readonly bound_revision_ids: readonly string[];
+  readonly summary: string;
+  readonly required_for_review_eligibility: boolean;
+  readonly checked_at: string;
+}
+
+export interface ReadinessSceneCheckV1 {
+  readonly schema_version: 1;
+  readonly scene_check_id: string;
+  readonly position: number;
+  readonly scene_id: string;
+  readonly scene_revision_id: string;
+  readonly semantic_beat_id: string;
+  readonly source_coverage: {
+    readonly schema_version: 1;
+    readonly start: number;
+    readonly end: number;
+  };
+  readonly visual_collection_revision_id: string;
+  readonly accepted_candidate_id: string;
+  readonly candidate_revision_id: string;
+  readonly artifact_sha256: string;
+  readonly artifact_mime: string;
+  readonly artifact_width: number;
+  readonly artifact_height: number;
+  readonly artifact_registered: true;
+  readonly artifact_technically_valid: true;
+  readonly composition_id: string;
+  readonly composition_revision_id: string;
+  readonly composition_accepted: true;
+  readonly timeline_segment_id: string;
+  readonly timeline_segment_revision_id: string;
+  readonly start_ms: number;
+  readonly end_ms: number;
+  readonly duration_ms: number;
+  readonly transition_duration_ms: number;
+  readonly narration_alignment_status: "ALIGNED";
+  readonly blocker_codes: readonly string[];
+  readonly warning_codes: readonly string[];
+  readonly readiness_status: "PASS";
+}
+
+export interface ReadinessLimitationV1 {
+  readonly schema_version: 1;
+  readonly limitation_code: string;
+  readonly description: string;
+  readonly acknowledgement_required: true;
+  readonly acknowledged: boolean;
+  readonly acknowledgement_id: string | null;
+}
+
+export interface ReadinessAcknowledgementV1 {
+  readonly schema_version: 1;
+  readonly acknowledgement_id: string;
+  readonly report_revision_id: string;
+  readonly source_authority_sha256: string;
+  readonly limitation_code: string;
+  readonly acknowledged: true;
+  readonly reviewer_note: string | null;
+  readonly created_at: string;
+}
+
+export interface ReadinessApprovalV1 extends ReadinessCapabilityLocksV1 {
+  readonly schema_version: 1;
+  readonly approval_id: string;
+  readonly report_revision_id: string;
+  readonly source_authority_sha256: string;
+  readonly purpose: "SEPARATE_EXECUTION_ENABLEMENT_TASK_REVIEW";
+  readonly approved_for_separate_execution_enablement_review: true;
+  readonly reviewer_note: string | null;
+  readonly created_at: string;
+}
+
+export interface ReadinessAuthorityBindingsV1 {
+  readonly schema_version: 1;
+  readonly story_plan_revision_id: string;
+  readonly accepted_story_plan_revision_id: string;
+  readonly narration_source_sha256: string;
+  readonly scene_collection_revision_id: string;
+  readonly visual_collection_revision_ids: readonly string[];
+  readonly accepted_candidate_ids: readonly string[];
+  readonly accepted_candidate_revision_ids: readonly string[];
+  readonly accepted_candidate_artifact_sha256s: readonly string[];
+  readonly composition_collection_revision_id: string;
+  readonly composition_ids: readonly string[];
+  readonly composition_revision_ids: readonly string[];
+  readonly timeline_collection_revision_id: string;
+  readonly accepted_timeline_revision_id: string;
+  readonly timeline_source_authority_sha256: string;
+}
+
+export interface ReadinessCapabilityLocksV1 {
+  readonly full_render_enabled: false;
+  readonly render_authority: false;
+  readonly renderer_execution_authority: false;
+  readonly video_render_authority: false;
+  readonly timeline_execution_authority: false;
+  readonly narration_generation_capability: false;
+  readonly tts_capability: false;
+  readonly audio_generation_capability: false;
+  readonly subtitle_generation_capability: false;
+  readonly media_muxing_capability: false;
+  readonly final_media_capability: false;
+  readonly output_creation_capability: false;
+  readonly execution_job_creation_capability: false;
+}
+
+export interface ExecutionReadinessReportV1 extends ReadinessCapabilityLocksV1 {
+  readonly schema_version: 1;
+  readonly report_id: string;
+  readonly report_revision_id: string;
+  readonly report_revision_number: number;
+  readonly run_id: string;
+  readonly source_authority_sha256: string;
+  readonly status: ReadinessStatusV1;
+  readonly current: boolean;
+  readonly planning_package_ready: boolean;
+  readonly future_execution_enablement_review_eligible: boolean;
+  readonly approved_for_separate_execution_enablement_review: boolean;
+  readonly blocker_count: number;
+  readonly warning_count: number;
+  readonly informational_count: number;
+  readonly stage_checks: readonly ReadinessStageCheckV1[];
+  readonly scene_checks: readonly ReadinessSceneCheckV1[];
+  readonly limitations: readonly ReadinessLimitationV1[];
+  readonly acknowledgements: readonly ReadinessAcknowledgementV1[];
+  readonly approval: ReadinessApprovalV1 | null;
+  readonly review_history: readonly {
+    readonly schema_version: 1;
+    readonly review_id: string;
+    readonly report_revision_id: string;
+    readonly source_authority_sha256: string;
+    readonly action: string;
+    readonly reason_code: string | null;
+    readonly note: string | null;
+    readonly created_at: string;
+  }[];
+  readonly authority: ReadinessAuthorityBindingsV1;
+  readonly total_effective_timeline_duration_ms: number;
+  readonly narration_coverage_valid: true;
+  readonly transition_valid: true;
+  readonly target_duration_valid: true;
+  readonly process_local: true;
+  readonly created_at: string;
+}
+
+export interface ExecutionReadinessAccessV1 extends ReadinessCapabilityLocksV1 {
+  readonly schema_version: 1;
+  readonly run_id: string;
+  readonly review_available: boolean;
+  readonly initialization_authorized: boolean;
+  readonly mutation_authorized: boolean;
+  readonly blocker_codes: readonly string[];
+  readonly report: ExecutionReadinessReportV1 | null;
+  readonly process_local: true;
+}
+
+export interface ExecutionReadinessOperationResultV1 {
+  readonly schema_version: 1;
+  readonly access: ExecutionReadinessAccessV1 | null;
+  readonly report: ExecutionReadinessReportV1 | null;
+  readonly error: {
+    readonly schema_version: 1;
+    readonly code: string;
+    readonly message: string;
+    readonly retryable: false;
+  } | null;
+}

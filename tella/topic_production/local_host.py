@@ -115,6 +115,22 @@ def _known_api_methods(path: str) -> frozenset[str] | None:
                 return frozenset({"GET"})
             if tail[2] in {"revisions", "restore"}:
                 return frozenset({"POST"})
+    if len(parts) >= 2 and parts[1] == "execution-readiness":
+        tail = parts[2:]
+        if not tail or tail in (["access"], ["history"]):
+            return frozenset({"GET"})
+        if tail in (
+            ["initialize"],
+            ["refresh"],
+            ["acknowledgements"],
+            ["approve-separate-task-review"],
+            ["request-revision"],
+            ["reject"],
+            ["clear-approval"],
+        ):
+            return frozenset({"POST"})
+        if len(tail) == 2 and tail[0] == "reports":
+            return frozenset({"GET"})
     if len(parts) >= 2 and parts[1] == "scene-plan":
         tail = parts[2:]
         if not tail:

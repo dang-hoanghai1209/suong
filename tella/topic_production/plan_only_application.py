@@ -33,6 +33,7 @@ from .duration_policy import (
     assess_mvp_duration_target,
 )
 from .execution_models import ExecutionMode
+from .execution_readiness import ExecutionReadinessStore
 from .identity_eligibility import IdentityEligibilityError, require_supported_identity
 from .models import PlannerMetadata, PlannerMode, StoryPlan
 from .planner import DeterministicTopicPlanner
@@ -958,6 +959,7 @@ class PlanOnlyApplication:
         self._scene_planning = ScenePlanningStore()
         self._composition_planning = CompositionPlanningStore()
         self._timeline_planning = TimelinePlanningStore()
+        self._execution_readiness = ExecutionReadinessStore()
         if visual_provider is None:
             configured = get_image_provider()
             visual_provider = configured if configured.is_configured() else None
@@ -1631,6 +1633,99 @@ class PlanOnlyApplication:
             return None
         return self._timeline_planning.collection_revision(run_id, revision_id)
 
+    def _execution_readiness_context(self, run_id: str) -> dict[str, object] | None:
+        run = self.get_run(run_id)
+        review = self._review_payload(run_id)
+        scene_access = self.get_scene_plan(run_id)
+        composition_access = self.get_composition_access(run_id)
+        timeline_access = self.get_timeline_access(run_id)
+        if run is None or review is None or scene_access is None:
+            return None
+        collection = scene_access.get("collection")
+        scene_rows = collection.get("scenes", ()) if isinstance(collection, Mapping) else ()
+        visual_accesses = {
+            str(scene["scene_id"]): access
+            for scene in scene_rows
+            if (
+                isinstance(scene, Mapping)
+                and (access := self.get_visual_candidate_access(run_id, str(scene["scene_id"])))
+                is not None
+            )
+        }
+        return {
+            "run": run,
+            "review": review,
+            "scene_access": scene_access,
+            "visual_accesses": visual_accesses,
+            "composition_access": composition_access,
+            "timeline_access": timeline_access,
+        }
+
+    def get_execution_readiness_access(self, run_id: str) -> dict[str, object] | None:
+        context = self._execution_readiness_context(run_id)
+        if context is None:
+            return None
+        return self._execution_readiness.access(**context)
+
+    def initialize_execution_readiness(
+        self, run_id: str, payload: object
+    ) -> dict[str, object] | None:
+        context = self._execution_readiness_context(run_id)
+        if context is None:
+            return None
+        return self._execution_readiness.initialize(
+            context_inputs=context,
+            payload=payload,
+        )
+
+    def mutate_execution_readiness(
+        self,
+        run_id: str,
+        operation: Literal[
+            "acknowledge",
+            "approve",
+            "request-revision",
+            "reject",
+            "clear-approval",
+        ],
+        payload: object,
+    ) -> dict[str, object] | None:
+        access = self.get_execution_readiness_access(run_id)
+        if access is None:
+            return None
+        if access.get("mutation_authorized") is not True:
+            return {
+                "schema_version": 1,
+                "access": None,
+                "report": None,
+                "error": {
+                    "schema_version": 1,
+                    "code": "READINESS_NOT_AUTHORIZED",
+                    "message": "Current planning authority does not permit readiness review.",
+                    "retryable": False,
+                },
+            }
+        if operation == "acknowledge":
+            return self._execution_readiness.acknowledge(run_id, payload)
+        if operation == "approve":
+            return self._execution_readiness.approve(run_id, payload)
+        if operation == "clear-approval":
+            return self._execution_readiness.clear_approval(run_id, payload)
+        return self._execution_readiness.review(run_id, operation, payload)
+
+    def get_execution_readiness_history(self, run_id: str) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        self.get_execution_readiness_access(run_id)
+        return self._execution_readiness.history(run_id)
+
+    def get_execution_readiness_report(
+        self, run_id: str, report_revision_id: str
+    ) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        return self._execution_readiness.report(run_id, report_revision_id)
+
 
 class PlanOnlyFacadeResponse(_ContractModel):
     status_code: int = Field(ge=200, le=599)
@@ -1808,6 +1903,47 @@ def dispatch_plan_only_request(
                     status_code=200 if result is not None else 404,
                     payload=result,
                 )
+    if len(parts) >= 2 and parts[1] == "execution-readiness":
+        run_id = parts[0]
+        tail = parts[2:]
+        if tail in ([], ["access"]) and method == "GET":
+            access = application.get_execution_readiness_access(run_id)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if access is not None else 404,
+                payload=access,
+            )
+        if tail in (["initialize"], ["refresh"]) and method == "POST":
+            result = application.initialize_execution_readiness(run_id, body)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if result is not None else 404,
+                payload=result,
+            )
+        if tail == ["history"] and method == "GET":
+            history = application.get_execution_readiness_history(run_id)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if history is not None else 404,
+                payload=history,
+            )
+        if len(tail) == 2 and tail[0] == "reports" and method == "GET":
+            report = application.get_execution_readiness_report(run_id, tail[1])
+            return PlanOnlyFacadeResponse(
+                status_code=200 if report is not None else 404,
+                payload=report,
+            )
+        operation_by_tail = {
+            ("acknowledgements",): "acknowledge",
+            ("approve-separate-task-review",): "approve",
+            ("request-revision",): "request-revision",
+            ("reject",): "reject",
+            ("clear-approval",): "clear-approval",
+        }
+        operation = operation_by_tail.get(tuple(tail))
+        if operation is not None and method == "POST":
+            result = application.mutate_execution_readiness(run_id, operation, body)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if result is not None else 404,
+                payload=result,
+            )
     if len(parts) >= 2 and parts[1] == "scene-plan":
         run_id = parts[0]
         tail = parts[2:]

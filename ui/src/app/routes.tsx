@@ -8,6 +8,7 @@ import { ScenePlanningPage } from "../pages/ScenePlanningPage";
 import { VisualCandidatesPage } from "../pages/VisualCandidatesPage";
 import { CompositionPlanningPage } from "../pages/CompositionPlanningPage";
 import { TimelinePlanningPage } from "../pages/TimelinePlanningPage";
+import { ExecutionReadinessPage } from "../pages/ExecutionReadinessPage";
 import { AppShell } from "./AppShell";
 
 export function AppRoutes() {
@@ -32,6 +33,10 @@ export function AppRoutes() {
         <Route
           path="/production/runs/:runId/timeline"
           element={<TimelinePlanningPage />}
+        />
+        <Route
+          path="/production/runs/:runId/execution-readiness"
+          element={<ExecutionReadinessPage />}
         />
         <Route path="*" element={<NotFoundPage />} />
       </Route>

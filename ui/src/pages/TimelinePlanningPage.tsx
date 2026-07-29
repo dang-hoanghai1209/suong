@@ -477,6 +477,13 @@ export function TimelinePlanningPage() {
                     </label>
                   </fieldset>
                   <div className="action-row">
+                    {collection.accepted_for_execution_review ? (
+                      <Link
+                        to={`/production/runs/${runId}/execution-readiness`}
+                      >
+                        Execution-readiness review
+                      </Link>
+                    ) : null}
                     <button
                       disabled={!dirty || busy || !access.editable}
                       onClick={save}

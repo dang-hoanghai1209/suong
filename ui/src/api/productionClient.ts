@@ -38,6 +38,9 @@ import type {
   TimelineAccessV1,
   TimelineOperationResultV1,
   TimelineReviewReasonV1,
+  ExecutionReadinessAccessV1,
+  ExecutionReadinessOperationResultV1,
+  ReadinessReviewReasonV1,
 } from "../contracts/v1/production";
 import {
   validateCompositionAccess,
@@ -49,6 +52,11 @@ import {
   validateTimelineOperation,
   validateTimelineSegment,
 } from "./timelineValidation";
+import {
+  validateExecutionReadinessAccess,
+  validateExecutionReadinessOperation,
+  validateExecutionReadinessReport,
+} from "./executionReadinessValidation";
 import {
   validateSceneHistory,
   validateScenePlanCollection,
@@ -254,6 +262,61 @@ export interface ProductionRepository {
     readonly run_id: string;
     readonly segment_id: string;
     readonly revisions: readonly import("../contracts/v1/production").TimelineSegmentV1[];
+  } | null>;
+  getExecutionReadinessAccess?(
+    runId: string,
+  ): Promise<ExecutionReadinessAccessV1 | null>;
+  initializeExecutionReadiness?(
+    runId: string,
+    timelineCollectionRevisionId: string,
+    acceptedTimelineRevisionId: string,
+  ): Promise<ExecutionReadinessOperationResultV1>;
+  acknowledgeReadinessLimitations?(
+    runId: string,
+    request: {
+      readonly schema_version: 1;
+      readonly report_revision_id: string;
+      readonly source_authority_sha256: string;
+      readonly limitation_codes: readonly string[];
+      readonly acknowledged: true;
+      readonly reviewer_note: string | null;
+    },
+  ): Promise<ExecutionReadinessOperationResultV1>;
+  approveExecutionReadiness?(
+    runId: string,
+    request: {
+      readonly schema_version: 1;
+      readonly report_revision_id: string;
+      readonly source_authority_sha256: string;
+      readonly purpose: "SEPARATE_EXECUTION_ENABLEMENT_TASK_REVIEW";
+      readonly explicit_confirmation: true;
+      readonly reviewer_note: string | null;
+    },
+  ): Promise<ExecutionReadinessOperationResultV1>;
+  reviewExecutionReadiness?(
+    runId: string,
+    operation: "request-revision" | "reject",
+    request: {
+      readonly schema_version: 1;
+      readonly report_revision_id: string;
+      readonly source_authority_sha256: string;
+      readonly reason_code: ReadinessReviewReasonV1;
+      readonly note: string | null;
+    },
+  ): Promise<ExecutionReadinessOperationResultV1>;
+  clearExecutionReadinessApproval?(
+    runId: string,
+    request: {
+      readonly schema_version: 1;
+      readonly report_revision_id: string;
+      readonly source_authority_sha256: string;
+      readonly explicit_confirmation: true;
+    },
+  ): Promise<ExecutionReadinessOperationResultV1>;
+  getExecutionReadinessHistory?(runId: string): Promise<{
+    readonly schema_version: 1;
+    readonly run_id: string;
+    readonly reports: readonly import("../contracts/v1/production").ExecutionReadinessReportV1[];
   } | null>;
 }
 
@@ -1796,6 +1859,115 @@ export class BackendProductionRepository implements ProductionRepository {
       run_id: runId,
       segment_id: segmentId,
       revisions: payload.revisions.map(validateTimelineSegment),
+    };
+  }
+
+  async getExecutionReadinessAccess(runId: string) {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/execution-readiness/access`,
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const access = validateExecutionReadinessAccess(response.payload);
+    if (access.run_id !== runId) throw new ProductionContractError();
+    return access;
+  }
+
+  async #readinessMutation(
+    runId: string,
+    path: string,
+    request: object,
+  ): Promise<ExecutionReadinessOperationResultV1> {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/execution-readiness/${path}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(request),
+      },
+    );
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const result = validateExecutionReadinessOperation(response.payload);
+    if (
+      (result.access !== null && result.access.run_id !== runId) ||
+      (result.report !== null && result.report.run_id !== runId)
+    ) {
+      throw new ProductionContractError();
+    }
+    return result;
+  }
+
+  initializeExecutionReadiness(
+    runId: string,
+    timelineCollectionRevisionId: string,
+    acceptedTimelineRevisionId: string,
+  ) {
+    return this.#readinessMutation(runId, "initialize", {
+      schema_version: 1,
+      timeline_collection_revision_id: timelineCollectionRevisionId,
+      accepted_timeline_revision_id: acceptedTimelineRevisionId,
+    });
+  }
+
+  acknowledgeReadinessLimitations(
+    runId: string,
+    request: Parameters<
+      NonNullable<ProductionRepository["acknowledgeReadinessLimitations"]>
+    >[1],
+  ) {
+    return this.#readinessMutation(runId, "acknowledgements", request);
+  }
+
+  approveExecutionReadiness(
+    runId: string,
+    request: Parameters<
+      NonNullable<ProductionRepository["approveExecutionReadiness"]>
+    >[1],
+  ) {
+    return this.#readinessMutation(
+      runId,
+      "approve-separate-task-review",
+      request,
+    );
+  }
+
+  reviewExecutionReadiness(
+    runId: string,
+    operation: "request-revision" | "reject",
+    request: Parameters<
+      NonNullable<ProductionRepository["reviewExecutionReadiness"]>
+    >[2],
+  ) {
+    return this.#readinessMutation(runId, operation, request);
+  }
+
+  clearExecutionReadinessApproval(
+    runId: string,
+    request: Parameters<
+      NonNullable<ProductionRepository["clearExecutionReadinessApproval"]>
+    >[1],
+  ) {
+    return this.#readinessMutation(runId, "clear-approval", request);
+  }
+
+  async getExecutionReadinessHistory(runId: string) {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/execution-readiness/history`,
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const payload = response.payload as Record<string, unknown>;
+    if (
+      payload.schema_version !== 1 ||
+      payload.run_id !== runId ||
+      !Array.isArray(payload.reports)
+    ) {
+      throw new ProductionContractError();
+    }
+    return {
+      schema_version: 1 as const,
+      run_id: runId,
+      reports: payload.reports.map(validateExecutionReadinessReport),
     };
   }
 }
