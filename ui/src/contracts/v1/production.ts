@@ -1414,15 +1414,19 @@ export interface NarrationRendererLocksV1 {
 export interface NarrationProviderConfigurationV1 {
   readonly schema_version: 1;
   readonly provider_configured: boolean;
-  readonly provider_id: "gemini";
-  readonly provider_display_name: "Gemini TTS";
-  readonly provider_implementation_version: "tella.tts.providers.GeminiTTSProvider.v1";
+  readonly provider_id: "gemini" | "kiraap-tts";
+  readonly provider_display_name: "Gemini TTS" | "KiraAP TTS";
+  readonly provider_implementation_version:
+    | "tella.tts.providers.GeminiTTSProvider.v1"
+    | "tella.tts.kiraap.KiraAPTTSProvider.v1";
   readonly model_id: "gemini-3.1-flash-tts-preview";
   readonly model_display_name: "Gemini 3.1 Flash TTS Preview";
-  readonly voice_id: "Callirrhoe";
-  readonly voice_display_name: "Callirrhoe";
+  readonly voice_id: "Callirrhoe" | "Kore";
+  readonly voice_display_name: "Callirrhoe" | "Kore";
   readonly language: "vi-VN";
-  readonly style_profile_id: "gentle_female_soft_slow_no_whisper";
+  readonly style_profile_id:
+    | "gentle_female_soft_slow_no_whisper"
+    | "kiraap_kore_default";
   readonly style_profile_version: "1";
   readonly audio_format: "audio/wav";
   readonly audio_validation_policy_version: "narration_audio_validation_v1";

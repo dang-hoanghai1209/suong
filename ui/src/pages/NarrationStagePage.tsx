@@ -223,8 +223,15 @@ export function NarrationStagePage() {
             <dt>Provider / model</dt><dd>{provider.provider_display_name} / {provider.model_display_name}</dd>
             <dt>Voice</dt><dd>{provider.voice_display_name}</dd>
             <dt>Language</dt><dd>{provider.language}</dd>
+            <dt>Output</dt><dd>WAV</dd>
             <dt>Style</dt><dd>Gentle, soft, slow, natural; no whisper</dd>
           </dl>
+          {provider.provider_id === "kiraap-tts" && (
+            <p>
+              Usage is subject to the quota of the Google project configured in
+              KiraAP.
+            </p>
+          )}
           {!provider.provider_configured && (
             <p role="alert">TTS_PROVIDER_NOT_CONFIGURED: generation is disabled.</p>
           )}
@@ -310,7 +317,7 @@ export function NarrationStagePage() {
         <div className="modal-backdrop">
           <section className="panel approval-dialog" role="dialog" aria-modal="true" aria-labelledby="tts-generation-title">
             <h2 id="tts-generation-title">Generate narration audio</h2>
-            <p>{provider.provider_display_name} · {provider.model_display_name} · Callirrhoe · Vietnamese</p>
+            <p>{provider.provider_display_name} · {provider.model_display_name} · {provider.voice_display_name} · Vietnamese</p>
             <p>{source.character_count} characters · {source.utf8_byte_count} bytes<br />Source SHA: {source.narration_source_sha256}</p>
             <p>This creates audio only. One external request may occur. No video rendering starts.</p>
             <label><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />I explicitly confirm this TTS request.</label>

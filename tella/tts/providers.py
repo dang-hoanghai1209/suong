@@ -1,4 +1,5 @@
 """TTS provider abstraction for continuous narration."""
+
 from __future__ import annotations
 
 import base64
@@ -78,19 +79,23 @@ class EdgeTTSProvider(TTSProvider):
 class GeminiTTSProvider(TTSProvider):
     provider_name = "gemini"
 
-    async def synthesize(self, text, out_path, *, voice, language, speed, codec, sample_rate, metadata=None):
+    async def synthesize(
+        self, text, out_path, *, voice, language, speed, codec, sample_rate, metadata=None
+    ):
         from tella.tts import gemini
+
         meta = dict(metadata or {})
         model = str(meta.get("model") or "").strip()
         style = str(meta.get("style") or "").strip()
         if not model:
             raise RuntimeError("Gemini TTS requires an explicit model")
-        generated = await gemini.synthesize(
-            text, out_path, model=model, voice=voice, style=style
-        )
+        generated = await gemini.synthesize(text, out_path, model=model, voice=voice, style=style)
         return TTSResult(
-            audio_path=Path(out_path), provider="gemini", voice=voice,
-            language=language, metadata={**meta, **generated, "codec": "wav", "sample_rate": 24000},
+            audio_path=Path(out_path),
+            provider="gemini",
+            voice=voice,
+            language=language,
+            metadata={**meta, **generated, "codec": "wav", "sample_rate": 24000},
         )
 
 
@@ -117,8 +122,7 @@ class CloudflareGrokTTSProvider(TTSProvider):
             )
 
         model = (
-            os.environ.get("TELLA_CLOUDFLARE_GROK_TTS_MODEL")
-            or _CLOUDFLARE_GROK_MODEL
+            os.environ.get("TELLA_CLOUDFLARE_GROK_TTS_MODEL") or _CLOUDFLARE_GROK_MODEL
         ).strip()
         full_payload = {
             "text": text,
@@ -258,12 +262,17 @@ def get_tts_provider(name: str) -> TTSProvider:
         return EdgeTTSProvider()
     if normalized == "gemini":
         return GeminiTTSProvider()
+    if normalized == "kiraap":
+        from tella.tts.kiraap import KiraAPTTSProvider
+
+        return KiraAPTTSProvider()
     if normalized == "cloudflare_grok":
         return CloudflareGrokTTSProvider()
     if normalized == "xai":
         return XAITTSProvider()
     raise RuntimeError(
-        f"Unsupported TELLA_TTS_PROVIDER={name!r}; use edge, gemini, cloudflare_grok, or xai."
+        f"Unsupported TELLA_TTS_PROVIDER={name!r}; "
+        "use edge, gemini, kiraap, cloudflare_grok, or xai."
     )
 
 

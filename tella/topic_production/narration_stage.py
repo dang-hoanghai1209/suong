@@ -23,7 +23,14 @@ from pydantic import (
 )
 
 from tella.tts.audio_probe import probe_single_audio_stream_duration
-from tella.tts.providers import GeminiTTSProvider, TTSProvider
+from tella.tts.kiraap import (
+    KIRAAP_IMPLEMENTATION_VERSION,
+    KIRAAP_MODEL_DISPLAY_NAME,
+    KIRAAP_MODEL_ID,
+    KIRAAP_PROVIDER_ID,
+    KiraAPTTSProvider,
+)
+from tella.tts.providers import TTSProvider, get_tts_provider
 
 _SHA256 = r"^[0-9a-f]{64}$"
 _IDENTITY = r"^[a-z0-9][a-z0-9._-]{0,127}$"
@@ -58,23 +65,81 @@ class _RendererLocks(_Contract):
 class NarrationProviderConfigurationV1(_Contract):
     schema_version: Literal[1] = 1
     provider_configured: StrictBool
-    provider_id: Literal["gemini"] = "gemini"
-    provider_display_name: Literal["Gemini TTS"] = "Gemini TTS"
-    provider_implementation_version: Literal["tella.tts.providers.GeminiTTSProvider.v1"] = (
-        "tella.tts.providers.GeminiTTSProvider.v1"
-    )
-    model_id: Literal["gemini-3.1-flash-tts-preview"] = "gemini-3.1-flash-tts-preview"
-    model_display_name: Literal["Gemini 3.1 Flash TTS Preview"] = "Gemini 3.1 Flash TTS Preview"
-    voice_id: Literal["Callirrhoe"] = "Callirrhoe"
-    voice_display_name: Literal["Callirrhoe"] = "Callirrhoe"
+    provider_id: Literal["gemini", "kiraap-tts"]
+    provider_display_name: Literal["Gemini TTS", "KiraAP TTS"]
+    provider_implementation_version: Literal[
+        "tella.tts.providers.GeminiTTSProvider.v1",
+        "tella.tts.kiraap.KiraAPTTSProvider.v1",
+    ]
+    model_id: Literal["gemini-3.1-flash-tts-preview"]
+    model_display_name: Literal["Gemini 3.1 Flash TTS Preview"]
+    voice_id: Literal["Callirrhoe", "Kore"]
+    voice_display_name: Literal["Callirrhoe", "Kore"]
     language: Literal["vi-VN"] = "vi-VN"
-    style_profile_id: Literal["gentle_female_soft_slow_no_whisper"] = (
-        "gentle_female_soft_slow_no_whisper"
-    )
+    style_profile_id: Literal[
+        "gentle_female_soft_slow_no_whisper",
+        "kiraap_kore_default",
+    ]
     style_profile_version: Literal["1"] = "1"
     audio_format: Literal["audio/wav"] = "audio/wav"
     audio_validation_policy_version: Literal["narration_audio_validation_v1"] = (
         "narration_audio_validation_v1"
+    )
+
+    @model_validator(mode="after")
+    def provider_contract(self) -> NarrationProviderConfigurationV1:
+        expected = (
+            (
+                "Gemini TTS",
+                "tella.tts.providers.GeminiTTSProvider.v1",
+                "Callirrhoe",
+                "gentle_female_soft_slow_no_whisper",
+            )
+            if self.provider_id == "gemini"
+            else (
+                "KiraAP TTS",
+                KIRAAP_IMPLEMENTATION_VERSION,
+                "Kore",
+                "kiraap_kore_default",
+            )
+        )
+        actual = (
+            self.provider_display_name,
+            self.provider_implementation_version,
+            self.voice_id,
+            self.style_profile_id,
+        )
+        if actual != expected or self.voice_display_name != self.voice_id:
+            raise ValueError("narration provider configuration is inconsistent")
+        return self
+
+
+def _provider_configuration(
+    provider: TTSProvider,
+    configured: bool,
+) -> NarrationProviderConfigurationV1:
+    if provider.provider_name == KIRAAP_PROVIDER_ID:
+        return NarrationProviderConfigurationV1(
+            provider_configured=configured,
+            provider_id=KIRAAP_PROVIDER_ID,
+            provider_display_name="KiraAP TTS",
+            provider_implementation_version=KIRAAP_IMPLEMENTATION_VERSION,
+            model_id=KIRAAP_MODEL_ID,
+            model_display_name=KIRAAP_MODEL_DISPLAY_NAME,
+            voice_id="Kore",
+            voice_display_name="Kore",
+            style_profile_id="kiraap_kore_default",
+        )
+    return NarrationProviderConfigurationV1(
+        provider_configured=configured,
+        provider_id="gemini",
+        provider_display_name="Gemini TTS",
+        provider_implementation_version="tella.tts.providers.GeminiTTSProvider.v1",
+        model_id="gemini-3.1-flash-tts-preview",
+        model_display_name="Gemini 3.1 Flash TTS Preview",
+        voice_id="Callirrhoe",
+        voice_display_name="Callirrhoe",
+        style_profile_id="gentle_female_soft_slow_no_whisper",
     )
 
 
@@ -410,12 +475,23 @@ class NarrationStageStore:
         duration_probe: Callable[[Path], float] = probe_single_audio_stream_duration,
         provider_configured: bool | None = None,
     ) -> None:
-        env_configured = bool(
-            (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
+        if provider is None:
+            selected_provider = (os.environ.get("TELLA_TTS_PROVIDER") or "gemini").strip().lower()
+            provider = get_tts_provider(selected_provider)
+        self._provider = provider
+        env_configured = (
+            self._provider.configured
+            if isinstance(self._provider, KiraAPTTSProvider)
+            else bool(
+                (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
+            )
         )
-        self._provider = provider or GeminiTTSProvider()
         self._provider_configured = (
             env_configured if provider_configured is None else provider_configured
+        )
+        self._provider_configuration = _provider_configuration(
+            self._provider,
+            self._provider_configured,
         )
         self._artifact_root = Path(artifact_root or Path("out") / "narration-stage")
         self._duration_probe = duration_probe
@@ -428,9 +504,12 @@ class NarrationStageStore:
         self._state_lock = threading.Lock()
         self._identity = 1
 
-    @staticmethod
-    def provider_configuration(configured: bool) -> NarrationProviderConfigurationV1:
-        return NarrationProviderConfigurationV1(provider_configured=configured)
+    def provider_configuration(self, configured: bool) -> NarrationProviderConfigurationV1:
+        if configured == self._provider_configuration.provider_configured:
+            return self._provider_configuration
+        payload = self._provider_configuration.model_dump(mode="python")
+        payload["provider_configured"] = configured
+        return NarrationProviderConfigurationV1.model_validate(payload)
 
     def _context(
         self,
@@ -901,16 +980,22 @@ class NarrationStageStore:
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
             detail = str(exc)
+            typed_provider_codes = {
+                "TTS_PROVIDER_NOT_CONFIGURED",
+                "TTS_PROVIDER_AUTHENTICATION_FAILED",
+                "TTS_PROVIDER_RATE_LIMITED",
+                "TTS_PROVIDER_TIMEOUT",
+                "TTS_PROVIDER_UNAVAILABLE",
+                "TTS_PROVIDER_FAILED",
+                "TTS_RESPONSE_INVALID",
+                "AUDIO_MIME_UNSUPPORTED",
+                "AUDIO_SIGNATURE_INVALID",
+                "AUDIO_ARTIFACT_EMPTY",
+                "AUDIO_ARTIFACT_TOO_LARGE",
+            }
             code = (
                 detail
-                if detail
-                in {
-                    "AUDIO_ARTIFACT_EMPTY",
-                    "AUDIO_ARTIFACT_TOO_LARGE",
-                    "AUDIO_SIGNATURE_INVALID",
-                    "AUDIO_MEASUREMENT_FAILED",
-                    "TTS_RESPONSE_INVALID",
-                }
+                if detail in {*typed_provider_codes, "AUDIO_MEASUREMENT_FAILED"}
                 else (
                     "TTS_PROVIDER_TIMEOUT"
                     if isinstance(exc, (TimeoutError, asyncio.TimeoutError))
@@ -930,6 +1015,7 @@ class NarrationStageStore:
                 in {
                     "TTS_PROVIDER_TIMEOUT",
                     "TTS_PROVIDER_RATE_LIMITED",
+                    "TTS_PROVIDER_UNAVAILABLE",
                     "TTS_PROVIDER_FAILED",
                 },
                 created_at=_timestamp(number),

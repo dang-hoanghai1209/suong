@@ -46,8 +46,8 @@ function locks(item: Record<string, unknown>): void {
 function safeProjection(item: Record<string, unknown>): void {
   const serialized = JSON.stringify(item).toLowerCase();
   for (const forbidden of [
-    "api_key", "authorization", "credential", "output_path",
-    "artifact_path", "filesystem", "command",
+    "api_key", "authorization", "credential", "base_url", "provider_url",
+    "output_path", "artifact_path", "filesystem", "command",
   ]) {
     if (serialized.includes(forbidden)) fail();
   }
@@ -133,11 +133,26 @@ export function validateNarrationStageAccess(value: unknown): NarrationStageAcce
     "generation_in_progress",
   ]) bool(item[key]);
   const provider = record(item.provider_configuration);
+  const gemini =
+    provider.provider_id === "gemini" &&
+    provider.provider_display_name === "Gemini TTS" &&
+    provider.provider_implementation_version ===
+      "tella.tts.providers.GeminiTTSProvider.v1" &&
+    provider.voice_id === "Callirrhoe" &&
+    provider.voice_display_name === "Callirrhoe" &&
+    provider.style_profile_id === "gentle_female_soft_slow_no_whisper";
+  const kiraap =
+    provider.provider_id === "kiraap-tts" &&
+    provider.provider_display_name === "KiraAP TTS" &&
+    provider.provider_implementation_version ===
+      "tella.tts.kiraap.KiraAPTTSProvider.v1" &&
+    provider.voice_id === "Kore" &&
+    provider.voice_display_name === "Kore" &&
+    provider.style_profile_id === "kiraap_kore_default";
   if (
     provider.schema_version !== 1 ||
-    provider.provider_id !== "gemini" ||
+    (!gemini && !kiraap) ||
     provider.model_id !== "gemini-3.1-flash-tts-preview" ||
-    provider.voice_id !== "Callirrhoe" ||
     provider.language !== "vi-VN" ||
     provider.audio_format !== "audio/wav"
   ) fail();

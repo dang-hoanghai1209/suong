@@ -166,6 +166,28 @@ function access(audio: NarrationAudioArtifactV1 | null = null): NarrationStageAc
   };
 }
 
+function kiraapAccess(): NarrationStageAccessV1 {
+  return {
+    ...access(),
+    provider_configuration: {
+      schema_version: 1,
+      provider_configured: true,
+      provider_id: "kiraap-tts",
+      provider_display_name: "KiraAP TTS",
+      provider_implementation_version: "tella.tts.kiraap.KiraAPTTSProvider.v1",
+      model_id: "gemini-3.1-flash-tts-preview",
+      model_display_name: "Gemini 3.1 Flash TTS Preview",
+      voice_id: "Kore",
+      voice_display_name: "Kore",
+      language: "vi-VN",
+      style_profile_id: "kiraap_kore_default",
+      style_profile_version: "1",
+      audio_format: "audio/wav",
+      audio_validation_policy_version: "narration_audio_validation_v1",
+    },
+  };
+}
+
 function result(
   values: Partial<NarrationStageOperationResultV1> = {},
 ): NarrationStageOperationResultV1 {
@@ -205,6 +227,48 @@ describe("narration and TTS workspace", () => {
     expect(screen.queryByRole("textbox", { name: /narration/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/Ready to render/i)).not.toBeInTheDocument();
     expect(screen.getByText("Renderer execution: not granted")).toBeVisible();
+  });
+
+  it("shows KiraAP metadata and quota guidance without provider controls", async () => {
+    const repository = Object.assign(new MockProductionRepository(), {
+      getNarrationStageAccess: vi.fn().mockResolvedValue(kiraapAccess()),
+    });
+    renderPage(repository);
+    expect(await screen.findByText(/KiraAP TTS/)).toBeVisible();
+    expect(screen.getByText(/Gemini 3.1 Flash TTS Preview/)).toBeVisible();
+    expect(screen.getByText("Kore")).toBeVisible();
+    expect(screen.getByText("vi-VN")).toBeVisible();
+    expect(screen.getByText("WAV")).toBeVisible();
+    expect(screen.getByText(/quota of the Google project configured in KiraAP/)).toBeVisible();
+    expect(screen.queryByLabelText(/API key/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/base URL/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/voice selector/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/model selector/i)).not.toBeInTheDocument();
+  });
+
+  it("shows an unconfigured KiraAP provider and disables generation", async () => {
+    const configured = kiraapAccess();
+    const unavailable: NarrationStageAccessV1 = {
+      ...configured,
+      provider_configuration: {
+        ...configured.provider_configuration,
+        provider_configured: false,
+      },
+      narration_generation_capability: false,
+      tts_capability: false,
+      audio_generation_capability: false,
+      audio_measurement_capability: false,
+      audio_artifact_creation_capability: false,
+      blocker_codes: ["TTS_PROVIDER_NOT_CONFIGURED"],
+    };
+    const repository = Object.assign(new MockProductionRepository(), {
+      getNarrationStageAccess: vi.fn().mockResolvedValue(unavailable),
+    });
+    renderPage(repository);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "TTS_PROVIDER_NOT_CONFIGURED",
+    );
+    expect(screen.getByRole("button", { name: "Generate narration audio" })).toBeDisabled();
   });
 
   it("requires explicit quota acknowledgement and confirmation before approval", async () => {
