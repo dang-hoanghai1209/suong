@@ -11,7 +11,7 @@ export function AppShell() {
   const location = useLocation();
   const executionEnablementWorkspace = location.pathname.endsWith(
     "/execution-enablement",
-  );
+  ) || location.pathname.endsWith("/narration-stage");
   const [connectionAttempt, setConnectionAttempt] = useState(0);
   const [connectionState, setConnectionState] = useState<
     "connecting" | "connected" | "unavailable"

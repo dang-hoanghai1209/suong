@@ -143,6 +143,19 @@ def _known_api_methods(path: str) -> frozenset[str] | None:
             return frozenset({"POST"})
         if len(tail) == 2 and tail[0] == "packages":
             return frozenset({"GET"})
+    if len(parts) >= 2 and parts[1] == "narration-stage":
+        tail = parts[2:]
+        if not tail or tail in (["access"], ["history"]):
+            return frozenset({"GET"})
+        if tail in (["approve"], ["generate"]):
+            return frozenset({"POST"})
+        if len(tail) == 2 and tail[0] == "artifacts":
+            return frozenset({"GET"})
+        if len(tail) == 3 and tail[0] == "artifacts":
+            if tail[2] == "audio":
+                return frozenset({"GET"})
+            if tail[2] in {"accept", "reject", "request-regeneration"}:
+                return frozenset({"POST"})
     if len(parts) >= 2 and parts[1] == "scene-plan":
         tail = parts[2:]
         if not tail:
@@ -205,6 +218,22 @@ def _visual_artifact_identity(path: str) -> tuple[str, str, str] | None:
         and all(parts)
     ):
         return parts[0], parts[3], parts[5]
+    return None
+
+
+def _narration_audio_identity(path: str) -> tuple[str, str] | None:
+    prefix = f"{PLAN_ONLY_API_PREFIX}/runs/"
+    if not path.startswith(prefix):
+        return None
+    parts = path[len(prefix) :].split("/")
+    if (
+        len(parts) == 5
+        and parts[1] == "narration-stage"
+        and parts[2] == "artifacts"
+        and parts[4] == "audio"
+        and all(parts)
+    ):
+        return parts[0], parts[3]
     return None
 
 
@@ -407,6 +436,38 @@ class _PlanOnlyRequestHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True
 
+    def _serve_narration_audio(self, path: str) -> None:
+        identity = _narration_audio_identity(path)
+        try:
+            with self.server.plan_only_application_lock:
+                artifact = (
+                    None
+                    if identity is None
+                    else self.server.plan_only_application.get_narration_audio_bytes(*identity)
+                )
+        except Exception:
+            artifact = None
+        if artifact is None:
+            self._send_error(
+                HTTPStatus.NOT_FOUND,
+                "NARRATION_AUDIO_ARTIFACT_NOT_FOUND",
+                "The requested narration audio artifact was not found.",
+            )
+            return
+        content, mime_type, sha256 = artifact
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", mime_type)
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("ETag", f'"sha256-{sha256}"')
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            self.wfile.write(content)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+
     def do_GET(self) -> None:
         try:
             path = self._request_path()
@@ -433,6 +494,9 @@ class _PlanOnlyRequestHandler(BaseHTTPRequestHandler):
                 return
             if _visual_artifact_identity(path) is not None:
                 self._serve_visual_artifact(path)
+                return
+            if _narration_audio_identity(path) is not None:
+                self._serve_narration_audio(path)
                 return
             self._dispatch_api("GET", path)
             return

@@ -43,8 +43,14 @@ import type {
   ExecutionEnablementAccessV1,
   ExecutionPackageOperationResultV1,
   ExecutionPackageReviewReasonV1,
+  NarrationStageAccessV1,
+  NarrationStageOperationResultV1,
   ReadinessReviewReasonV1,
 } from "../contracts/v1/production";
+import {
+  validateNarrationStageAccess,
+  validateNarrationStageOperation,
+} from "./narrationStageValidation";
 import {
   validateCompositionAccess,
   validateCompositionOperation,
@@ -357,6 +363,43 @@ export interface ProductionRepository {
     readonly run_id: string;
     readonly packages: readonly import("../contracts/v1/production").ExecutionPackageV1[];
   } | null>;
+  getNarrationStageAccess?(runId: string): Promise<NarrationStageAccessV1 | null>;
+  approveNarrationStage?(
+    runId: string,
+    request: {
+      readonly schema_version: 1;
+      readonly execution_package_id: string;
+      readonly execution_package_revision_id: string;
+      readonly package_source_authority_sha256: string;
+      readonly explicit_external_provider_acknowledgement: true;
+      readonly explicit_confirmation: true;
+      readonly note: string | null;
+    },
+  ): Promise<NarrationStageOperationResultV1>;
+  generateNarrationAudio?(
+    runId: string,
+    request: {
+      readonly schema_version: 1;
+      readonly execution_package_id: string;
+      readonly execution_package_revision_id: string;
+      readonly package_source_authority_sha256: string;
+      readonly approval_id: string;
+      readonly approval_revision_id: string;
+      readonly explicit_confirmation: true;
+    },
+  ): Promise<NarrationStageOperationResultV1>;
+  reviewNarrationAudio?(
+    runId: string,
+    artifactId: string,
+    operation: "accept" | "reject" | "request-regeneration",
+    request: {
+      readonly schema_version: 1;
+      readonly artifact_revision_id: string;
+      readonly audio_sha256: string;
+      readonly explicit_confirmation: true;
+      readonly reason: string | null;
+    },
+  ): Promise<NarrationStageOperationResultV1>;
 }
 
 export class ProductionContractError extends Error {
@@ -489,6 +532,32 @@ export function defineNativeFetchClient(
             ["accept", "reject", "request-revision"].includes(
               sceneTail[4] ?? "",
             )));
+      const narrationTail =
+        runParts.length >= 2 && runParts[1] === "narration-stage"
+          ? runParts.slice(2)
+          : [];
+      const exactNarrationStage =
+        runParts.length >= 2 &&
+        runParts[0] !== "" &&
+        runParts[1] === "narration-stage" &&
+        ((method === "GET" &&
+          (narrationTail.length === 0 ||
+            (narrationTail.length === 1 &&
+              ["access", "history"].includes(narrationTail[0] ?? "")))) ||
+          (method === "POST" &&
+            narrationTail.length === 1 &&
+            ["approve", "generate"].includes(narrationTail[0] ?? "")) ||
+          (method === "GET" &&
+            narrationTail.length === 2 &&
+            narrationTail[0] === "artifacts" &&
+            narrationTail[1] !== "") ||
+          (method === "POST" &&
+            narrationTail.length === 3 &&
+            narrationTail[0] === "artifacts" &&
+            narrationTail[1] !== "" &&
+            ["accept", "reject", "request-regeneration"].includes(
+              narrationTail[2] ?? "",
+            )));
       const exactCreate = method === "POST" && exactCollection;
       const exactList = method === "GET" && exactCollection;
       if (
@@ -503,7 +572,8 @@ export function defineNativeFetchClient(
           exactAccept ||
           exactRevisions ||
           exactRevision ||
-          exactScenePlan
+          exactScenePlan ||
+          exactNarrationStage
         )
       ) {
         throw new ProductionContractError("Only the local PLAN_ONLY contract is allowed.");
@@ -2079,6 +2149,61 @@ export class BackendProductionRepository implements ProductionRepository {
       run_id: runId,
       packages: payload.packages.map(validateExecutionPackage),
     };
+  }
+
+  async getNarrationStageAccess(runId: string) {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/narration-stage/access`,
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const access = validateNarrationStageAccess(response.payload);
+    if (access.run_id !== runId) throw new ProductionContractError();
+    return access;
+  }
+
+  async #narrationMutation(
+    runId: string,
+    path: string,
+    request: object,
+  ): Promise<NarrationStageOperationResultV1> {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/narration-stage/${path}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(request),
+      },
+    );
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    return validateNarrationStageOperation(response.payload);
+  }
+
+  approveNarrationStage(
+    runId: string,
+    request: Parameters<NonNullable<ProductionRepository["approveNarrationStage"]>>[1],
+  ) {
+    return this.#narrationMutation(runId, "approve", request);
+  }
+
+  generateNarrationAudio(
+    runId: string,
+    request: Parameters<NonNullable<ProductionRepository["generateNarrationAudio"]>>[1],
+  ) {
+    return this.#narrationMutation(runId, "generate", request);
+  }
+
+  reviewNarrationAudio(
+    runId: string,
+    artifactId: string,
+    operation: "accept" | "reject" | "request-regeneration",
+    request: Parameters<NonNullable<ProductionRepository["reviewNarrationAudio"]>>[3],
+  ) {
+    return this.#narrationMutation(
+      runId,
+      `artifacts/${encodeURIComponent(artifactId)}/${operation}`,
+      request,
+    );
   }
 }
 

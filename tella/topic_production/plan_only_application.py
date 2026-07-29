@@ -6,7 +6,7 @@ producer is explicitly not eligible for live production or rendering.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 import hashlib
@@ -25,6 +25,7 @@ from pydantic import (
 )
 
 from tella.media.image_provider import get_image_provider
+from tella.tts.providers import TTSProvider
 
 from .duration_policy import (
     DurationAssessmentStatus,
@@ -34,6 +35,7 @@ from .duration_policy import (
 )
 from .execution_models import ExecutionMode
 from .execution_enablement import ExecutionEnablementStore
+from .narration_stage import NarrationStageStore
 from .execution_readiness import ExecutionReadinessStore
 from .identity_eligibility import IdentityEligibilityError, require_supported_identity
 from .models import PlannerMetadata, PlannerMode, StoryPlan
@@ -950,6 +952,10 @@ class PlanOnlyApplication:
         *,
         visual_provider: VisualCandidateProvider | None = None,
         visual_artifact_root: Path | None = None,
+        narration_provider: TTSProvider | None = None,
+        narration_artifact_root: Path | None = None,
+        narration_duration_probe: Callable[[Path], float] | None = None,
+        narration_provider_configured: bool | None = None,
     ) -> None:
         self._producer = producer or PlanOnlyDeterministicTopicProducer()
         self._runs: dict[str, ProductionRunViewV1] = {}
@@ -962,6 +968,14 @@ class PlanOnlyApplication:
         self._timeline_planning = TimelinePlanningStore()
         self._execution_readiness = ExecutionReadinessStore()
         self._execution_enablement = ExecutionEnablementStore()
+        narration_options: dict[str, object] = {
+            "provider": narration_provider,
+            "artifact_root": narration_artifact_root,
+            "provider_configured": narration_provider_configured,
+        }
+        if narration_duration_probe is not None:
+            narration_options["duration_probe"] = narration_duration_probe
+        self._narration_stage = NarrationStageStore(**narration_options)
         if visual_provider is None:
             configured = get_image_provider()
             visual_provider = configured if configured.is_configured() else None
@@ -1772,6 +1786,65 @@ class PlanOnlyApplication:
         self.get_execution_enablement_access(run_id)
         return self._execution_enablement.package(run_id, package_revision_id)
 
+    def _narration_stage_context(self, run_id: str) -> dict[str, object] | None:
+        run = self.get_run(run_id)
+        execution_access = self.get_execution_enablement_access(run_id)
+        if run is None or execution_access is None:
+            return None
+        return {"run": run, "execution_access": execution_access}
+
+    def get_narration_stage_access(self, run_id: str) -> dict[str, object] | None:
+        context = self._narration_stage_context(run_id)
+        if context is None:
+            return None
+        return self._narration_stage.access(**context)
+
+    def approve_narration_stage(self, run_id: str, payload: object) -> dict[str, object] | None:
+        context = self._narration_stage_context(run_id)
+        if context is None:
+            return None
+        return self._narration_stage.approve(payload=payload, **context)
+
+    def generate_narration_audio(self, run_id: str, payload: object) -> dict[str, object] | None:
+        context = self._narration_stage_context(run_id)
+        if context is None:
+            return None
+        return self._narration_stage.generate(payload=payload, **context)
+
+    def get_narration_stage_history(self, run_id: str) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        self.get_narration_stage_access(run_id)
+        return self._narration_stage.history(run_id)
+
+    def get_narration_audio_artifact(
+        self, run_id: str, artifact_id: str
+    ) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        self.get_narration_stage_access(run_id)
+        return self._narration_stage.artifact(run_id, artifact_id)
+
+    def get_narration_audio_bytes(
+        self, run_id: str, artifact_id: str
+    ) -> tuple[bytes, str, str] | None:
+        if run_id not in self._runs:
+            return None
+        self.get_narration_stage_access(run_id)
+        return self._narration_stage.audio(run_id, artifact_id)
+
+    def review_narration_audio(
+        self,
+        run_id: str,
+        artifact_id: str,
+        operation: Literal["accept", "reject", "request-regeneration"],
+        payload: object,
+    ) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        self.get_narration_stage_access(run_id)
+        return self._narration_stage.review(run_id, artifact_id, operation, payload)
+
 
 class PlanOnlyFacadeResponse(_ContractModel):
     status_code: int = Field(ge=200, le=599)
@@ -2024,6 +2097,55 @@ def dispatch_plan_only_request(
         operation = operation_by_tail.get(tuple(tail))
         if operation is not None and method == "POST":
             result = application.mutate_execution_package(run_id, operation, body)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if result is not None else 404,
+                payload=result,
+            )
+    if len(parts) >= 2 and parts[1] == "narration-stage":
+        run_id = parts[0]
+        tail = parts[2:]
+        if tail in ([], ["access"]) and method == "GET":
+            access = application.get_narration_stage_access(run_id)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if access is not None else 404,
+                payload=access,
+            )
+        if tail == ["approve"] and method == "POST":
+            result = application.approve_narration_stage(run_id, body)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if result is not None else 404,
+                payload=result,
+            )
+        if tail == ["generate"] and method == "POST":
+            result = application.generate_narration_audio(run_id, body)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if result is not None else 404,
+                payload=result,
+            )
+        if tail == ["history"] and method == "GET":
+            history = application.get_narration_stage_history(run_id)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if history is not None else 404,
+                payload=history,
+            )
+        if len(tail) == 2 and tail[0] == "artifacts" and method == "GET":
+            artifact = application.get_narration_audio_artifact(run_id, tail[1])
+            return PlanOnlyFacadeResponse(
+                status_code=200 if artifact is not None else 404,
+                payload=artifact,
+            )
+        if (
+            len(tail) == 3
+            and tail[0] == "artifacts"
+            and tail[2] in {"accept", "reject", "request-regeneration"}
+            and method == "POST"
+        ):
+            result = application.review_narration_audio(
+                run_id,
+                tail[1],
+                tail[2],
+                body,
+            )
             return PlanOnlyFacadeResponse(
                 status_code=200 if result is not None else 404,
                 payload=result,

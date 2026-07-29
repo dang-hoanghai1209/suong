@@ -1397,3 +1397,180 @@ export interface ExecutionPackageOperationResultV1 {
     readonly retryable: false;
   } | null;
 }
+
+export interface NarrationRendererLocksV1 {
+  readonly full_render_enabled: false;
+  readonly timeline_execution_authority: false;
+  readonly renderer_execution_authority: false;
+  readonly render_authority: false;
+  readonly video_render_authority: false;
+  readonly subtitle_generation_capability: false;
+  readonly media_muxing_capability: false;
+  readonly output_creation_capability: false;
+  readonly execution_job_creation_capability: false;
+  readonly final_media_capability: false;
+}
+
+export interface NarrationProviderConfigurationV1 {
+  readonly schema_version: 1;
+  readonly provider_configured: boolean;
+  readonly provider_id: "gemini";
+  readonly provider_display_name: "Gemini TTS";
+  readonly provider_implementation_version: "tella.tts.providers.GeminiTTSProvider.v1";
+  readonly model_id: "gemini-3.1-flash-tts-preview";
+  readonly model_display_name: "Gemini 3.1 Flash TTS Preview";
+  readonly voice_id: "Callirrhoe";
+  readonly voice_display_name: "Callirrhoe";
+  readonly language: "vi-VN";
+  readonly style_profile_id: "gentle_female_soft_slow_no_whisper";
+  readonly style_profile_version: "1";
+  readonly audio_format: "audio/wav";
+  readonly audio_validation_policy_version: "narration_audio_validation_v1";
+}
+
+export interface NarrationSourceV1 {
+  readonly schema_version: 1;
+  readonly narration_text: string;
+  readonly narration_source_sha256: string;
+  readonly character_count: number;
+  readonly utf8_byte_count: number;
+  readonly editable: false;
+}
+
+export interface NarrationStageApprovalV1 extends NarrationRendererLocksV1 {
+  readonly schema_version: 1;
+  readonly approval_id: string;
+  readonly approval_revision_id: string;
+  readonly run_id: string;
+  readonly execution_package_id: string;
+  readonly execution_package_revision_id: string;
+  readonly package_source_authority_sha256: string;
+  readonly narration_source_sha256: string;
+  readonly accepted_timeline_revision_id: string;
+  readonly effective_timeline_duration_ms: number;
+  readonly provider_id: string;
+  readonly provider_implementation_version: string;
+  readonly model_id: string;
+  readonly voice_id: string;
+  readonly language: string;
+  readonly style_profile_id: string;
+  readonly style_profile_version: string;
+  readonly audio_format: "audio/wav";
+  readonly audio_validation_policy_version: string;
+  readonly purpose: "NARRATION_TTS_ARTIFACT_GENERATION";
+  readonly narration_stage_source_authority_sha256: string;
+  readonly current: boolean;
+  readonly note: string | null;
+  readonly created_at: string;
+  readonly process_local: true;
+}
+
+export interface NarrationDurationComparisonV1 {
+  readonly schema_version: 1;
+  readonly measured_audio_duration_ms: number;
+  readonly accepted_timeline_duration_ms: number;
+  readonly duration_delta_ms: number;
+  readonly duration_delta_ratio: number;
+  readonly duration_alignment_status: "WITHIN_POLICY" | "OUTSIDE_POLICY";
+  readonly timeline_realignment_required: boolean;
+  readonly duration_policy_reason_code:
+    | "NARRATION_DURATION_WITHIN_TEN_PERCENT"
+    | "NARRATION_DURATION_REQUIRES_TIMELINE_REALIGNMENT";
+}
+
+export interface NarrationAudioArtifactV1 extends NarrationRendererLocksV1 {
+  readonly schema_version: 1;
+  readonly artifact_id: string;
+  readonly artifact_revision_id: string;
+  readonly run_id: string;
+  readonly execution_package_id: string;
+  readonly execution_package_revision_id: string;
+  readonly package_source_authority_sha256: string;
+  readonly narration_stage_approval_id: string;
+  readonly narration_stage_approval_revision_id: string;
+  readonly narration_source_sha256: string;
+  readonly tts_request_sha256: string;
+  readonly provider_id: string;
+  readonly provider_implementation_version: string;
+  readonly model_id: string;
+  readonly voice_id: string;
+  readonly language: string;
+  readonly style_profile_id: string;
+  readonly style_profile_version: string;
+  readonly mime_type: "audio/wav";
+  readonly extension: "wav";
+  readonly audio_sha256: string;
+  readonly byte_length: number;
+  readonly measured_duration_ms: number;
+  readonly container: "wav";
+  readonly codec: "pcm";
+  readonly sample_rate_hz: number | null;
+  readonly channels: number | null;
+  readonly validation_policy_version: "narration_audio_validation_v1";
+  readonly artifact_contract_version: "narration_audio_artifact_v1";
+  readonly status:
+    | "GENERATED_FOR_REVIEW"
+    | "ACCEPTED_FOR_RENDERER_STAGE_REVIEW"
+    | "REJECTED"
+    | "REVISION_REQUESTED"
+    | "SUPERSEDED";
+  readonly current: boolean;
+  readonly narration_audio_artifact_accepted: boolean;
+  readonly eligible_for_renderer_stage_review: boolean;
+  readonly duration_comparison: NarrationDurationComparisonV1;
+  readonly superseded_reason: string | null;
+  readonly created_at: string;
+  readonly process_local: true;
+}
+
+export interface NarrationStageAccessV1 extends NarrationRendererLocksV1 {
+  readonly schema_version: 1;
+  readonly run_id: string;
+  readonly blocker_codes: readonly string[];
+  readonly narration_stage_review_capability: boolean;
+  readonly narration_stage_approval_capability: boolean;
+  readonly narration_generation_capability: boolean;
+  readonly tts_capability: boolean;
+  readonly audio_generation_capability: boolean;
+  readonly audio_measurement_capability: boolean;
+  readonly audio_artifact_creation_capability: boolean;
+  readonly audio_artifact_review_capability: boolean;
+  readonly eligible_for_renderer_stage_review: boolean;
+  readonly execution_package_id: string | null;
+  readonly execution_package_revision_id: string | null;
+  readonly package_source_authority_sha256: string | null;
+  readonly narration_source: NarrationSourceV1 | null;
+  readonly provider_configuration: NarrationProviderConfigurationV1;
+  readonly approval: NarrationStageApprovalV1 | null;
+  readonly artifact: NarrationAudioArtifactV1 | null;
+  readonly generation_in_progress: boolean;
+  readonly attempt_count: number;
+  readonly artifact_history_count: number;
+  readonly review_history_count: number;
+  readonly process_local: true;
+  readonly restart_warning: string;
+}
+
+export interface NarrationStageOperationResultV1 {
+  readonly schema_version: 1;
+  readonly access: NarrationStageAccessV1 | null;
+  readonly approval: NarrationStageApprovalV1 | null;
+  readonly attempt: {
+    readonly schema_version: 1;
+    readonly attempt_id: string;
+    readonly run_id: string;
+    readonly request_sha256: string;
+    readonly approval_revision_id: string;
+    readonly status: "SUCCEEDED" | "FAILED";
+    readonly failure_code: string | null;
+    readonly retryable: boolean;
+    readonly created_at: string;
+  } | null;
+  readonly artifact: NarrationAudioArtifactV1 | null;
+  readonly error: {
+    readonly schema_version: 1;
+    readonly code: string;
+    readonly message: string;
+    readonly retryable: boolean;
+  } | null;
+}

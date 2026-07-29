@@ -188,6 +188,11 @@ export function ExecutionEnablementPage() {
           >
             Review package creation
           </button>
+          {pkg?.eligible_for_narration_stage_review ? (
+            <Link to={`/production/runs/${runId}/narration-stage`}>
+              Open narration and TTS review
+            </Link>
+          ) : null}
           <div className="action-row">
             <button disabled={!pkg?.current || busy} onClick={() => void mutate("request-revision", "PLANNING_PACKAGE_REVIEW_REQUIRED")}>
               Request planning revision
