@@ -477,12 +477,29 @@ class _PlanOnlyRequestHandler(BaseHTTPRequestHandler):
             )
             return False, None
 
+    def _discard_bounded_rejected_request_body(self) -> None:
+        """Consume a safe declared body before closing an early rejection."""
+
+        if self.headers.get("Transfer-Encoding") is not None:
+            return
+        content_lengths = self.headers.get_all("Content-Length", [])
+        if len(content_lengths) != 1:
+            return
+        try:
+            content_length = int(content_lengths[0])
+        except (TypeError, ValueError):
+            return
+        if not 0 < content_length <= MAX_PLAN_ONLY_REQUEST_BYTES:
+            return
+        self.rfile.read(content_length)
+
     def do_POST(self) -> None:
         try:
             path = self._request_path()
         except (UnicodeDecodeError, ValueError):
             path = None
         if path is None or not path.startswith("/api/"):
+            self._discard_bounded_rejected_request_body()
             self._send_error(
                 HTTPStatus.NOT_FOUND,
                 "PLAN_ONLY_ROUTE_NOT_FOUND",
@@ -491,6 +508,7 @@ class _PlanOnlyRequestHandler(BaseHTTPRequestHandler):
             return
         methods = _known_api_methods(path)
         if methods is None:
+            self._discard_bounded_rejected_request_body()
             self._send_error(
                 HTTPStatus.NOT_FOUND,
                 "PLAN_ONLY_ROUTE_NOT_FOUND",
@@ -498,6 +516,7 @@ class _PlanOnlyRequestHandler(BaseHTTPRequestHandler):
             )
             return
         if "POST" not in methods:
+            self._discard_bounded_rejected_request_body()
             self._method_not_allowed(methods)
             return
         body_valid, body = self._read_json_body()
@@ -556,6 +575,7 @@ class _PlanOnlyRequestHandler(BaseHTTPRequestHandler):
             path = self._request_path()
         except (UnicodeDecodeError, ValueError):
             path = None
+        self._discard_bounded_rejected_request_body()
         self._method_not_allowed(_known_api_methods(path or ""))
 
 
