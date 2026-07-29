@@ -1574,3 +1574,231 @@ export interface NarrationStageOperationResultV1 {
     readonly retryable: boolean;
   } | null;
 }
+
+export interface RendererFinalMediaLocksV1 {
+  readonly full_render_enabled: false;
+  readonly final_media_capability: false;
+  readonly release_authority: false;
+  readonly publication_authority: false;
+  readonly output_creation_capability: false;
+  readonly subtitle_generation_capability: false;
+}
+
+export interface RendererConfigurationV1 {
+  readonly schema_version: 1;
+  readonly renderer_configured: boolean;
+  readonly renderer_implementation_id: "tella.render.pipeline.render";
+  readonly renderer_implementation_version: "1";
+  readonly renderer_bridge_contract_version: "accepted_candidate_renderer_bridge_v1";
+  readonly ffmpeg_available: boolean;
+  readonly ffmpeg_capability_version: "ffmpeg_argument_list_local_v1";
+  readonly ffprobe_available: boolean;
+  readonly ffprobe_capability_version: "ffprobe_mp4_stream_validation_v1";
+  readonly local_only: true;
+  readonly shell_allowed: false;
+}
+
+export interface RendererOutputProfileV1 {
+  readonly schema_version: 1;
+  readonly profile_id: "vertical_emotional_mp4";
+  readonly profile_version: "1";
+  readonly container: "mp4";
+  readonly mime_type: "video/mp4";
+  readonly width: 1080;
+  readonly height: 1920;
+  readonly aspect_ratio: "9:16";
+  readonly frame_rate: 30;
+  readonly video_codec: "h264";
+  readonly audio_codec: "aac";
+  readonly pixel_format: "yuv420p";
+  readonly validation_policy_version: "basic_mp4_validation_v1";
+}
+
+export interface RenderInputAuthorityV1 {
+  readonly schema_version: 1;
+  readonly run_id: string;
+  readonly execution_package_id: string;
+  readonly execution_package_revision_id: string;
+  readonly package_source_authority_sha256: string;
+  readonly story_plan_sha256: string;
+  readonly narration_source_sha256: string;
+  readonly narration_artifact_id: string;
+  readonly narration_artifact_revision_id: string;
+  readonly narration_audio_sha256: string;
+  readonly measured_narration_duration_ms: number;
+  readonly timeline_collection_revision_id: string;
+  readonly accepted_timeline_revision_id: string;
+  readonly timeline_source_authority_sha256: string;
+  readonly scene_ids: readonly string[];
+  readonly scene_revision_ids: readonly string[];
+  readonly visual_candidate_ids: readonly string[];
+  readonly visual_candidate_revision_ids: readonly string[];
+  readonly visual_artifact_sha256s: readonly string[];
+  readonly composition_ids: readonly string[];
+  readonly composition_revision_ids: readonly string[];
+}
+
+export interface RendererStageApprovalV1 extends RendererFinalMediaLocksV1 {
+  readonly schema_version: 1;
+  readonly approval_id: string;
+  readonly approval_revision_id: string;
+  readonly purpose: "BOUNDED_MP4_RENDER_EXECUTION";
+  readonly input_authority: RenderInputAuthorityV1;
+  readonly renderer_configuration: RendererConfigurationV1;
+  readonly output_profile: RendererOutputProfileV1;
+  readonly renderer_stage_source_authority_sha256: string;
+  readonly current: boolean;
+  readonly note: string | null;
+  readonly created_at: string;
+  readonly process_local: true;
+}
+
+export interface RenderPackageV1 extends RendererFinalMediaLocksV1 {
+  readonly schema_version: 1;
+  readonly render_package_id: string;
+  readonly render_package_revision_id: string;
+  readonly render_package_revision: 1;
+  readonly approval_id: string;
+  readonly approval_revision_id: string;
+  readonly input_authority: RenderInputAuthorityV1;
+  readonly renderer_configuration: RendererConfigurationV1;
+  readonly output_profile: RendererOutputProfileV1;
+  readonly render_package_sha256: string;
+  readonly current: boolean;
+  readonly created_at: string;
+  readonly process_local: true;
+}
+
+export type RenderJobStatusV1 =
+  | "AWAITING_APPROVAL"
+  | "APPROVED_FOR_BOUNDED_RENDER"
+  | "QUEUED"
+  | "RUNNING"
+  | "CANCEL_REQUESTED"
+  | "CANCELLED"
+  | "SUCCEEDED_FOR_REVIEW"
+  | "FAILED"
+  | "SUPERSEDED";
+
+export interface RenderJobV1 extends RendererFinalMediaLocksV1 {
+  readonly schema_version: 1;
+  readonly job_id: string;
+  readonly job_attempt_id: string;
+  readonly run_id: string;
+  readonly render_package_id: string;
+  readonly render_package_revision_id: string;
+  readonly render_package_sha256: string;
+  readonly status: RenderJobStatusV1;
+  readonly progress: {
+    readonly schema_version: 1;
+    readonly completed_units: number;
+    readonly total_units: 1;
+    readonly percent: number;
+  };
+  readonly failure_code: string | null;
+  readonly cancellation_reason: string | null;
+  readonly artifact_id: string | null;
+  readonly created_at: string;
+  readonly updated_at: string;
+  readonly current: boolean;
+  readonly process_local: true;
+}
+
+export interface RenderArtifactV1 extends RendererFinalMediaLocksV1 {
+  readonly schema_version: 1;
+  readonly artifact_id: string;
+  readonly artifact_revision_id: string;
+  readonly run_id: string;
+  readonly render_package_id: string;
+  readonly render_package_revision_id: string;
+  readonly render_package_sha256: string;
+  readonly job_id: string;
+  readonly mime_type: "video/mp4";
+  readonly extension: "mp4";
+  readonly mp4_sha256: string;
+  readonly byte_length: number;
+  readonly metadata: {
+    readonly schema_version: 1;
+    readonly duration_ms: number;
+    readonly width: number;
+    readonly height: number;
+    readonly video_codec: string;
+    readonly audio_codec: string;
+    readonly video_stream_count: 1;
+    readonly audio_stream_count: 1;
+  };
+  readonly status:
+    | "GENERATED_FOR_REVIEW"
+    | "ACCEPTED_FOR_FINAL_MEDIA_QC_REVIEW"
+    | "REJECTED"
+    | "RERENDER_REQUESTED"
+    | "SUPERSEDED";
+  readonly current: boolean;
+  readonly render_artifact_accepted_for_qc: boolean;
+  readonly eligible_for_final_media_qc_review: boolean;
+  readonly superseded_reason: string | null;
+  readonly created_at: string;
+  readonly process_local: true;
+}
+
+export interface RendererStageAccessV1 extends RendererFinalMediaLocksV1 {
+  readonly schema_version: 1;
+  readonly run_id: string;
+  readonly blocker_codes: readonly string[];
+  readonly renderer_stage_review_capability: boolean;
+  readonly renderer_stage_approval_capability: boolean;
+  readonly render_package_creation_capability: boolean;
+  readonly bounded_render_execution_capability: boolean;
+  readonly render_job_creation_capability: boolean;
+  readonly render_job_cancellation_capability: boolean;
+  readonly mp4_artifact_creation_capability: boolean;
+  readonly render_artifact_review_capability: boolean;
+  readonly eligible_for_final_media_qc_review: boolean;
+  readonly input_authority: RenderInputAuthorityV1 | null;
+  readonly renderer_configuration: RendererConfigurationV1;
+  readonly output_profile: RendererOutputProfileV1;
+  readonly approval: RendererStageApprovalV1 | null;
+  readonly render_package: RenderPackageV1 | null;
+  readonly job: RenderJobV1 | null;
+  readonly artifact: RenderArtifactV1 | null;
+  readonly process_local: true;
+  readonly restart_warning: string;
+}
+
+export interface RendererStageOperationResultV1 {
+  readonly schema_version: 1;
+  readonly access: RendererStageAccessV1 | null;
+  readonly approval: RendererStageApprovalV1 | null;
+  readonly render_package: RenderPackageV1 | null;
+  readonly job: RenderJobV1 | null;
+  readonly artifact: RenderArtifactV1 | null;
+  readonly error: {
+    readonly schema_version: 1;
+    readonly code: string;
+    readonly message: string;
+    readonly retryable: boolean;
+  } | null;
+}
+
+export interface RendererStageHistoryV1 {
+  readonly schema_version: 1;
+  readonly run_id: string;
+  readonly approvals: readonly RendererStageApprovalV1[];
+  readonly render_packages: readonly RenderPackageV1[];
+  readonly jobs: readonly RenderJobV1[];
+  readonly artifacts: readonly RenderArtifactV1[];
+  readonly reviews: readonly {
+    readonly schema_version: 1;
+    readonly review_id: string;
+    readonly artifact_revision_id: string;
+    readonly action:
+      | "GENERATED"
+      | "ACCEPTED_FOR_QC"
+      | "REJECTED"
+      | "RERENDER_REQUESTED";
+    readonly purpose: "SEPARATE_FINAL_MEDIA_QC_REVIEW" | null;
+    readonly reason: string | null;
+    readonly created_at: string;
+  }[];
+  readonly process_local: true;
+}

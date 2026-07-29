@@ -36,6 +36,7 @@ from .duration_policy import (
 from .execution_models import ExecutionMode
 from .execution_enablement import ExecutionEnablementStore
 from .narration_stage import NarrationStageStore
+from .renderer_stage import RenderProbe, RendererExecutor, RendererStageStore
 from .execution_readiness import ExecutionReadinessStore
 from .identity_eligibility import IdentityEligibilityError, require_supported_identity
 from .models import PlannerMetadata, PlannerMode, StoryPlan
@@ -956,6 +957,10 @@ class PlanOnlyApplication:
         narration_artifact_root: Path | None = None,
         narration_duration_probe: Callable[[Path], float] | None = None,
         narration_provider_configured: bool | None = None,
+        renderer: RendererExecutor | None = None,
+        renderer_artifact_root: Path | None = None,
+        renderer_probe: RenderProbe | None = None,
+        renderer_configured: bool | None = None,
     ) -> None:
         self._producer = producer or PlanOnlyDeterministicTopicProducer()
         self._runs: dict[str, ProductionRunViewV1] = {}
@@ -976,6 +981,14 @@ class PlanOnlyApplication:
         if narration_duration_probe is not None:
             narration_options["duration_probe"] = narration_duration_probe
         self._narration_stage = NarrationStageStore(**narration_options)
+        renderer_options: dict[str, object] = {
+            "renderer": renderer,
+            "artifact_root": renderer_artifact_root,
+            "renderer_configured": renderer_configured,
+        }
+        if renderer_probe is not None:
+            renderer_options["probe"] = renderer_probe
+        self._renderer_stage = RendererStageStore(**renderer_options)
         if visual_provider is None:
             configured = get_image_provider()
             visual_provider = configured if configured.is_configured() else None
@@ -1845,6 +1858,126 @@ class PlanOnlyApplication:
         self.get_narration_stage_access(run_id)
         return self._narration_stage.review(run_id, artifact_id, operation, payload)
 
+    def _renderer_stage_context(self, run_id: str) -> dict[str, object] | None:
+        run = self.get_run(run_id)
+        execution_access = self.get_execution_enablement_access(run_id)
+        narration_access = self.get_narration_stage_access(run_id)
+        timeline_access = self.get_timeline_access(run_id)
+        composition_access = self.get_composition_access(run_id)
+        if any(
+            value is None
+            for value in (
+                run,
+                execution_access,
+                narration_access,
+                timeline_access,
+                composition_access,
+            )
+        ):
+            return None
+        artifact = narration_access.get("artifact")
+        audio = (
+            None
+            if not isinstance(artifact, Mapping)
+            else self.get_narration_audio_bytes(run_id, str(artifact["artifact_id"]))
+        )
+        collection = timeline_access.get("collection")
+        segments = collection.get("segments", ()) if isinstance(collection, Mapping) else ()
+        visual_records: list[dict[str, object]] = []
+        for segment in segments:
+            if not isinstance(segment, Mapping):
+                return None
+            scene_id = str(segment["scene_id"])
+            candidate_id = str(segment["accepted_candidate_id"])
+            candidate = self.get_visual_candidate(run_id, scene_id, candidate_id)
+            visual_artifact = self.get_visual_candidate_artifact(run_id, scene_id, candidate_id)
+            if candidate is None or visual_artifact is None:
+                return None
+            visual_records.append(
+                {
+                    "candidate": candidate,
+                    "content": bytes(visual_artifact.content),
+                    "mime_type": visual_artifact.mime_type,
+                    "sha256": visual_artifact.sha256,
+                }
+            )
+        return {
+            "run": run,
+            "execution_access": execution_access,
+            "narration_access": narration_access,
+            "timeline_access": timeline_access,
+            "composition_access": composition_access,
+            "visual_records": tuple(visual_records),
+            "audio_bytes": None if audio is None else bytes(audio[0]),
+        }
+
+    def get_renderer_stage_access(self, run_id: str) -> dict[str, object] | None:
+        context = self._renderer_stage_context(run_id)
+        return None if context is None else self._renderer_stage.access(**context)
+
+    def approve_renderer_stage(self, run_id: str, payload: object) -> dict[str, object] | None:
+        context = self._renderer_stage_context(run_id)
+        return None if context is None else self._renderer_stage.approve(payload=payload, **context)
+
+    def create_render_package(self, run_id: str, payload: object) -> dict[str, object] | None:
+        context = self._renderer_stage_context(run_id)
+        return (
+            None
+            if context is None
+            else self._renderer_stage.create_package(payload=payload, **context)
+        )
+
+    def start_render_job(self, run_id: str, payload: object) -> dict[str, object] | None:
+        context = self._renderer_stage_context(run_id)
+        return None if context is None else self._renderer_stage.start(payload=payload, **context)
+
+    def get_render_job(self, run_id: str, job_id: str) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        return self._renderer_stage.job(run_id, job_id)
+
+    def cancel_render_job(
+        self, run_id: str, job_id: str, payload: object
+    ) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        return self._renderer_stage.cancel(run_id, job_id, payload)
+
+    def get_renderer_stage_history(self, run_id: str) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        self.get_renderer_stage_access(run_id)
+        return self._renderer_stage.history(run_id)
+
+    def get_render_artifact(self, run_id: str, artifact_id: str) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        self.get_renderer_stage_access(run_id)
+        return self._renderer_stage.artifact(run_id, artifact_id)
+
+    def get_render_artifact_bytes(
+        self, run_id: str, artifact_id: str
+    ) -> tuple[bytes, str, str] | None:
+        if run_id not in self._runs:
+            return None
+        self.get_renderer_stage_access(run_id)
+        return self._renderer_stage.video(run_id, artifact_id)
+
+    def review_render_artifact(
+        self,
+        run_id: str,
+        artifact_id: str,
+        operation: Literal["accept-for-qc", "reject", "request-rerender"],
+        payload: object,
+    ) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        self.get_renderer_stage_access(run_id)
+        return self._renderer_stage.review(run_id, artifact_id, operation, payload)
+
+    def close(self) -> None:
+        self._renderer_stage.close()
+
 
 class PlanOnlyFacadeResponse(_ContractModel):
     status_code: int = Field(ge=200, le=599)
@@ -2141,6 +2274,73 @@ def dispatch_plan_only_request(
             and method == "POST"
         ):
             result = application.review_narration_audio(
+                run_id,
+                tail[1],
+                tail[2],
+                body,
+            )
+            return PlanOnlyFacadeResponse(
+                status_code=200 if result is not None else 404,
+                payload=result,
+            )
+    if len(parts) >= 2 and parts[1] == "renderer-stage":
+        run_id = parts[0]
+        tail = parts[2:]
+        if tail in ([], ["access"]) and method == "GET":
+            access = application.get_renderer_stage_access(run_id)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if access is not None else 404,
+                payload=access,
+            )
+        if tail == ["approve"] and method == "POST":
+            result = application.approve_renderer_stage(run_id, body)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if result is not None else 404,
+                payload=result,
+            )
+        if tail == ["create-package"] and method == "POST":
+            result = application.create_render_package(run_id, body)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if result is not None else 404,
+                payload=result,
+            )
+        if tail == ["jobs"] and method == "POST":
+            result = application.start_render_job(run_id, body)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if result is not None else 404,
+                payload=result,
+            )
+        if len(tail) == 2 and tail[0] == "jobs" and method == "GET":
+            job = application.get_render_job(run_id, tail[1])
+            return PlanOnlyFacadeResponse(
+                status_code=200 if job is not None else 404,
+                payload=job,
+            )
+        if len(tail) == 3 and tail[0] == "jobs" and tail[2] == "cancel" and method == "POST":
+            result = application.cancel_render_job(run_id, tail[1], body)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if result is not None else 404,
+                payload=result,
+            )
+        if tail == ["history"] and method == "GET":
+            history = application.get_renderer_stage_history(run_id)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if history is not None else 404,
+                payload=history,
+            )
+        if len(tail) == 2 and tail[0] == "artifacts" and method == "GET":
+            artifact = application.get_render_artifact(run_id, tail[1])
+            return PlanOnlyFacadeResponse(
+                status_code=200 if artifact is not None else 404,
+                payload=artifact,
+            )
+        if (
+            len(tail) == 3
+            and tail[0] == "artifacts"
+            and tail[2] in {"accept-for-qc", "reject", "request-rerender"}
+            and method == "POST"
+        ):
+            result = application.review_render_artifact(
                 run_id,
                 tail[1],
                 tail[2],

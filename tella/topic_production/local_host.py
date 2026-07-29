@@ -156,6 +156,21 @@ def _known_api_methods(path: str) -> frozenset[str] | None:
                 return frozenset({"GET"})
             if tail[2] in {"accept", "reject", "request-regeneration"}:
                 return frozenset({"POST"})
+    if len(parts) >= 2 and parts[1] == "renderer-stage":
+        tail = parts[2:]
+        if not tail or tail in (["access"], ["history"]):
+            return frozenset({"GET"})
+        if tail in (["approve"], ["create-package"], ["jobs"]):
+            return frozenset({"POST"})
+        if len(tail) == 2 and tail[0] in {"jobs", "artifacts"}:
+            return frozenset({"GET"})
+        if len(tail) == 3 and tail[0] == "jobs" and tail[2] == "cancel":
+            return frozenset({"POST"})
+        if len(tail) == 3 and tail[0] == "artifacts":
+            if tail[2] == "video":
+                return frozenset({"GET"})
+            if tail[2] in {"accept-for-qc", "reject", "request-rerender"}:
+                return frozenset({"POST"})
     if len(parts) >= 2 and parts[1] == "scene-plan":
         tail = parts[2:]
         if not tail:
@@ -237,6 +252,22 @@ def _narration_audio_identity(path: str) -> tuple[str, str] | None:
     return None
 
 
+def _renderer_video_identity(path: str) -> tuple[str, str] | None:
+    prefix = f"{PLAN_ONLY_API_PREFIX}/runs/"
+    if not path.startswith(prefix):
+        return None
+    parts = path[len(prefix) :].split("/")
+    if (
+        len(parts) == 5
+        and parts[1] == "renderer-stage"
+        and parts[2] == "artifacts"
+        and parts[4] == "video"
+        and all(parts)
+    ):
+        return parts[0], parts[3]
+    return None
+
+
 class _PlanOnlyHttpServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = False
@@ -257,6 +288,12 @@ class _PlanOnlyHttpServer(ThreadingHTTPServer):
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
+
+    def server_close(self) -> None:
+        try:
+            self.plan_only_application.close()
+        finally:
+            super().server_close()
 
 
 class _PlanOnlyRequestHandler(BaseHTTPRequestHandler):
@@ -468,6 +505,38 @@ class _PlanOnlyRequestHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True
 
+    def _serve_renderer_video(self, path: str) -> None:
+        identity = _renderer_video_identity(path)
+        try:
+            with self.server.plan_only_application_lock:
+                artifact = (
+                    None
+                    if identity is None
+                    else self.server.plan_only_application.get_render_artifact_bytes(*identity)
+                )
+        except Exception:
+            artifact = None
+        if artifact is None:
+            self._send_error(
+                HTTPStatus.NOT_FOUND,
+                "RENDER_ARTIFACT_NOT_FOUND",
+                "The requested render artifact was not found.",
+            )
+            return
+        content, mime_type, sha256 = artifact
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", mime_type)
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("ETag", f'"sha256-{sha256}"')
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            self.wfile.write(content)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+
     def do_GET(self) -> None:
         try:
             path = self._request_path()
@@ -497,6 +566,9 @@ class _PlanOnlyRequestHandler(BaseHTTPRequestHandler):
                 return
             if _narration_audio_identity(path) is not None:
                 self._serve_narration_audio(path)
+                return
+            if _renderer_video_identity(path) is not None:
+                self._serve_renderer_video(path)
                 return
             self._dispatch_api("GET", path)
             return

@@ -11,6 +11,7 @@ import { TimelinePlanningPage } from "../pages/TimelinePlanningPage";
 import { ExecutionReadinessPage } from "../pages/ExecutionReadinessPage";
 import { ExecutionEnablementPage } from "../pages/ExecutionEnablementPage";
 import { NarrationStagePage } from "../pages/NarrationStagePage";
+import { RendererStagePage } from "../pages/RendererStagePage";
 import { AppShell } from "./AppShell";
 
 export function AppRoutes() {
@@ -47,6 +48,10 @@ export function AppRoutes() {
         <Route
           path="/production/runs/:runId/narration-stage"
           element={<NarrationStagePage />}
+        />
+        <Route
+          path="/production/runs/:runId/renderer-stage"
+          element={<RendererStagePage />}
         />
         <Route path="*" element={<NotFoundPage />} />
       </Route>

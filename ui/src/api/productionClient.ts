@@ -45,12 +45,22 @@ import type {
   ExecutionPackageReviewReasonV1,
   NarrationStageAccessV1,
   NarrationStageOperationResultV1,
+  RenderJobV1,
+  RendererStageAccessV1,
+  RendererStageHistoryV1,
+  RendererStageOperationResultV1,
   ReadinessReviewReasonV1,
 } from "../contracts/v1/production";
 import {
   validateNarrationStageAccess,
   validateNarrationStageOperation,
 } from "./narrationStageValidation";
+import {
+  validateRenderJob,
+  validateRendererStageAccess,
+  validateRendererStageHistory,
+  validateRendererStageOperation,
+} from "./rendererStageValidation";
 import {
   validateCompositionAccess,
   validateCompositionOperation,
@@ -400,6 +410,65 @@ export interface ProductionRepository {
       readonly reason: string | null;
     },
   ): Promise<NarrationStageOperationResultV1>;
+  getRendererStageAccess?(runId: string): Promise<RendererStageAccessV1 | null>;
+  approveRendererStage?(
+    runId: string,
+    request: {
+      readonly schema_version: 1;
+      readonly execution_package_id: string;
+      readonly execution_package_revision_id: string;
+      readonly package_source_authority_sha256: string;
+      readonly narration_artifact_id: string;
+      readonly narration_artifact_revision_id: string;
+      readonly narration_audio_sha256: string;
+      readonly explicit_local_resource_acknowledgement: true;
+      readonly explicit_confirmation: true;
+      readonly note: string | null;
+    },
+  ): Promise<RendererStageOperationResultV1>;
+  createRenderPackage?(
+    runId: string,
+    request: {
+      readonly schema_version: 1;
+      readonly approval_id: string;
+      readonly approval_revision_id: string;
+      readonly explicit_confirmation: true;
+    },
+  ): Promise<RendererStageOperationResultV1>;
+  startRenderJob?(
+    runId: string,
+    request: {
+      readonly schema_version: 1;
+      readonly render_package_id: string;
+      readonly render_package_revision_id: string;
+      readonly render_package_sha256: string;
+      readonly explicit_confirmation: true;
+    },
+  ): Promise<RendererStageOperationResultV1>;
+  getRenderJob?(runId: string, jobId: string): Promise<RenderJobV1 | null>;
+  cancelRenderJob?(
+    runId: string,
+    jobId: string,
+    request: {
+      readonly schema_version: 1;
+      readonly job_attempt_id: string;
+      readonly explicit_confirmation: true;
+      readonly reason: string;
+    },
+  ): Promise<RendererStageOperationResultV1>;
+  reviewRenderArtifact?(
+    runId: string,
+    artifactId: string,
+    operation: "accept-for-qc" | "reject" | "request-rerender",
+    request: {
+      readonly schema_version: 1;
+      readonly artifact_revision_id: string;
+      readonly mp4_sha256: string;
+      readonly explicit_confirmation: true;
+      readonly reason: string | null;
+    },
+  ): Promise<RendererStageOperationResultV1>;
+  getRendererStageHistory?(runId: string): Promise<RendererStageHistoryV1 | null>;
 }
 
 export class ProductionContractError extends Error {
@@ -558,6 +627,36 @@ export function defineNativeFetchClient(
             ["accept", "reject", "request-regeneration"].includes(
               narrationTail[2] ?? "",
             )));
+      const rendererTail =
+        runParts.length >= 2 && runParts[1] === "renderer-stage"
+          ? runParts.slice(2)
+          : [];
+      const exactRendererStage =
+        runParts.length >= 2 &&
+        runParts[0] !== "" &&
+        runParts[1] === "renderer-stage" &&
+        ((method === "GET" &&
+          (rendererTail.length === 0 ||
+            (rendererTail.length === 1 &&
+              ["access", "history"].includes(rendererTail[0] ?? "")))) ||
+          (method === "POST" &&
+            rendererTail.length === 1 &&
+            ["approve", "create-package", "jobs"].includes(
+              rendererTail[0] ?? "",
+            )) ||
+          (method === "GET" &&
+            rendererTail.length === 2 &&
+            ["jobs", "artifacts"].includes(rendererTail[0] ?? "") &&
+            rendererTail[1] !== "") ||
+          (method === "POST" &&
+            rendererTail.length === 3 &&
+            rendererTail[1] !== "" &&
+            ((rendererTail[0] === "jobs" &&
+              rendererTail[2] === "cancel") ||
+              (rendererTail[0] === "artifacts" &&
+                ["accept-for-qc", "reject", "request-rerender"].includes(
+                  rendererTail[2] ?? "",
+                )))));
       const exactCreate = method === "POST" && exactCollection;
       const exactList = method === "GET" && exactCollection;
       if (
@@ -573,7 +672,8 @@ export function defineNativeFetchClient(
           exactRevisions ||
           exactRevision ||
           exactScenePlan ||
-          exactNarrationStage
+          exactNarrationStage ||
+          exactRendererStage
         )
       ) {
         throw new ProductionContractError("Only the local PLAN_ONLY contract is allowed.");
@@ -2204,6 +2304,104 @@ export class BackendProductionRepository implements ProductionRepository {
       `artifacts/${encodeURIComponent(artifactId)}/${operation}`,
       request,
     );
+  }
+
+  async getRendererStageAccess(runId: string) {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/renderer-stage/access`,
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const access = validateRendererStageAccess(response.payload);
+    if (access.run_id !== runId) throw new ProductionContractError();
+    return access;
+  }
+
+  async #rendererMutation(
+    runId: string,
+    path: string,
+    request: object,
+  ): Promise<RendererStageOperationResultV1> {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/renderer-stage/${path}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(request),
+      },
+    );
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    return validateRendererStageOperation(response.payload);
+  }
+
+  approveRendererStage(
+    runId: string,
+    request: Parameters<NonNullable<ProductionRepository["approveRendererStage"]>>[1],
+  ) {
+    return this.#rendererMutation(runId, "approve", request);
+  }
+
+  createRenderPackage(
+    runId: string,
+    request: Parameters<NonNullable<ProductionRepository["createRenderPackage"]>>[1],
+  ) {
+    return this.#rendererMutation(runId, "create-package", request);
+  }
+
+  startRenderJob(
+    runId: string,
+    request: Parameters<NonNullable<ProductionRepository["startRenderJob"]>>[1],
+  ) {
+    return this.#rendererMutation(runId, "jobs", request);
+  }
+
+  async getRenderJob(runId: string, jobId: string) {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/renderer-stage/jobs/${encodeURIComponent(jobId)}`,
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const job = validateRenderJob(response.payload);
+    if (job.run_id !== runId || job.job_id !== jobId) {
+      throw new ProductionContractError();
+    }
+    return job;
+  }
+
+  cancelRenderJob(
+    runId: string,
+    jobId: string,
+    request: Parameters<NonNullable<ProductionRepository["cancelRenderJob"]>>[2],
+  ) {
+    return this.#rendererMutation(
+      runId,
+      `jobs/${encodeURIComponent(jobId)}/cancel`,
+      request,
+    );
+  }
+
+  reviewRenderArtifact(
+    runId: string,
+    artifactId: string,
+    operation: "accept-for-qc" | "reject" | "request-rerender",
+    request: Parameters<NonNullable<ProductionRepository["reviewRenderArtifact"]>>[3],
+  ) {
+    return this.#rendererMutation(
+      runId,
+      `artifacts/${encodeURIComponent(artifactId)}/${operation}`,
+      request,
+    );
+  }
+
+  async getRendererStageHistory(runId: string) {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/renderer-stage/history`,
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const history = validateRendererStageHistory(response.payload);
+    if (history.run_id !== runId) throw new ProductionContractError();
+    return history;
   }
 }
 

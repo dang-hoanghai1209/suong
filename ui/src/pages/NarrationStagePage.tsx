@@ -277,6 +277,11 @@ export function NarrationStagePage() {
                   Request regeneration
                 </button>
               </div>
+              {artifact.eligible_for_renderer_stage_review && (
+                <Link to={`/production/runs/${runId}/renderer-stage`}>
+                  Continue to bounded renderer-stage review
+                </Link>
+              )}
             </>
           ) : <p>No audio artifact has been generated.</p>}
         </section>

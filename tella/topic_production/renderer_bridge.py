@@ -650,6 +650,100 @@ def build_authoritative_narration_timeline(
     )
 
 
+def build_authoritative_timeline_from_registered_scenes(
+    *,
+    story_plan_sha256: str,
+    narration_text: str,
+    measured_duration_seconds: float,
+    requested_duration_seconds: float,
+    transition_profile_id: str,
+    scene_weights: tuple[tuple[str, int, float], ...],
+) -> AuthoritativeNarrationTimeline:
+    """Project registered PLAN_ONLY scene authority onto renderer timing."""
+
+    if not scene_weights:
+        raise ValueError("registered renderer timeline requires scenes")
+    expected = tuple((f"scene_{order:02d}", order) for order in range(1, len(scene_weights) + 1))
+    if tuple((scene_id, order) for scene_id, order, _ in scene_weights) != expected:
+        raise ValueError("registered renderer scenes must use canonical identity and order")
+    transition = _resolve_configured_transition_duration(transition_profile_id)
+    total, durations = _allocate_measured_scene_durations(
+        measured_duration_seconds,
+        tuple(weight for _, _, weight in scene_weights),
+    )
+    effective_transition = _effective_transition_duration(transition, durations)
+    timings: list[RendererSceneTimingInput] = []
+    starts: list[Decimal] = []
+    ends: list[Decimal] = []
+    clips: list[Decimal] = []
+    cursor = Decimal("0")
+    for index, ((scene_id, order, _), duration) in enumerate(
+        zip(scene_weights, durations, strict=True)
+    ):
+        start = cursor
+        end = start + duration
+        clip = duration + (effective_transition if index < len(scene_weights) - 1 else Decimal("0"))
+        timings.append(
+            RendererSceneTimingInput(
+                scene_id=scene_id,
+                order=order,
+                start_seconds=float(start),
+                duration_seconds=float(duration),
+                render_clip_duration_seconds=float(clip),
+                end_seconds=float(end),
+            )
+        )
+        starts.append(start)
+        ends.append(end)
+        clips.append(clip)
+        cursor = end
+    requested = _quantize_timeline(
+        _timeline_decimal(requested_duration_seconds, field_name="requested duration")
+    )
+    requested_delta = total - requested
+    tolerance = Decimal(str(DEFAULT_TIMING_TOLERANCE_SECONDS))
+    contract = AuthoritativeRenderTimingContract(
+        schema_version=1,
+        requested_duration_seconds=float(requested),
+        narration_duration_seconds=float(total),
+        authoritative_duration_seconds=float(total),
+        duration_authority=DurationValueAuthority.MEASURED,
+        configured_transition_duration_seconds=float(transition),
+        effective_transition_duration_seconds=float(effective_transition),
+        transition_overlap_count=(len(scene_weights) - 1 if effective_transition > 0 else 0),
+        total_transition_overlap_seconds=float(
+            _quantize_timeline(
+                effective_transition
+                * Decimal(len(scene_weights) - 1 if effective_transition > 0 else 0)
+            )
+        ),
+        scene_timeline_durations_seconds=tuple(float(value) for value in durations),
+        scene_clip_durations_seconds=tuple(float(value) for value in clips),
+        scene_start_times_seconds=tuple(float(value) for value in starts),
+        scene_end_times_seconds=tuple(float(value) for value in ends),
+        expected_final_timeline_duration_seconds=float(total),
+        timing_tolerance_seconds=DEFAULT_TIMING_TOLERANCE_SECONDS,
+        requested_duration_delta_seconds=float(requested_delta),
+        requested_duration_status=(
+            "passed"
+            if abs(requested_delta) <= tolerance
+            else "differs_from_authoritative_narration"
+        ),
+        renderer_stretch_authorized=False,
+        actual_rendered_duration_seconds=None,
+        actual_duration_delta_seconds=None,
+        actual_duration_status="not_evaluated",
+        actual_duration_failure_reason="",
+    )
+    return AuthoritativeNarrationTimeline(
+        story_plan_sha256=story_plan_sha256,
+        narration_text=narration_text,
+        processed_duration_seconds=float(total),
+        scene_timings=tuple(timings),
+        render_timing_contract=contract,
+    )
+
+
 class RendererAcceptedCandidateInput(_StrictFrozenRendererAuthorityModel):
     scene_id: str = Field(pattern=r"^scene_[0-9]{2}$")
     order: int = Field(ge=1)
@@ -1389,6 +1483,46 @@ def build_renderer_plan_from_accepted_candidates(
     )
 
 
+def build_renderer_bridge_from_registered_authority(
+    *,
+    job_id: str,
+    processed_narration_measurement: ProcessedNarrationDurationMeasurement,
+    renderer_plan: TellaScenePlan,
+    accepted_inputs: tuple[RendererAcceptedCandidateInput, ...],
+) -> AcceptedCandidateRendererBridge:
+    """Mint a bridge only after registered artifacts pass exact local validation."""
+
+    measurement = ProcessedNarrationDurationMeasurement.model_validate(
+        processed_narration_measurement.model_dump(mode="python"),
+        strict=True,
+    )
+    plan = TellaScenePlan.model_validate(renderer_plan.model_dump(mode="python"))
+    inputs = tuple(
+        RendererAcceptedCandidateInput.model_validate(item.model_dump(mode="python"), strict=True)
+        for item in accepted_inputs
+    )
+    for item in inputs:
+        path = item.artifact_path.resolve(strict=True)
+        if not path.is_file() or _sha256_file(path) != item.artifact_sha256:
+            raise ValueError("registered renderer artifact identity is invalid")
+        image_format, width, height = _validate_image(
+            path,
+            expected_width=item.width,
+            expected_height=item.height,
+            supported_formats=("PNG", "JPEG"),
+            require_portrait=True,
+        )
+        if (image_format, width, height) != (item.image_format, item.width, item.height):
+            raise ValueError("registered renderer artifact metadata is invalid")
+    return AcceptedCandidateRendererBridge._mint_builder_authorized(
+        _mint_authority=_BUILDER_AUTHORIZATION_SEAL,
+        job_id=job_id,
+        processed_narration_measurement=measurement,
+        renderer_plan=plan,
+        accepted_inputs=inputs,
+    )
+
+
 __all__ = [
     "AcceptedCandidateRendererBridge",
     "AuthorizedCandidateRequest",
@@ -1397,5 +1531,7 @@ __all__ = [
     "RendererBridgeAuthorization",
     "RendererPlanProfile",
     "RendererSceneTimingInput",
+    "build_authoritative_timeline_from_registered_scenes",
+    "build_renderer_bridge_from_registered_authority",
     "build_renderer_plan_from_accepted_candidates",
 ]
