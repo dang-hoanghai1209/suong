@@ -9,6 +9,7 @@ import { VisualCandidatesPage } from "../pages/VisualCandidatesPage";
 import { CompositionPlanningPage } from "../pages/CompositionPlanningPage";
 import { TimelinePlanningPage } from "../pages/TimelinePlanningPage";
 import { ExecutionReadinessPage } from "../pages/ExecutionReadinessPage";
+import { ExecutionEnablementPage } from "../pages/ExecutionEnablementPage";
 import { AppShell } from "./AppShell";
 
 export function AppRoutes() {
@@ -37,6 +38,10 @@ export function AppRoutes() {
         <Route
           path="/production/runs/:runId/execution-readiness"
           element={<ExecutionReadinessPage />}
+        />
+        <Route
+          path="/production/runs/:runId/execution-enablement"
+          element={<ExecutionEnablementPage />}
         />
         <Route path="*" element={<NotFoundPage />} />
       </Route>

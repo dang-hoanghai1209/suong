@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Outlet } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 
 import { PrimaryNavigation } from "../components/navigation/PrimaryNavigation";
 import { RenderReadinessSummary } from "../components/readiness/RenderReadinessSummary";
@@ -8,6 +8,10 @@ import { useProductionRepository } from "./ProductionRepositoryContext";
 
 export function AppShell() {
   const repository = useProductionRepository();
+  const location = useLocation();
+  const executionEnablementWorkspace = location.pathname.endsWith(
+    "/execution-enablement",
+  );
   const [connectionAttempt, setConnectionAttempt] = useState(0);
   const [connectionState, setConnectionState] = useState<
     "connecting" | "connected" | "unavailable"
@@ -91,7 +95,8 @@ export function AppShell() {
         <main id="main-content" tabIndex={-1}>
           <Outlet />
         </main>
-        <aside className="context-sidebar" aria-label="Production context">
+        {!executionEnablementWorkspace ? (
+          <aside className="context-sidebar" aria-label="Production context">
           {capabilities === undefined ? (
             <p className="loading-status" role="status" aria-live="polite">
               Loading render readiness…
@@ -99,7 +104,8 @@ export function AppShell() {
           ) : (
             <RenderReadinessSummary capabilities={capabilities} />
           )}
-        </aside>
+          </aside>
+        ) : null}
       </div>
     </>
   );

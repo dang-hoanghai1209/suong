@@ -595,11 +595,11 @@ def test_visual_routes_reject_malformed_json_methods_and_unknown_paths(
     thread = __import__("threading").Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        for method, path, body, expected in (
-            ("POST", f"{base}/generate", b"{", 400),
-            ("PUT", f"{base}/generate", b"{}", 405),
-            ("GET", f"{base}/unknown", None, 404),
-            ("POST", base, b"{}", 405),
+        for method, path, body, expected, expected_code in (
+            ("POST", f"{base}/generate", b"{", 400, "MALFORMED_JSON"),
+            ("PUT", f"{base}/generate", b"{}", 405, "METHOD_NOT_ALLOWED"),
+            ("GET", f"{base}/unknown", None, 404, "PLAN_ONLY_ROUTE_NOT_FOUND"),
+            ("POST", base, b"{}", 405, "METHOD_NOT_ALLOWED"),
         ):
             connection = http.client.HTTPConnection(*server.server_address[:2], timeout=2)
             headers = {"Content-Type": "application/json"} if body is not None else {}
@@ -608,6 +608,8 @@ def test_visual_routes_reject_malformed_json_methods_and_unknown_paths(
             payload = response.read()
             connection.close()
             assert response.status == expected
+            assert response.getheader("Content-Length") == str(len(payload))
+            assert json.loads(payload)["error"]["code"] == expected_code
             assert str(tmp_path).encode() not in payload
         assert provider.calls == []
 

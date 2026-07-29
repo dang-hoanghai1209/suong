@@ -390,6 +390,12 @@ describe("execution-readiness workspace", () => {
         clearExecutionReadinessApproval: clear,
       }),
     );
+    expect(
+      await screen.findByRole("link", { name: "Open execution enablement" }),
+    ).toHaveAttribute(
+      "href",
+      `/production/runs/${runId}/execution-enablement`,
+    );
     await userEvent.click(
       await screen.findByRole("button", { name: "Request upstream revision" }),
     );

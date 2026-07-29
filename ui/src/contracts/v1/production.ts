@@ -1272,3 +1272,128 @@ export interface ExecutionReadinessOperationResultV1 {
     readonly retryable: false;
   } | null;
 }
+
+export type ExecutionPackageStatusV1 =
+  | "AWAITING_CREATION"
+  | "SEALED_FOR_NARRATION_STAGE_REVIEW"
+  | "REVISION_REQUESTED"
+  | "CANCELLED"
+  | "SUPERSEDED";
+
+export type ExecutionPackageReviewReasonV1 =
+  | "PLANNING_PACKAGE_REVIEW_REQUIRED"
+  | "AUTHORITY_BINDING_CONCERN"
+  | "NARRATION_SOURCE_CONCERN"
+  | "TIMELINE_CONCERN"
+  | "ARTIFACT_INTEGRITY_CONCERN"
+  | "EXECUTION_SCOPE_CONCERN"
+  | "LIMITATION_CONCERN"
+  | "OTHER_BOUNDED_NOTE";
+
+export interface ExecutionPackageCapabilityLocksV1 {
+  readonly full_render_enabled: false;
+  readonly narration_generation_capability: false;
+  readonly tts_capability: false;
+  readonly audio_generation_capability: false;
+  readonly audio_measurement_capability: false;
+  readonly timeline_execution_authority: false;
+  readonly renderer_execution_authority: false;
+  readonly render_authority: false;
+  readonly video_render_authority: false;
+  readonly subtitle_generation_capability: false;
+  readonly media_muxing_capability: false;
+  readonly output_creation_capability: false;
+  readonly execution_job_creation_capability: false;
+  readonly final_media_capability: false;
+}
+
+export interface ExecutionPackageAuthorityV1 {
+  readonly schema_version: 1;
+  readonly readiness_report_id: string;
+  readonly readiness_report_revision_id: string;
+  readonly readiness_source_authority_sha256: string;
+  readonly readiness_approval_id: string;
+  readonly readiness_approval_purpose: "SEPARATE_EXECUTION_ENABLEMENT_TASK_REVIEW";
+  readonly story_plan_revision_id: string;
+  readonly accepted_story_plan_revision_id: string;
+  readonly narration_source_sha256: string;
+  readonly scene_collection_revision_id: string;
+  readonly ordered_scene_ids: readonly string[];
+  readonly ordered_scene_revision_ids: readonly string[];
+  readonly visual_collection_revision_ids: readonly string[];
+  readonly accepted_candidate_ids: readonly string[];
+  readonly accepted_candidate_revision_ids: readonly string[];
+  readonly accepted_candidate_artifact_sha256s: readonly string[];
+  readonly accepted_candidate_mimes: readonly string[];
+  readonly accepted_candidate_dimensions: readonly (readonly [number, number])[];
+  readonly composition_collection_revision_id: string;
+  readonly composition_ids: readonly string[];
+  readonly composition_revision_ids: readonly string[];
+  readonly timeline_collection_revision_id: string;
+  readonly accepted_timeline_revision_id: string;
+  readonly timeline_source_authority_sha256: string;
+  readonly effective_timeline_duration_ms: number;
+}
+
+export interface ExecutionPackageReviewEntryV1 {
+  readonly schema_version: 1;
+  readonly review_id: string;
+  readonly package_revision_id: string;
+  readonly package_source_authority_sha256: string;
+  readonly action:
+    | "PACKAGE_CREATED"
+    | "REVISION_REQUESTED"
+    | "PACKAGE_CANCELLED"
+    | "PACKAGE_SUPERSEDED";
+  readonly reason_code: ExecutionPackageReviewReasonV1 | null;
+  readonly note: string | null;
+  readonly created_at: string;
+}
+
+export interface ExecutionPackageV1 extends ExecutionPackageCapabilityLocksV1 {
+  readonly schema_version: 1;
+  readonly package_id: string;
+  readonly package_revision_id: string;
+  readonly package_revision_number: number;
+  readonly run_id: string;
+  readonly status: ExecutionPackageStatusV1;
+  readonly current: boolean;
+  readonly execution_package_created: true;
+  readonly eligible_for_narration_stage_review: boolean;
+  readonly package_source_authority_sha256: string;
+  readonly authority: ExecutionPackageAuthorityV1;
+  readonly execution_enablement_contract_version: "execution_enablement_v1";
+  readonly review_history: readonly ExecutionPackageReviewEntryV1[];
+  readonly superseded_reason: string | null;
+  readonly created_at: string;
+  readonly process_local: true;
+}
+
+export interface ExecutionEnablementAccessV1
+  extends ExecutionPackageCapabilityLocksV1 {
+  readonly schema_version: 1;
+  readonly run_id: string;
+  readonly execution_package_creation_authorized: boolean;
+  readonly blocker_codes: readonly string[];
+  readonly current_readiness_report_id: string | null;
+  readonly current_readiness_report_revision_id: string | null;
+  readonly current_readiness_source_authority_sha256: string | null;
+  readonly current_readiness_approval_id: string | null;
+  readonly package: ExecutionPackageV1 | null;
+  readonly package_history_count: number;
+  readonly execution_package_created: boolean;
+  readonly eligible_for_narration_stage_review: boolean;
+  readonly process_local: true;
+}
+
+export interface ExecutionPackageOperationResultV1 {
+  readonly schema_version: 1;
+  readonly access: ExecutionEnablementAccessV1 | null;
+  readonly package: ExecutionPackageV1 | null;
+  readonly error: {
+    readonly schema_version: 1;
+    readonly code: string;
+    readonly message: string;
+    readonly retryable: false;
+  } | null;
+}

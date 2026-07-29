@@ -17,6 +17,16 @@ from .execution_models import (
     SceneExecutionPlan,
     VolumeLocalSceneInput,
 )
+from .execution_enablement import (
+    CreateExecutionPackageRequestV1,
+    ExecutionEnablementAccessV1,
+    ExecutionPackageAuthorityV1,
+    ExecutionPackageReviewEntryV1,
+    ExecutionPackageReviewReason,
+    ExecutionPackageStatus,
+    ExecutionPackageV1,
+    MutateExecutionPackageRequestV1,
+)
 from .duration_policy_projection import (
     DurationPolicyReport,
     build_duration_policy_report,
@@ -287,6 +297,14 @@ __all__ = [
     "NarrationSourceSpan",
     "NarrationScriptInput",
     "NormalizedScriptInput",
+    "CreateExecutionPackageRequestV1",
+    "ExecutionEnablementAccessV1",
+    "ExecutionPackageAuthorityV1",
+    "ExecutionPackageReviewEntryV1",
+    "ExecutionPackageReviewReason",
+    "ExecutionPackageStatus",
+    "ExecutionPackageV1",
+    "MutateExecutionPackageRequestV1",
     "PlannerMode",
     "ProductionManifest",
     "ProductionJobPaths",

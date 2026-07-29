@@ -451,6 +451,15 @@ export function ExecutionReadinessPage() {
                 <li>Final media and output creation: not granted</li>
                 <li>Execution job creation: not granted</li>
               </ul>
+              {report.current &&
+              report.approved_for_separate_execution_enablement_review &&
+              report.approval !== null ? (
+                <p>
+                  <Link to={`/production/runs/${runId}/execution-enablement`}>
+                    Open execution enablement
+                  </Link>
+                </p>
+              ) : null}
               <div className="action-row">
                 <button
                   disabled={

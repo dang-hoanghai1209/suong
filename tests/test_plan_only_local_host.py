@@ -390,6 +390,95 @@ def test_unsupported_method_and_unknown_api_path_are_rejected(tmp_path: Path) ->
     assert "Access-Control-Allow-Origin" not in options_headers
 
 
+def test_early_rejections_discard_bounded_bodies_before_close(tmp_path: Path) -> None:
+    request_count = 0
+    with _running_host(tmp_path) as address:
+        _, created, _ = _json_request(
+            address,
+            "POST",
+            "/api/v1/plan-only/runs",
+            _request_payload(),
+        )
+        run_id = str(created["run"]["run_id"])
+        review_path = f"/api/v1/plan-only/runs/{run_id}/review"
+        unknown_path = f"/api/v1/plan-only/runs/{run_id}/unknown"
+        revisions_path = f"/api/v1/plan-only/runs/{run_id}/revisions"
+        cases = (
+            ("PUT", review_path, b"{}", 405, "METHOD_NOT_ALLOWED"),
+            ("POST", review_path, b"{}", 405, "METHOD_NOT_ALLOWED"),
+            (
+                "POST",
+                unknown_path,
+                b"{}",
+                404,
+                "PLAN_ONLY_ROUTE_NOT_FOUND",
+            ),
+            ("POST", revisions_path, b"{", 400, "MALFORMED_JSON"),
+        )
+
+        for _ in range(64):
+            for method, path, body, expected_status, expected_code in cases:
+                status, payload, headers = _http_request(
+                    address,
+                    method,
+                    path,
+                    body=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Content-Length": str(len(body)),
+                    },
+                )
+                encoded = json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                assert status == expected_status
+                assert payload["error"]["code"] == expected_code
+                assert headers["Content-Length"] == str(len(encoded))
+                request_count += 1
+
+    assert request_count == 256
+
+
+@pytest.mark.parametrize("content_length", ["invalid", "-1"])
+def test_invalid_content_length_policy_is_unchanged(
+    tmp_path: Path,
+    content_length: str,
+) -> None:
+    with _running_host(tmp_path) as address:
+        status, payload, _ = _http_request(
+            address,
+            "POST",
+            "/api/v1/plan-only/runs",
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": content_length,
+            },
+        )
+
+    assert status == 400
+    assert payload["error"]["code"] == "INVALID_CONTENT_LENGTH"
+
+
+def test_transfer_encoding_policy_is_unchanged(tmp_path: Path) -> None:
+    with _running_host(tmp_path) as address:
+        status, payload, _ = _http_request(
+            address,
+            "POST",
+            "/api/v1/plan-only/runs",
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": "0",
+                "Transfer-Encoding": "chunked",
+            },
+        )
+
+    assert status == 400
+    assert payload["error"]["code"] == "UNSUPPORTED_TRANSFER_ENCODING"
+
+
 def test_internal_error_is_sanitized_without_secret_or_path_leakage(tmp_path: Path) -> None:
     class FailingApplication(PlanOnlyApplication):
         def capabilities(self) -> dict[str, object]:

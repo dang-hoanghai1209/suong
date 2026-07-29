@@ -40,6 +40,9 @@ import type {
   TimelineReviewReasonV1,
   ExecutionReadinessAccessV1,
   ExecutionReadinessOperationResultV1,
+  ExecutionEnablementAccessV1,
+  ExecutionPackageOperationResultV1,
+  ExecutionPackageReviewReasonV1,
   ReadinessReviewReasonV1,
 } from "../contracts/v1/production";
 import {
@@ -57,6 +60,11 @@ import {
   validateExecutionReadinessOperation,
   validateExecutionReadinessReport,
 } from "./executionReadinessValidation";
+import {
+  validateExecutionEnablementAccess,
+  validateExecutionPackage,
+  validateExecutionPackageOperation,
+} from "./executionEnablementValidation";
 import {
   validateSceneHistory,
   validateScenePlanCollection,
@@ -317,6 +325,37 @@ export interface ProductionRepository {
     readonly schema_version: 1;
     readonly run_id: string;
     readonly reports: readonly import("../contracts/v1/production").ExecutionReadinessReportV1[];
+  } | null>;
+  getExecutionEnablementAccess?(
+    runId: string,
+  ): Promise<ExecutionEnablementAccessV1 | null>;
+  createExecutionPackage?(
+    runId: string,
+    request: {
+      readonly schema_version: 1;
+      readonly readiness_report_revision_id: string;
+      readonly readiness_source_authority_sha256: string;
+      readonly readiness_approval_id: string;
+      readonly explicit_confirmation: true;
+      readonly note: string | null;
+    },
+  ): Promise<ExecutionPackageOperationResultV1>;
+  mutateExecutionPackage?(
+    runId: string,
+    operation: "request-revision" | "cancel-package",
+    request: {
+      readonly schema_version: 1;
+      readonly package_revision_id: string;
+      readonly package_source_authority_sha256: string;
+      readonly explicit_confirmation: true;
+      readonly reason_code: ExecutionPackageReviewReasonV1;
+      readonly note: string | null;
+    },
+  ): Promise<ExecutionPackageOperationResultV1>;
+  getExecutionPackageHistory?(runId: string): Promise<{
+    readonly schema_version: 1;
+    readonly run_id: string;
+    readonly packages: readonly import("../contracts/v1/production").ExecutionPackageV1[];
   } | null>;
 }
 
@@ -1968,6 +2007,77 @@ export class BackendProductionRepository implements ProductionRepository {
       schema_version: 1 as const,
       run_id: runId,
       reports: payload.reports.map(validateExecutionReadinessReport),
+    };
+  }
+
+  async getExecutionEnablementAccess(runId: string) {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/execution-enablement/access`,
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const access = validateExecutionEnablementAccess(response.payload);
+    if (access.run_id !== runId) throw new ProductionContractError();
+    return access;
+  }
+
+  async #executionPackageMutation(
+    runId: string,
+    path: string,
+    request: object,
+  ): Promise<ExecutionPackageOperationResultV1> {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/execution-enablement/${path}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(request),
+      },
+    );
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const result = validateExecutionPackageOperation(response.payload);
+    if (
+      (result.access !== null && result.access.run_id !== runId) ||
+      (result.package !== null && result.package.run_id !== runId)
+    ) {
+      throw new ProductionContractError();
+    }
+    return result;
+  }
+
+  createExecutionPackage(
+    runId: string,
+    request: Parameters<NonNullable<ProductionRepository["createExecutionPackage"]>>[1],
+  ) {
+    return this.#executionPackageMutation(runId, "create-package", request);
+  }
+
+  mutateExecutionPackage(
+    runId: string,
+    operation: "request-revision" | "cancel-package",
+    request: Parameters<NonNullable<ProductionRepository["mutateExecutionPackage"]>>[2],
+  ) {
+    return this.#executionPackageMutation(runId, operation, request);
+  }
+
+  async getExecutionPackageHistory(runId: string) {
+    const response = await this.#transport.request(
+      `${apiPrefix}/runs/${encodeURIComponent(runId)}/execution-enablement/history`,
+    );
+    if (response.status === 404) return null;
+    if (response.status !== 200) throw new ProductionBackendUnavailableError();
+    const payload = response.payload as Record<string, unknown>;
+    if (
+      payload.schema_version !== 1 ||
+      payload.run_id !== runId ||
+      !Array.isArray(payload.packages)
+    ) {
+      throw new ProductionContractError();
+    }
+    return {
+      schema_version: 1 as const,
+      run_id: runId,
+      packages: payload.packages.map(validateExecutionPackage),
     };
   }
 }

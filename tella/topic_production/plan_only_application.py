@@ -33,6 +33,7 @@ from .duration_policy import (
     assess_mvp_duration_target,
 )
 from .execution_models import ExecutionMode
+from .execution_enablement import ExecutionEnablementStore
 from .execution_readiness import ExecutionReadinessStore
 from .identity_eligibility import IdentityEligibilityError, require_supported_identity
 from .models import PlannerMetadata, PlannerMode, StoryPlan
@@ -960,6 +961,7 @@ class PlanOnlyApplication:
         self._composition_planning = CompositionPlanningStore()
         self._timeline_planning = TimelinePlanningStore()
         self._execution_readiness = ExecutionReadinessStore()
+        self._execution_enablement = ExecutionEnablementStore()
         if visual_provider is None:
             configured = get_image_provider()
             visual_provider = configured if configured.is_configured() else None
@@ -1726,6 +1728,50 @@ class PlanOnlyApplication:
             return None
         return self._execution_readiness.report(run_id, report_revision_id)
 
+    def _execution_enablement_context(self, run_id: str) -> dict[str, object] | None:
+        run = self.get_run(run_id)
+        readiness_access = self.get_execution_readiness_access(run_id)
+        if run is None or readiness_access is None:
+            return None
+        return {"run": run, "readiness_access": readiness_access}
+
+    def get_execution_enablement_access(self, run_id: str) -> dict[str, object] | None:
+        context = self._execution_enablement_context(run_id)
+        if context is None:
+            return None
+        return self._execution_enablement.access(**context)
+
+    def create_execution_package(self, run_id: str, payload: object) -> dict[str, object] | None:
+        context = self._execution_enablement_context(run_id)
+        if context is None:
+            return None
+        return self._execution_enablement.create(payload=payload, **context)
+
+    def mutate_execution_package(
+        self,
+        run_id: str,
+        operation: Literal["request-revision", "cancel-package"],
+        payload: object,
+    ) -> dict[str, object] | None:
+        access = self.get_execution_enablement_access(run_id)
+        if access is None:
+            return None
+        return self._execution_enablement.mutate(run_id, operation, payload)
+
+    def get_execution_package_history(self, run_id: str) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        self.get_execution_enablement_access(run_id)
+        return self._execution_enablement.history(run_id)
+
+    def get_execution_package(
+        self, run_id: str, package_revision_id: str
+    ) -> dict[str, object] | None:
+        if run_id not in self._runs:
+            return None
+        self.get_execution_enablement_access(run_id)
+        return self._execution_enablement.package(run_id, package_revision_id)
+
 
 class PlanOnlyFacadeResponse(_ContractModel):
     status_code: int = Field(ge=200, le=599)
@@ -1940,6 +1986,44 @@ def dispatch_plan_only_request(
         operation = operation_by_tail.get(tuple(tail))
         if operation is not None and method == "POST":
             result = application.mutate_execution_readiness(run_id, operation, body)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if result is not None else 404,
+                payload=result,
+            )
+    if len(parts) >= 2 and parts[1] == "execution-enablement":
+        run_id = parts[0]
+        tail = parts[2:]
+        if tail in ([], ["access"]) and method == "GET":
+            access = application.get_execution_enablement_access(run_id)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if access is not None else 404,
+                payload=access,
+            )
+        if tail == ["create-package"] and method == "POST":
+            result = application.create_execution_package(run_id, body)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if result is not None else 404,
+                payload=result,
+            )
+        if tail == ["history"] and method == "GET":
+            history = application.get_execution_package_history(run_id)
+            return PlanOnlyFacadeResponse(
+                status_code=200 if history is not None else 404,
+                payload=history,
+            )
+        if len(tail) == 2 and tail[0] == "packages" and method == "GET":
+            package = application.get_execution_package(run_id, tail[1])
+            return PlanOnlyFacadeResponse(
+                status_code=200 if package is not None else 404,
+                payload=package,
+            )
+        operation_by_tail = {
+            ("request-revision",): "request-revision",
+            ("cancel-package",): "cancel-package",
+        }
+        operation = operation_by_tail.get(tuple(tail))
+        if operation is not None and method == "POST":
+            result = application.mutate_execution_package(run_id, operation, body)
             return PlanOnlyFacadeResponse(
                 status_code=200 if result is not None else 404,
                 payload=result,
