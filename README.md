@@ -351,6 +351,17 @@ Open `http://127.0.0.1:8787`. On macOS/Linux, use `cp .env.example .env`.
 Jobs and their crash-safe `job.json` records are stored under
 `TELLA_WEB_OUTPUT_DIR` (default `out/web_jobs`).
 
+The web server reserves 2 GiB of free output-volume space by default. Override
+the server-owned threshold with `TELLA_WEB_MIN_FREE_BYTES` when appropriate for
+a student or laptop environment. Low-disk rejection creates no job or output
+directory, and the local UI reports storage totals without exposing the output
+path.
+
+Completed videos are not deleted automatically. The UI offers confirmed,
+idempotent compaction for terminal jobs: it retains `job.json` and any validated
+MP4 and removes only reconstructable intermediate assets and render files.
+Those intermediates must be regenerated if future editing is required.
+
 The production web profile uses backend-owned Gemini narration:
 
 - `GEMINI_API_KEY`, `GEMINI_API_KEYS`, or `GOOGLE_API_KEY` supplies the existing

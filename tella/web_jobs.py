@@ -15,6 +15,7 @@ import queue
 import re
 import signal
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -26,11 +27,14 @@ from tella.atomic_write import atomic_write_json
 from tella.cli import run_pipeline
 from tella.tts.gemini_registry import resolve_style, resolve_voice
 from tella.web_contract import (
+    WebCompactionResult,
     WebInputMode,
     WebJobError,
+    WebJobStorage,
     WebJobStatus,
     WebJobView,
     WebRenderRequest,
+    WebStorageSummary,
     utc_now,
 )
 from tella.voice_profiles import get_voice_profile
@@ -42,6 +46,7 @@ from tella.web_image_fallback import (
 )
 
 _JOB_ID = re.compile(r"^web-[0-9a-f]{24}$")
+_UTC_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 _PHASES = {
     "step 1/6": ("input", 10),
     "step 2/6": ("planning", 25),
@@ -56,6 +61,21 @@ _MAX_SANITIZER_INPUT_CHARS = 4_000
 _MAX_IPC_LINE_BYTES = 8_192
 _MAX_IPC_EVENTS = 512
 _MAX_WEB_WORKERS_ENV = "TELLA_WEB_MAX_WORKERS"
+_MIN_FREE_BYTES_ENV = "TELLA_WEB_MIN_FREE_BYTES"
+_DEFAULT_MIN_FREE_BYTES = 2 * 1024**3
+_WINDOWS_REPARSE_POINT = 0x400
+_DISPOSABLE_JOB_ENTRIES = frozenset(
+    {
+        "_render",
+        "assets",
+        "audio_qc.json",
+        "music_metadata.json",
+        "plan.json",
+        "render_timing.json",
+        "tts_metadata.json",
+        "video.mp4",
+    }
+)
 _PUBLIC_ERROR_CODES = {
     "GEMINI_TTS_FAILED",
     "JOB_MANAGER_SHUTDOWN_INCOMPLETE",
@@ -215,6 +235,7 @@ _PROVIDER_RESPONSE_BODY = re.compile(
 
 PipelineRunner = Callable[..., Awaitable[Path]]
 MediaProbe = Callable[[Path], dict[str, object]]
+DiskUsage = Callable[[Path], Any]
 
 
 def _web_max_workers_setting(value: str | None = None) -> tuple[bool, int]:
@@ -225,6 +246,70 @@ def _web_max_workers_setting(value: str | None = None) -> tuple[bool, int]:
     if normalized not in {"1", "2"}:
         return False, 1
     return True, int(normalized)
+
+
+def _minimum_free_bytes_setting(value: str | None = None) -> tuple[bool, int]:
+    raw = os.environ.get(_MIN_FREE_BYTES_ENV) if value is None else value
+    if raw is None:
+        return True, _DEFAULT_MIN_FREE_BYTES
+    normalized = raw.strip()
+    if not normalized.isdecimal():
+        return False, _DEFAULT_MIN_FREE_BYTES
+    return True, int(normalized)
+
+
+def _is_link_or_reparse(metadata: os.stat_result) -> bool:
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0) & _WINDOWS_REPARSE_POINT
+    )
+
+
+def _tree_bytes_no_follow(root: Path) -> int:
+    """Measure regular files beneath root without traversing links or reparse points."""
+    total = 0
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            entries = tuple(os.scandir(directory))
+        except FileNotFoundError:
+            continue
+        for entry in entries:
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if _is_link_or_reparse(metadata):
+                total += max(0, metadata.st_size)
+            elif stat.S_ISDIR(metadata.st_mode):
+                pending.append(Path(entry.path))
+            elif stat.S_ISREG(metadata.st_mode):
+                total += max(0, metadata.st_size)
+    return total
+
+
+def _path_bytes_no_follow(path: Path) -> int:
+    metadata = path.stat(follow_symlinks=False)
+    if _is_link_or_reparse(metadata):
+        return max(0, metadata.st_size)
+    if stat.S_ISDIR(metadata.st_mode):
+        return _tree_bytes_no_follow(path)
+    return max(0, metadata.st_size) if stat.S_ISREG(metadata.st_mode) else 0
+
+
+def _assert_tree_has_no_links(root: Path) -> None:
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        metadata = directory.stat(follow_symlinks=False)
+        if _is_link_or_reparse(metadata):
+            raise ValueError("STORAGE_PATH_UNSAFE")
+        for entry in os.scandir(directory):
+            child_metadata = entry.stat(follow_symlinks=False)
+            if _is_link_or_reparse(child_metadata):
+                raise ValueError("STORAGE_PATH_UNSAFE")
+            if stat.S_ISDIR(child_metadata.st_mode):
+                pending.append(Path(entry.path))
 
 
 def _child_environment() -> dict[str, str]:
@@ -480,6 +565,8 @@ class JobManager:
         media_probe: MediaProbe = probe_mp4,
         autostart: bool = True,
         max_workers: int | None = None,
+        minimum_free_bytes: int | None = None,
+        disk_usage: DiskUsage = shutil.disk_usage,
         worker_module: str = "tella.web_worker",
     ) -> None:
         self.output_root = Path(output_root).resolve()
@@ -496,6 +583,14 @@ class JobManager:
         if not self._process_mode and configured_workers != 1:
             raise ValueError("custom in-process runners require max_workers=1")
         self.max_workers = configured_workers
+        if minimum_free_bytes is None:
+            self._storage_config_valid, configured_minimum = _minimum_free_bytes_setting()
+        elif type(minimum_free_bytes) is not int or minimum_free_bytes < 0:
+            raise ValueError("TELLA_WEB_MIN_FREE_BYTES must be a non-negative integer")
+        else:
+            self._storage_config_valid, configured_minimum = True, minimum_free_bytes
+        self.minimum_free_bytes = configured_minimum
+        self._disk_usage = disk_usage
         self._worker_module = worker_module
         self._jobs: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
@@ -573,6 +668,62 @@ class JobManager:
             raise KeyError(job_id) from exc
         return path
 
+    def _storage_job_dir(self, job_id: str) -> Path:
+        if not _JOB_ID.fullmatch(job_id):
+            raise KeyError(job_id)
+        if self.output_root == Path(self.output_root.anchor):
+            raise ValueError("STORAGE_PATH_UNSAFE")
+        candidate = self.output_root / job_id
+        try:
+            metadata = candidate.stat(follow_symlinks=False)
+        except FileNotFoundError as exc:
+            raise KeyError(job_id) from exc
+        if _is_link_or_reparse(metadata) or not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError("STORAGE_PATH_UNSAFE")
+        resolved = candidate.resolve(strict=True)
+        try:
+            resolved.relative_to(self.output_root)
+        except ValueError as exc:
+            raise ValueError("STORAGE_PATH_UNSAFE") from exc
+        return resolved
+
+    def _free_disk_bytes(self) -> int:
+        try:
+            usage = self._disk_usage(self.output_root)
+        except OSError:
+            return 0
+        return max(0, int(usage.free if hasattr(usage, "free") else usage[2]))
+
+    def storage_summary(self) -> WebStorageSummary:
+        with self._lock:
+            jobs = []
+            for job_id in sorted(self._jobs):
+                try:
+                    job_dir = self._storage_job_dir(job_id)
+                    job_bytes = _tree_bytes_no_follow(job_dir)
+                except (KeyError, OSError, ValueError):
+                    job_bytes = 0
+                storage = self._jobs[job_id].get("storage")
+                compacted_at = storage.get("compacted_at") if isinstance(storage, dict) else None
+                jobs.append(
+                    WebJobStorage(
+                        job_id=job_id,
+                        bytes=job_bytes,
+                        compacted_at=compacted_at if isinstance(compacted_at, str) else None,
+                    )
+                )
+            free_disk_bytes = self._free_disk_bytes()
+            return WebStorageSummary(
+                output_root_bytes=_tree_bytes_no_follow(self.output_root),
+                free_disk_bytes=free_disk_bytes,
+                minimum_free_bytes=self.minimum_free_bytes,
+                configuration_valid=self._storage_config_valid,
+                submissions_allowed=(
+                    self._storage_config_valid and free_disk_bytes >= self.minimum_free_bytes
+                ),
+                jobs=tuple(jobs),
+            )
+
     def _persist(self, job_id: str) -> None:
         atomic_write_json(self._job_dir(job_id) / "job.json", self._jobs[job_id])
 
@@ -606,6 +757,7 @@ class JobManager:
                 }
             payload["plan_metadata"] = self._safe_loaded_plan_metadata(payload.get("plan_metadata"))
             payload["tts_metadata"] = self._safe_loaded_tts_metadata(payload.get("tts_metadata"))
+            payload["storage"] = self._safe_loaded_storage(payload.get("storage"))
             self._jobs[job_id] = payload
             if status in {WebJobStatus.QUEUED, WebJobStatus.RUNNING}:
                 payload.update(
@@ -640,12 +792,16 @@ class JobManager:
                     self._persist(job_id)
 
     def create(self, request: WebRenderRequest) -> WebJobView:
-        job_id = f"web-{uuid.uuid4().hex[:24]}"
         with self._lock:
             if self._closing or self._closed:
                 raise RuntimeError("JOB_MANAGER_CLOSING")
             if not self._worker_config_valid:
                 raise RuntimeError("TELLA_WEB_MAX_WORKERS_INVALID")
+            if not self._storage_config_valid:
+                raise RuntimeError("TELLA_WEB_MIN_FREE_BYTES_INVALID")
+            if self._free_disk_bytes() < self.minimum_free_bytes:
+                raise RuntimeError("INSUFFICIENT_DISK_SPACE")
+            job_id = f"web-{uuid.uuid4().hex[:24]}"
             self._job_dir(job_id).mkdir(parents=True, exist_ok=False)
             self._jobs[job_id] = {
                 "schema_version": 1,
@@ -667,6 +823,88 @@ class JobManager:
             self._queue.put(job_id)
             self._wake.set()
             return self.get(job_id)
+
+    def compact(self, job_id: str) -> WebCompactionResult:
+        with self._lock:
+            payload = self._jobs.get(job_id)
+            if payload is None:
+                raise KeyError(job_id)
+            status = WebJobStatus(payload["status"])
+            if status in {WebJobStatus.QUEUED, WebJobStatus.RUNNING}:
+                raise ValueError("ACTIVE_JOB_STORAGE_LOCKED")
+            job_dir = self._storage_job_dir(job_id)
+            _assert_tree_has_no_links(job_dir)
+
+            protected_top_level = {"job.json"}
+            if status is WebJobStatus.SUCCEEDED:
+                try:
+                    artifact = self.artifact_path(job_id)
+                except KeyError as exc:
+                    raise ValueError("STORAGE_ARTIFACT_INVALID") from exc
+                relative_artifact = artifact.relative_to(job_dir)
+                protected_top_level.add(relative_artifact.parts[0])
+
+            entries = tuple(os.scandir(job_dir))
+            unknown = {
+                entry.name
+                for entry in entries
+                if entry.name not in protected_top_level
+                and entry.name not in _DISPOSABLE_JOB_ENTRIES
+            }
+            if unknown:
+                raise ValueError("STORAGE_UNKNOWN_ENTRY")
+
+            targets = tuple(
+                Path(entry.path)
+                for entry in entries
+                if entry.name in _DISPOSABLE_JOB_ENTRIES and entry.name not in protected_top_level
+            )
+            if not targets:
+                storage = payload.get("storage")
+                existing_time = storage.get("compacted_at") if isinstance(storage, dict) else None
+                if isinstance(existing_time, str) and storage.get("complete") is True:
+                    return WebCompactionResult(
+                        job_id=job_id,
+                        removed_bytes=0,
+                        removed_entries=(),
+                        storage_bytes=_tree_bytes_no_follow(job_dir),
+                        compacted_at=existing_time,
+                    )
+            planned_bytes = sum(_path_bytes_no_follow(target) for target in targets)
+            compacted_at = utc_now()
+            try:
+                for target in targets:
+                    metadata = target.stat(follow_symlinks=False)
+                    if _is_link_or_reparse(metadata):
+                        raise ValueError("STORAGE_PATH_UNSAFE")
+                    if stat.S_ISDIR(metadata.st_mode):
+                        shutil.rmtree(target)
+                    elif stat.S_ISREG(metadata.st_mode):
+                        target.unlink()
+                    else:
+                        raise ValueError("STORAGE_PATH_UNSAFE")
+            finally:
+                remaining_bytes = sum(
+                    _path_bytes_no_follow(target) for target in targets if target.exists()
+                )
+                removed_bytes = max(0, planned_bytes - remaining_bytes)
+                removed_entries = tuple(
+                    sorted(target.name for target in targets if not target.exists())
+                )
+                payload["storage"] = {
+                    "compacted_at": compacted_at,
+                    "removed_bytes": removed_bytes,
+                    "removed_entries": list(removed_entries),
+                    "complete": not any(target.exists() for target in targets),
+                }
+                self._persist(job_id)
+            return WebCompactionResult(
+                job_id=job_id,
+                removed_bytes=removed_bytes,
+                removed_entries=removed_entries,
+                storage_bytes=_tree_bytes_no_follow(job_dir),
+                compacted_at=compacted_at,
+            )
 
     def get(self, job_id: str) -> WebJobView:
         with self._lock:
@@ -698,6 +936,11 @@ class JobManager:
                 output_bytes=payload.get("output_bytes"),
                 plan_metadata=payload.get("plan_metadata"),
                 tts_metadata=payload.get("tts_metadata"),
+                storage_compacted_at=(
+                    payload.get("storage", {}).get("compacted_at")
+                    if isinstance(payload.get("storage"), dict)
+                    else None
+                ),
                 request=WebRenderRequest.model_validate(payload["request"]),
             )
 
@@ -1199,6 +1442,38 @@ class JobManager:
         }
 
     @staticmethod
+    def _safe_loaded_storage(value: object) -> dict[str, object] | None:
+        if not isinstance(value, dict) or set(value) != {
+            "compacted_at",
+            "removed_bytes",
+            "removed_entries",
+            "complete",
+        }:
+            return None
+        compacted_at = value.get("compacted_at")
+        removed_bytes = value.get("removed_bytes")
+        removed_entries = value.get("removed_entries")
+        complete = value.get("complete")
+        if not isinstance(compacted_at, str) or not _UTC_TIMESTAMP.fullmatch(compacted_at):
+            return None
+        if type(removed_bytes) is not int or removed_bytes < 0:
+            return None
+        if (
+            not isinstance(removed_entries, list)
+            or any(not isinstance(item, str) for item in removed_entries)
+            or removed_entries != sorted(set(removed_entries))
+            or any(item not in _DISPOSABLE_JOB_ENTRIES for item in removed_entries)
+            or type(complete) is not bool
+        ):
+            return None
+        return {
+            "compacted_at": compacted_at,
+            "removed_bytes": removed_bytes,
+            "removed_entries": removed_entries,
+            "complete": complete,
+        }
+
+    @staticmethod
     def _error_code(exc: Exception) -> str:
         text = str(exc)
         for code in (
@@ -1235,6 +1510,7 @@ def web_readiness(
     request: WebRenderRequest | None = None,
     *,
     media_source: str | None = None,
+    storage_summary: WebStorageSummary | None = None,
 ) -> dict[str, object]:
     root = Path(output_root).resolve()
     gemini_ready = bool(
@@ -1244,6 +1520,7 @@ def web_readiness(
     )
     narrator_profile_ready = _web_narrator_profile_ready()
     worker_configuration_ready, max_workers = _web_max_workers_setting()
+    storage_configuration_ready, minimum_free_bytes = _minimum_free_bytes_setting()
     selected_media_source = (
         request.media_source if request is not None else media_source or "ai_image"
     )
@@ -1321,6 +1598,20 @@ def web_readiness(
             "required": True,
             "max_workers": max_workers if worker_configuration_ready else None,
         },
+        "storage": {
+            "ready": False,
+            "code": (
+                "INSUFFICIENT_DISK_SPACE"
+                if storage_configuration_ready
+                else "STORAGE_CONFIGURATION_INVALID"
+            ),
+            "missing_variables": ([] if storage_configuration_ready else [_MIN_FREE_BYTES_ENV]),
+            "guidance": (
+                "Free output-disk space or set TELLA_WEB_MIN_FREE_BYTES to a "
+                "non-negative integer byte count."
+            ),
+            "required": True,
+        },
     }
     pollinations_width, pollinations_height = (
         (1344, 768) if request is not None and request.aspect_ratio == "16:9" else (768, 1344)
@@ -1350,6 +1641,21 @@ def web_readiness(
         checks["output"]["missing_variables"] = []
     except OSError:
         pass
+    if storage_summary is None and storage_configuration_ready:
+        try:
+            free_disk_bytes = max(0, int(shutil.disk_usage(root).free))
+            storage_summary = WebStorageSummary(
+                output_root_bytes=_tree_bytes_no_follow(root),
+                free_disk_bytes=free_disk_bytes,
+                minimum_free_bytes=minimum_free_bytes,
+                submissions_allowed=free_disk_bytes >= minimum_free_bytes,
+            )
+        except OSError:
+            storage_summary = None
+    if storage_summary is not None:
+        checks["storage"]["ready"] = (
+            storage_configuration_ready and storage_summary.submissions_allowed
+        )
     failed_checks = [
         {
             "code": str(item["code"]),
@@ -1367,6 +1673,7 @@ def web_readiness(
         "narrator_profile": _WEB_NARRATOR_PROFILE_ID,
         "media_source": selected_media_source,
         "max_workers": max_workers if worker_configuration_ready else None,
+        "storage": storage_summary.model_dump(mode="json") if storage_summary else None,
         "failed_checks": failed_checks,
     }
 
