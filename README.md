@@ -362,6 +362,12 @@ idempotent compaction for terminal jobs: it retains `job.json` and any validated
 MP4 and removes only reconstructable intermediate assets and render files.
 Those intermediates must be regenerated if future editing is required.
 
+After a crash or machine restart, queued and running web jobs fail closed and
+must be retried as a new production. The retry is deduplicated per original job
+and rechecks current readiness and disk policy. Partial videos are never
+published merely because a file exists, while previously validated completed
+videos remain available after restart.
+
 The production web profile uses backend-owned Gemini narration:
 
 - `GEMINI_API_KEY`, `GEMINI_API_KEYS`, or `GOOGLE_API_KEY` supplies the existing
