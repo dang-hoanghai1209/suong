@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
+from dataclasses import dataclass
 import json
 import logging
 import math
@@ -12,8 +13,10 @@ import os
 from pathlib import Path
 import queue
 import re
+import signal
 import shutil
 import subprocess
+import sys
 import threading
 from types import MappingProxyType
 from typing import Any
@@ -50,6 +53,9 @@ _PHASES = {
 _MAX_LOGS = 500
 _MAX_LOG_CHARS = 500
 _MAX_SANITIZER_INPUT_CHARS = 4_000
+_MAX_IPC_LINE_BYTES = 8_192
+_MAX_IPC_EVENTS = 512
+_MAX_WEB_WORKERS_ENV = "TELLA_WEB_MAX_WORKERS"
 _PUBLIC_ERROR_CODES = {
     "GEMINI_TTS_FAILED",
     "JOB_MANAGER_SHUTDOWN_INCOMPLETE",
@@ -58,6 +64,9 @@ _PUBLIC_ERROR_CODES = {
     "MP4_VALIDATION_FAILED",
     "PERSISTED_ARTIFACT_INVALID",
     "PIPELINE_FAILED",
+    "WORKER_IPC_INVALID",
+    "WORKER_PROCESS_EXITED",
+    "WORKER_SHUTDOWN_TERMINATED",
     "SERVER_RESTART_INTERRUPTED_JOB",
     "SERVER_SHUTDOWN_CANCELLED_JOB",
     "WEB_TTS_AUTHORITY_INVALID",
@@ -79,6 +88,34 @@ _SECRET_ENV_NAMES = (
     "PEXELS_API_KEY",
     "PEXELS_API_KEYS",
     "XAI_API_KEY",
+)
+
+_CHILD_BASE_ENV_NAMES = (
+    "APPDATA",
+    "COMSPEC",
+    "HOME",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "LANG",
+    "LOCALAPPDATA",
+    "NO_PROXY",
+    "PATH",
+    "PATHEXT",
+    "PROGRAMDATA",
+    "PYTHONIOENCODING",
+    "PYTHONUTF8",
+    "REQUESTS_CA_BUNDLE",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "USERPROFILE",
+    "WINDIR",
+    "https_proxy",
+    "http_proxy",
+    "no_proxy",
 )
 _WEB_ENVIRONMENT = MappingProxyType(
     {
@@ -178,6 +215,98 @@ _PROVIDER_RESPONSE_BODY = re.compile(
 
 PipelineRunner = Callable[..., Awaitable[Path]]
 MediaProbe = Callable[[Path], dict[str, object]]
+
+
+def _web_max_workers_setting(value: str | None = None) -> tuple[bool, int]:
+    raw = os.environ.get(_MAX_WEB_WORKERS_ENV) if value is None else value
+    if raw is None:
+        return True, 1
+    normalized = raw.strip()
+    if normalized not in {"1", "2"}:
+        return False, 1
+    return True, int(normalized)
+
+
+def _child_environment() -> dict[str, str]:
+    """Build the complete child environment without inheriting mutable web policy."""
+    environment = {
+        name: value for name in _CHILD_BASE_ENV_NAMES if (value := os.environ.get(name)) is not None
+    }
+    environment.update(
+        {name: value for name in _SECRET_ENV_NAMES if (value := os.environ.get(name)) is not None}
+    )
+    environment.update(_WEB_ENVIRONMENT)
+    environment["PYTHONIOENCODING"] = "utf-8"
+    environment["PYTHONUTF8"] = "1"
+    return environment
+
+
+@dataclass
+class _ActiveChild:
+    job_id: str
+    process: subprocess.Popen[bytes]
+    events: queue.Queue[dict[str, object]]
+    reader: threading.Thread
+    terminal: dict[str, object] | None = None
+    invalid_ipc: bool = False
+
+
+def _read_child_events(
+    stream: Any,
+    events: queue.Queue[dict[str, object]],
+) -> None:
+    try:
+        while True:
+            line = stream.readline(_MAX_IPC_LINE_BYTES + 1)
+            if not line:
+                return
+            if len(line) > _MAX_IPC_LINE_BYTES or not line.endswith(b"\n"):
+                events.put({"type": "invalid"}, timeout=1)
+                return
+            try:
+                event = json.loads(line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                events.put({"type": "invalid"}, timeout=1)
+                return
+            if not isinstance(event, dict):
+                events.put({"type": "invalid"}, timeout=1)
+                return
+            events.put(event, timeout=1)
+    except (OSError, queue.Full):
+        try:
+            events.put_nowait({"type": "invalid"})
+        except queue.Full:
+            return
+
+
+def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            check=False,
+            capture_output=True,
+            timeout=5,
+            shell=False,
+        )
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        if os.name != "nt":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            return
 
 
 def _configured_secret_values() -> tuple[str, ...]:
@@ -341,7 +470,7 @@ class _JobLogHandler(logging.Handler):
 
 
 class JobManager:
-    """Own one serial worker and crash-safe job metadata."""
+    """Own the parent queue, bounded child processes, and artifact publication."""
 
     def __init__(
         self,
@@ -350,15 +479,30 @@ class JobManager:
         runner: PipelineRunner = run_pipeline,
         media_probe: MediaProbe = probe_mp4,
         autostart: bool = True,
+        max_workers: int | None = None,
+        worker_module: str = "tella.web_worker",
     ) -> None:
         self.output_root = Path(output_root).resolve()
         self.output_root.mkdir(parents=True, exist_ok=True)
         self._runner = runner
         self._media_probe = media_probe
+        self._process_mode = runner is run_pipeline
+        if max_workers is None:
+            self._worker_config_valid, configured_workers = _web_max_workers_setting()
+        elif type(max_workers) is not int or max_workers not in {1, 2}:
+            raise ValueError("TELLA_WEB_MAX_WORKERS must be the integer 1 or 2")
+        else:
+            self._worker_config_valid, configured_workers = True, max_workers
+        if not self._process_mode and configured_workers != 1:
+            raise ValueError("custom in-process runners require max_workers=1")
+        self.max_workers = configured_workers
+        self._worker_module = worker_module
         self._jobs: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._worker: threading.Thread | None = None
+        self._wake = threading.Event()
+        self._active_children: dict[str, _ActiveChild] = {}
         self._closing = False
         self._closed = False
         self._stop_enqueued = False
@@ -374,13 +518,13 @@ class JobManager:
                 return
             self._worker = threading.Thread(
                 target=self._worker_main,
-                name="tella-web-render-worker",
+                name="tella-web-process-scheduler",
                 daemon=True,
             )
             self._worker.start()
 
     def close(self, *, timeout: float = 10.0) -> bool:
-        """Stop after current work; return False while the worker is still alive."""
+        """Stop accepting work and leave no owned production child behind."""
         if timeout < 0:
             raise ValueError("shutdown timeout must be non-negative")
         with self._lock:
@@ -405,7 +549,12 @@ class JobManager:
             if not self._stop_enqueued:
                 self._queue.put(None)
                 self._stop_enqueued = True
+            self._wake.set()
         worker.join(timeout=timeout)
+        if worker.is_alive() and self._process_mode:
+            self._terminate_active_children()
+            self._wake.set()
+            worker.join(timeout=5)
         if worker.is_alive():
             return False
         with self._lock:
@@ -495,6 +644,8 @@ class JobManager:
         with self._lock:
             if self._closing or self._closed:
                 raise RuntimeError("JOB_MANAGER_CLOSING")
+            if not self._worker_config_valid:
+                raise RuntimeError("TELLA_WEB_MAX_WORKERS_INVALID")
             self._job_dir(job_id).mkdir(parents=True, exist_ok=False)
             self._jobs[job_id] = {
                 "schema_version": 1,
@@ -514,6 +665,7 @@ class JobManager:
             }
             self._persist(job_id)
             self._queue.put(job_id)
+            self._wake.set()
             return self.get(job_id)
 
     def get(self, job_id: str) -> WebJobView:
@@ -572,6 +724,7 @@ class JobManager:
                 error=None,
             )
             self._persist(job_id)
+            self._wake.set()
         return self.get(job_id)
 
     def record_log(self, job_id: str, message: str) -> None:
@@ -610,6 +763,12 @@ class JobManager:
         return artifact
 
     def _worker_main(self) -> None:
+        if self._process_mode:
+            self._process_worker_main()
+            return
+        self._inline_worker_main()
+
+    def _inline_worker_main(self) -> None:
         while True:
             job_id = self._queue.get()
             try:
@@ -621,6 +780,241 @@ class JobManager:
                 self._execute(job_id)
             finally:
                 self._queue.task_done()
+
+    def _process_worker_main(self) -> None:
+        stop_requested = False
+        while True:
+            while not stop_requested and len(self._active_children) < self.max_workers:
+                try:
+                    job_id = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                if job_id is None:
+                    stop_requested = True
+                    self._queue.task_done()
+                    break
+                with self._lock:
+                    cancelled = self._jobs[job_id]["status"] == WebJobStatus.CANCELLED.value
+                if cancelled:
+                    self._queue.task_done()
+                    continue
+                try:
+                    self._start_child(job_id)
+                except Exception:
+                    self._fail_job(job_id, "WORKER_PROCESS_EXITED")
+                    self._queue.task_done()
+
+            for job_id in tuple(self._active_children):
+                self._monitor_child(job_id)
+
+            if stop_requested and not self._active_children:
+                return
+            self._wake.wait(0.02)
+            self._wake.clear()
+
+    def _start_child(self, job_id: str) -> None:
+        with self._lock:
+            payload = self._jobs[job_id]
+            request = WebRenderRequest.model_validate(payload["request"])
+            payload.update(
+                status=WebJobStatus.RUNNING.value,
+                phase="starting",
+                progress=1,
+                started_at=utc_now(),
+                finished_at=None,
+                error=None,
+            )
+            self._persist(job_id)
+        worker_entrypoint = (
+            [str(Path(self._worker_module).resolve())]
+            if self._worker_module.endswith(".py")
+            else ["-m", self._worker_module]
+        )
+        command = [
+            sys.executable,
+            *worker_entrypoint,
+            "--job-id",
+            job_id,
+            "--output-root",
+            str(self.output_root),
+        ]
+        process_kwargs: dict[str, object] = {}
+        if os.name == "nt":
+            process_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            process_kwargs["start_new_session"] = True
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=str(Path.cwd()),
+            env=_child_environment(),
+            shell=False,
+            **process_kwargs,
+        )
+        try:
+            assert process.stdin is not None
+            process.stdin.write(request.model_dump_json().encode("utf-8"))
+            process.stdin.close()
+        except Exception:
+            _terminate_process_tree(process)
+            raise
+        assert process.stdout is not None
+        events: queue.Queue[dict[str, object]] = queue.Queue(maxsize=_MAX_IPC_EVENTS)
+        reader = threading.Thread(
+            target=_read_child_events,
+            args=(process.stdout, events),
+            name=f"tella-web-ipc-{job_id}",
+            daemon=True,
+        )
+        child = _ActiveChild(
+            job_id=job_id,
+            process=process,
+            events=events,
+            reader=reader,
+        )
+        with self._lock:
+            self._active_children[job_id] = child
+        reader.start()
+
+    def _monitor_child(self, job_id: str) -> None:
+        child = self._active_children[job_id]
+        self._drain_child_events(child)
+        return_code = child.process.poll()
+        if child.invalid_ipc:
+            _terminate_process_tree(child.process)
+            return_code = child.process.poll()
+        if return_code is None:
+            return
+        child.reader.join(timeout=0.5)
+        self._drain_child_events(child)
+        if child.invalid_ipc:
+            self._fail_job(job_id, "WORKER_IPC_INVALID")
+        elif child.terminal is None:
+            self._fail_job(job_id, "WORKER_PROCESS_EXITED")
+        elif child.terminal["type"] == "failure":
+            self._fail_job(job_id, str(child.terminal["code"]))
+        elif return_code != 0:
+            self._fail_job(job_id, "WORKER_PROCESS_EXITED")
+        else:
+            try:
+                self._publish_output(job_id, str(child.terminal["output_path"]))
+            except Exception as exc:
+                self._fail_job(job_id, self._error_code(exc))
+        child.process.stdout.close() if child.process.stdout is not None else None
+        with self._lock:
+            self._active_children.pop(job_id, None)
+        self._queue.task_done()
+        self._wake.set()
+
+    def _drain_child_events(self, child: _ActiveChild) -> None:
+        while True:
+            try:
+                event = child.events.get_nowait()
+            except queue.Empty:
+                return
+            event_type = event.get("type")
+            if event_type == "log":
+                message = event.get("message")
+                if not isinstance(message, str) or len(message) > _MAX_SANITIZER_INPUT_CHARS:
+                    child.invalid_ipc = True
+                    continue
+                self.record_log(child.job_id, message)
+                lowered = message.lower()
+                for marker, (phase, progress) in _PHASES.items():
+                    if marker in lowered:
+                        self.update_progress(child.job_id, phase, progress)
+                        break
+                continue
+            if event_type == "success":
+                output_path = event.get("output_path")
+                valid = isinstance(output_path, str) and 0 < len(output_path) <= 4_096
+                terminal = {"type": "success", "output_path": output_path}
+            elif event_type == "failure":
+                code = event.get("code")
+                valid = isinstance(code, str) and code in _PUBLIC_ERROR_CODES
+                terminal = {"type": "failure", "code": code}
+            else:
+                valid = False
+                terminal = {}
+            if not valid or child.terminal is not None:
+                child.invalid_ipc = True
+            else:
+                child.terminal = terminal
+
+    def _terminate_active_children(self) -> None:
+        with self._lock:
+            children = tuple(self._active_children.values())
+        for child in children:
+            self._fail_job(child.job_id, "WORKER_SHUTDOWN_TERMINATED")
+            _terminate_process_tree(child.process)
+
+    def _publish_output(self, job_id: str, output: str | Path) -> None:
+        self.update_progress(job_id, "validating", 95)
+        job_dir = self._job_dir(job_id)
+        resolved = Path(output).resolve(strict=True)
+        resolved.relative_to(job_dir)
+        if resolved.suffix.lower() != ".mp4" or resolved.stat().st_size <= 0:
+            raise RuntimeError("MP4_ARTIFACT_INVALID")
+        probe = self._media_probe(resolved)
+        relative = resolved.relative_to(job_dir).as_posix()
+        plan_metadata = _safe_metadata(
+            job_dir / "plan.json",
+            (
+                "title",
+                "language",
+                "theme",
+                "media_source",
+                "aspect_ratio",
+                "total_duration",
+                "tts_provider",
+                "primary_image_provider",
+                "fallback_image_provider",
+                "pollinations_fallback_used",
+                "pollinations_fallback_attempt_count",
+                "resolved_image_providers",
+            ),
+        )
+        tts_metadata = _validated_web_tts_metadata(job_dir / "tts_metadata.json")
+        with self._lock:
+            payload = self._jobs[job_id]
+            if payload["status"] != WebJobStatus.RUNNING.value:
+                return
+            payload.update(
+                status=WebJobStatus.SUCCEEDED.value,
+                phase="complete",
+                progress=100,
+                finished_at=utc_now(),
+                output_path=relative,
+                output_bytes=resolved.stat().st_size,
+                probe=probe,
+                plan_metadata=plan_metadata,
+                tts_metadata=tts_metadata,
+                error=None,
+            )
+            self._persist(job_id)
+
+    def _fail_job(self, job_id: str, code: str) -> None:
+        safe_code = code if code in _PUBLIC_ERROR_CODES else "PIPELINE_FAILED"
+        with self._lock:
+            payload = self._jobs[job_id]
+            if payload["status"] != WebJobStatus.RUNNING.value:
+                return
+            payload.update(
+                status=WebJobStatus.FAILED.value,
+                phase="failed",
+                progress=min(int(payload["progress"]), 99),
+                finished_at=utc_now(),
+                output_path=None,
+                output_bytes=None,
+                probe=None,
+                error={
+                    "code": safe_code,
+                    "message": self._public_error_message(job_id, RuntimeError(safe_code)),
+                },
+            )
+            self._persist(job_id)
 
     def _execute(self, job_id: str) -> None:
         with self._lock:
@@ -749,6 +1143,11 @@ class JobManager:
             "MP4_VALIDATION_FAILED": "The rendered MP4 could not be validated.",
             "MP4_STREAMS_REQUIRED": "The rendered MP4 must contain audio and video.",
             "MP4_ARTIFACT_INVALID": "The rendered MP4 artifact is invalid.",
+            "WORKER_IPC_INVALID": "The render worker returned an invalid status message.",
+            "WORKER_PROCESS_EXITED": "The render worker exited before publishing a result.",
+            "WORKER_SHUTDOWN_TERMINATED": (
+                "The server stopped this running render before it completed."
+            ),
             "PIPELINE_FAILED": "Production pipeline failed. Review the sanitized job logs.",
         }
         return self._sanitize(job_id, messages[code])
@@ -807,6 +1206,9 @@ class JobManager:
             "MP4_STREAMS_REQUIRED",
             "MP4_ARTIFACT_INVALID",
             "WEB_TTS_AUTHORITY_INVALID",
+            "WORKER_IPC_INVALID",
+            "WORKER_PROCESS_EXITED",
+            "WORKER_SHUTDOWN_TERMINATED",
         ):
             if code in text:
                 return code
@@ -841,6 +1243,7 @@ def web_readiness(
         or (os.environ.get("GOOGLE_API_KEY") or "").strip()
     )
     narrator_profile_ready = _web_narrator_profile_ready()
+    worker_configuration_ready, max_workers = _web_max_workers_setting()
     selected_media_source = (
         request.media_source if request is not None else media_source or "ai_image"
     )
@@ -910,6 +1313,14 @@ def web_readiness(
             "guidance": "Make TELLA_WEB_OUTPUT_DIR writable.",
             "required": True,
         },
+        "worker_pool": {
+            "ready": worker_configuration_ready,
+            "code": "WEB_WORKER_CONFIGURATION_INVALID",
+            "missing_variables": ([] if worker_configuration_ready else [_MAX_WEB_WORKERS_ENV]),
+            "guidance": "Set TELLA_WEB_MAX_WORKERS to 1 or 2.",
+            "required": True,
+            "max_workers": max_workers if worker_configuration_ready else None,
+        },
     }
     pollinations_width, pollinations_height = (
         (1344, 768) if request is not None and request.aspect_ratio == "16:9" else (768, 1344)
@@ -955,6 +1366,7 @@ def web_readiness(
         "strict_tts_provider": True,
         "narrator_profile": _WEB_NARRATOR_PROFILE_ID,
         "media_source": selected_media_source,
+        "max_workers": max_workers if worker_configuration_ready else None,
         "failed_checks": failed_checks,
     }
 

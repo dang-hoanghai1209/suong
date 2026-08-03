@@ -5,8 +5,8 @@
 ```text
 Browser
   -> POST /api/jobs (validated WebRenderRequest)
-  -> persisted serial JobManager worker
-  -> tella.cli.run_pipeline(...)
+  -> persisted parent JobManager queue
+  -> one isolated child process per active tella.cli.run_pipeline(...)
   -> existing planner/media/TTS/composition/subtitle/render pipeline
   -> {job_id}/video.mp4
   -> ffprobe audio + video verification
@@ -67,6 +67,7 @@ Progress advances only from emitted pipeline events:
 - `GEMINI_API_KEY`, `GEMINI_API_KEYS`, or `GOOGLE_API_KEY`
 - Cloudflare credentials for the primary image route
 - optional `POLLINATIONS_API_KEY` for the safe image fallback
+- optional `TELLA_WEB_MAX_WORKERS=1|2`, default `1`
 - `ffmpeg` and `ffprobe` on `PATH`
 - writable `TELLA_WEB_OUTPUT_DIR`, default `out/web_jobs`
 
@@ -101,22 +102,26 @@ Pollen balance.
 
 ## Web execution isolation
 
-Before each web job, the serial worker applies a bounded environment policy
-for Gemini narration, image generation, asset reuse, local fallback,
-placeholder behavior, visual QC, and branding. It
-restores every prior value, including prior absence, after success or failure.
-This is process-global environment isolation, not thread-local isolation;
-therefore the contract requires one serialized `JobManager` per process.
+The parent owns the queue, persisted public state, and final artifact
+publication. Every active job runs in a dedicated child process which calls
+`tella.cli.run_pipeline(...)` directly with a validated request and a
+server-built environment. Gemini narration, image generation, reuse, local
+fallback, placeholder behavior, visual QC, and branding policy cannot leak
+between children or be overridden by browser input. `TELLA_WEB_MAX_WORKERS`
+accepts only `1` or `2` and defaults to `1`; invalid values fail readiness.
+Child logs and terminal results cross a bounded JSON-line IPC channel. A crash,
+malformed event, non-zero exit, or missing/invalid artifact fails closed before
+publication.
 
 The request parser rejects missing, invalid, negative, empty, and oversized
 body lengths. Connections are explicitly closed when an invalid or oversized
 declaration could leave attacker-controlled bytes unread. Valid requests keep
 normal HTTP/1.1 behavior.
 
-Shutdown stops new submissions, persists queued jobs as cancelled, and lets
-the active bounded render finish. A timed-out close reports
-`JOB_MANAGER_SHUTDOWN_INCOMPLETE`, retains the live worker reference, and may
-be retried after the active work finishes.
+Shutdown stops new submissions and persists queued jobs as cancelled. It first
+allows bounded graceful completion, then terminates the exact owned child
+process trees if the deadline expires. Completion is reported only after no
+owned worker process remains.
 
 ## Persistence and security
 

@@ -375,13 +375,14 @@ balance, quota, or network availability. In particular, Pollinations readiness
 confirms local configuration and authority compatibility, not live Pollen
 balance.
 
-The serialized web worker neutralizes inherited environment settings that
-could select another narrator, reuse/skip assets, allow local or placeholder
-fallbacks, or alter the web render profile. Every prior value is restored after
-the job. Because this isolation uses the process environment, run only one web
-`JobManager` in a process. Browser-visible logs and errors redact credential
-values, authorization tokens, secret query parameters, provider response
-bodies, and private absolute paths.
+The parent `JobManager` owns the queue, persistence, and artifact publication.
+Each active render runs `tella.cli.run_pipeline(...)` in a dedicated child
+process with a server-built environment that neutralizes inherited settings
+which could select another narrator, reuse/skip assets, allow local or
+placeholder fallbacks, or alter the web profile. `TELLA_WEB_MAX_WORKERS` accepts
+only `1` or `2` and defaults to `1`; the browser cannot set it. Browser-visible
+logs and errors redact credentials, authorization tokens, secret query
+parameters, provider response bodies, and private absolute paths.
 
 Invalid or oversized HTTP bodies are rejected with structured errors; the
 connection closes when unread bytes could otherwise remain on HTTP/1.1.

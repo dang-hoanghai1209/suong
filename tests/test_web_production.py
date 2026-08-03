@@ -195,7 +195,12 @@ def test_web_stock_fallback_authority_overrides_and_exactly_restores_inherited_s
         monkeypatch.delenv("TELLA_DISABLE_STOCK_FALLBACK", raising=False)
     else:
         monkeypatch.setenv("TELLA_DISABLE_STOCK_FALLBACK", original)
-    manager = JobManager(tmp_path, runner=lambda **_kwargs: None, media_probe=_fake_probe)
+    manager = JobManager(
+        tmp_path,
+        runner=lambda **_kwargs: None,
+        media_probe=_fake_probe,
+        max_workers=1,
+    )
 
     with manager._strict_gemini_environment():
         assert os.environ["TELLA_DISABLE_STOCK_FALLBACK"] == "1"
@@ -210,7 +215,12 @@ def test_web_model_authority_overrides_and_restores_hostile_3_1(
 ) -> None:
     legacy_model = "gemini-3.1-flash-tts-preview"
     monkeypatch.setenv("TELLA_TTS_MODEL", legacy_model)
-    manager = JobManager(tmp_path, runner=lambda **_kwargs: None, media_probe=_fake_probe)
+    manager = JobManager(
+        tmp_path,
+        runner=lambda **_kwargs: None,
+        media_probe=_fake_probe,
+        max_workers=1,
+    )
 
     with manager._strict_gemini_environment():
         assert os.environ["TELLA_TTS_MODEL"] == _WEB_TTS_MODEL
@@ -283,7 +293,7 @@ def test_web_cloudflare_failure_is_terminal_without_fallback_provider(
     monkeypatch.setattr(fetch.sprite_composer, "compose_scene", forbidden_local)
     monkeypatch.setattr(fetch, "MAX_CONCURRENT", 1)
     caplog.set_level(logging.WARNING, logger="tella.media.fetch")
-    manager = JobManager(tmp_path, runner=runner, media_probe=_fake_probe)
+    manager = JobManager(tmp_path, runner=runner, media_probe=_fake_probe, max_workers=1)
     result = _wait(manager, manager.create(_request()).job_id)
     manager.close()
 
@@ -341,7 +351,7 @@ def test_web_cloudflare_success_keeps_generated_still_without_fallback(
     monkeypatch.setattr(fetch.stock_photo, "search_and_download", forbidden_pexels)
     monkeypatch.setattr(fetch.sprite_composer, "compose_scene", forbidden_local)
     monkeypatch.setattr(fetch, "MAX_CONCURRENT", 1)
-    manager = JobManager(tmp_path, runner=runner, media_probe=_fake_probe)
+    manager = JobManager(tmp_path, runner=runner, media_probe=_fake_probe, max_workers=1)
     result = _wait(manager, manager.create(_request()).job_id)
     manager.close()
 
@@ -408,7 +418,7 @@ def test_job_manager_runs_serially_persists_logs_and_enforces_gemini(
     expected = dict(web_jobs_module._WEB_ENVIRONMENT)
     for name, value in original.items():
         monkeypatch.setenv(name, value)
-    manager = JobManager(tmp_path, runner=runner, media_probe=_fake_probe)
+    manager = JobManager(tmp_path, runner=runner, media_probe=_fake_probe, max_workers=1)
     first = manager.create(_request(content="First"))
     second = manager.create(_request(content="Second", input_mode="script"))
     first_done = _wait(manager, first.job_id)
@@ -463,7 +473,7 @@ def test_failed_pipeline_never_exposes_artifact_and_restores_environment(
         assert {name: os.environ.get(name) for name in expected} == expected
         raise RuntimeError("provider failed with sensitive implementation detail")
 
-    manager = JobManager(tmp_path, runner=runner, media_probe=_fake_probe)
+    manager = JobManager(tmp_path, runner=runner, media_probe=_fake_probe, max_workers=1)
     created = manager.create(_request())
     result = _wait(manager, created.job_id)
     assert result.status is WebJobStatus.FAILED
@@ -495,7 +505,7 @@ def test_non_gemini_or_fallback_metadata_cannot_authorize_success(
     monkeypatch.delenv("TELLA_TTS_CACHE_ENABLED", raising=False)
     monkeypatch.delenv("TELLA_DISABLE_STOCK_FALLBACK", raising=False)
     monkeypatch.delenv("TELLA_RENDER_MOTION_PROFILE", raising=False)
-    manager = JobManager(tmp_path, runner=runner, media_probe=_fake_probe)
+    manager = JobManager(tmp_path, runner=runner, media_probe=_fake_probe, max_workers=1)
     result = _wait(manager, manager.create(_request()).job_id)
     manager.close()
 
@@ -522,7 +532,7 @@ def test_stale_3_1_metadata_cannot_authorize_new_2_5_web_success(
         metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
         return output
 
-    manager = JobManager(tmp_path, runner=runner, media_probe=_fake_probe)
+    manager = JobManager(tmp_path, runner=runner, media_probe=_fake_probe, max_workers=1)
     result = _wait(manager, manager.create(_request()).job_id)
     manager.close()
 
@@ -571,7 +581,7 @@ def test_web_gemini_failure_never_calls_google_or_edge(
         )
         raise AssertionError("Gemini failure must stop the pipeline")
 
-    manager = JobManager(tmp_path, runner=runner, media_probe=_fake_probe)
+    manager = JobManager(tmp_path, runner=runner, media_probe=_fake_probe, max_workers=1)
     result = _wait(manager, manager.create(_request()).job_id)
     manager.close()
 
@@ -687,7 +697,7 @@ def test_api_create_status_preview_download_and_security(
         _write_fake_tts_metadata(output.parent)
         return output
 
-    manager = JobManager(tmp_path / "jobs", runner=runner, media_probe=_fake_probe)
+    manager = JobManager(tmp_path / "jobs", runner=runner, media_probe=_fake_probe, max_workers=1)
     server = ProductionWebServer(("127.0.0.1", 0), manager)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -939,7 +949,7 @@ def test_direct_post_rejects_unready_without_creating_or_executing(
     monkeypatch.setattr(web_jobs_module.subprocess, "run", subprocess_run)
 
     jobs_root = tmp_path / "jobs"
-    manager = JobManager(jobs_root, runner=runner, media_probe=probe)
+    manager = JobManager(jobs_root, runner=runner, media_probe=probe, max_workers=1)
     server = ProductionWebServer(("127.0.0.1", 0), manager)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -1008,7 +1018,7 @@ def test_sanitizer_redacts_secrets_paths_headers_queries_and_provider_bodies(
         raise RuntimeError(source)
 
     root = tmp_path / "jobs"
-    manager = JobManager(root, runner=runner, media_probe=_fake_probe)
+    manager = JobManager(root, runner=runner, media_probe=_fake_probe, max_workers=1)
     result = _wait(manager, manager.create(_request()).job_id)
     assert manager.close()
     persisted_path = root / result.job_id / "job.json"
@@ -1152,7 +1162,7 @@ def test_shutdown_timeout_retains_worker_then_completes_after_release(tmp_path: 
         _write_fake_tts_metadata(output.parent)
         return output
 
-    manager = JobManager(tmp_path, runner=runner, media_probe=_fake_probe)
+    manager = JobManager(tmp_path, runner=runner, media_probe=_fake_probe, max_workers=1)
     job_id = manager.create(_request()).job_id
     assert started.wait(timeout=5)
 
