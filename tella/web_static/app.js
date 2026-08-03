@@ -5,6 +5,7 @@ import {
   buildRenderRequest,
   canBeginPoll,
   canCancel,
+  canCompact,
   createPollState,
   hasValidArtifact,
   isActiveStatus,
@@ -83,6 +84,10 @@ function renderHealth(data) {
   const pill = $("#health-pill");
   pill.textContent = data.ready ? "System ready" : "Setup required";
   pill.className = "health-pill " + (data.ready ? "ready" : "blocked");
+  const storage = data.storage;
+  $("#storage-summary").textContent = storage
+    ? `${formatStorageBytes(storage.output_root_bytes)} used by web jobs · ${formatStorageBytes(storage.free_disk_bytes)} free · ${formatStorageBytes(storage.minimum_free_bytes)} minimum free.`
+    : "Storage policy is unavailable.";
   const list = $("#health-checks");
   list.replaceChildren();
   for (const [name, check] of Object.entries(data.checks ?? {})) {
@@ -103,6 +108,7 @@ function renderHealthUnavailable(message) {
   const pill = $("#health-pill");
   pill.textContent = "Readiness unavailable";
   pill.className = "health-pill blocked";
+  $("#storage-summary").textContent = "Storage policy is unavailable.";
   const item = document.createElement("li");
   item.className = "bad";
   item.textContent = message;
@@ -239,6 +245,15 @@ function formatBytes(value) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function formatStorageBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return "unknown";
+  if (bytes < 1024) return `${Math.round(bytes)} bytes`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
 function renderSelectedJob(job, {focusTerminal = false} = {}) {
   selectedJob = job;
   const known = knownStatuses.has(job.status);
@@ -255,6 +270,7 @@ function renderSelectedJob(job, {focusTerminal = false} = {}) {
   $("#refresh-job").disabled = false;
   $("#cancel-job").hidden = !canCancel(job);
   $("#retry-job").hidden = !["failed", "cancelled"].includes(job.status);
+  $("#compact-job").hidden = !canCompact(job);
 
   let summary = `Server state: ${job.status}. Phase: ${job.phase}. Progress: ${progress}%.`;
   if (!known) summary = "The server returned an unknown job state. Automatic polling stopped.";
@@ -264,6 +280,9 @@ function renderSelectedJob(job, {focusTerminal = false} = {}) {
   else if (job.status === "cancelled") summary = job.error?.message || "The queued production was cancelled.";
   else if (!validSuccess) summary = "Artifact validation metadata is incomplete; preview and download are blocked.";
   else summary = "Production completed and the MP4 passed audio/video validation.";
+  if (job.storage_compacted_at && isTerminalStatus(job.status)) {
+    summary += " Non-authoritative intermediate files were compacted.";
+  }
   $("#job-summary").textContent = summary;
   renderArtifact(job);
   updateSubmitState();
@@ -290,6 +309,7 @@ function renderEmptyJob() {
   $("#refresh-job").disabled = true;
   $("#cancel-job").hidden = true;
   $("#retry-job").hidden = true;
+  $("#compact-job").hidden = true;
   $("#result").hidden = true;
   updateSubmitState();
 }
@@ -451,6 +471,29 @@ $("#cancel-job").addEventListener("click", async () => {
       detail += ` Latest state could not be loaded: ${refreshError.message}`;
     }
     showError(`Cancellation was not applied: ${detail}`);
+  }
+});
+
+$("#compact-job").addEventListener("click", async () => {
+  if (!canCompact(selectedJob)) return;
+  const confirmed = window.confirm(
+    "Remove reconstructable intermediate files for this job? The persisted job record and any validated MP4 will be retained."
+  );
+  if (!confirmed) return;
+  clearError();
+  const jobId = selectedJob.job_id;
+  try {
+    await api(`/api/jobs/${jobId}/compact`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({confirm: true}),
+    });
+    const current = await api(`/api/jobs/${jobId}`);
+    replaceHistoryJob(current);
+    renderSelectedJob(current);
+    await loadReadiness();
+  } catch (error) {
+    showError(`Storage compaction was not applied: ${error.message}`);
   }
 });
 

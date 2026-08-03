@@ -7,6 +7,7 @@ import {
   buildRenderRequest,
   canBeginPoll,
   canCancel,
+  canCompact,
   createPollState,
   hasValidArtifact,
   isTerminalStatus,
@@ -122,6 +123,19 @@ test("terminal and cancellation status policies are exact", () => {
     assert.equal(isTerminalStatus(status), false);
   assert.equal(canCancel(job({status: "queued"})), true);
   assert.equal(canCancel(job({status: "running"})), false);
+  for (const status of ["failed", "cancelled", "succeeded"])
+    assert.equal(canCompact(job({status})), true);
+  for (const status of ["queued", "running", "unknown"])
+    assert.equal(canCompact(job({status})), false);
+});
+
+test("storage compaction requires explicit UI and API confirmation", () => {
+  const html = readFileSync(new URL("../tella/web_static/index.html", import.meta.url), "utf8");
+  const app = readFileSync(new URL("../tella/web_static/app.js", import.meta.url), "utf8");
+  assert.match(html, /id="compact-job"[^>]*hidden/);
+  assert.match(app, /window\.confirm\(/);
+  assert.match(app, /JSON\.stringify\(\{confirm: true\}\)/);
+  assert.doesNotMatch(app, /method:\s*"DELETE"/);
 });
 
 test("polling delay resets on change and grows to its cap", () => {

@@ -20,7 +20,7 @@ from tella.web_contract import MAX_WEB_REQUEST_BYTES, WebRenderRequest
 from tella.web_jobs import JobManager, web_readiness
 
 _JOB_ROUTE = re.compile(
-    r"^/api/jobs/(?P<job_id>web-[0-9a-f]{24})(?:/(?P<action>preview|download|cancel))?$"
+    r"^/api/jobs/(?P<job_id>web-[0-9a-f]{24})(?:/(?P<action>preview|download|cancel|compact))?$"
 )
 _STATIC_ROOT = Path(__file__).with_name("web_static")
 
@@ -164,7 +164,14 @@ class ProductionRequestHandler(BaseHTTPRequestHandler):
                 web_readiness(
                     self.server.manager.output_root,
                     media_source=media_source,
+                    storage_summary=self.server.manager.storage_summary(),
                 ),
+            )
+            return
+        if path == "/api/storage":
+            self._json(
+                HTTPStatus.OK,
+                self.server.manager.storage_summary().model_dump(mode="json"),
             )
             return
         if path == "/api/jobs":
@@ -200,8 +207,34 @@ class ProductionRequestHandler(BaseHTTPRequestHandler):
                     "; ".join(error["msg"] for error in exc.errors())[:1000],
                 )
                 return
-            readiness = web_readiness(self.server.manager.output_root, request)
+            readiness = web_readiness(
+                self.server.manager.output_root,
+                request,
+                storage_summary=self.server.manager.storage_summary(),
+            )
             if not readiness["ready"]:
+                storage = readiness.get("storage")
+                if isinstance(storage, dict) and storage.get("configuration_valid") is False:
+                    self._error(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        "STORAGE_CONFIGURATION_INVALID",
+                        "The server storage policy is invalid.",
+                    )
+                    return
+                if isinstance(storage, dict) and storage.get("submissions_allowed") is False:
+                    self._json(
+                        HTTPStatus.INSUFFICIENT_STORAGE,
+                        {
+                            "error": {
+                                "code": "INSUFFICIENT_DISK_SPACE",
+                                "message": (
+                                    "Not enough free disk space is available for a new production."
+                                ),
+                            },
+                            "storage": storage,
+                        },
+                    )
+                    return
                 self._json(
                     HTTPStatus.SERVICE_UNAVAILABLE,
                     {
@@ -220,6 +253,20 @@ class ProductionRequestHandler(BaseHTTPRequestHandler):
             try:
                 job = self.server.manager.create(request)
             except RuntimeError as exc:
+                if str(exc) == "INSUFFICIENT_DISK_SPACE":
+                    self._error(
+                        HTTPStatus.INSUFFICIENT_STORAGE,
+                        "INSUFFICIENT_DISK_SPACE",
+                        "Not enough free disk space is available for a new production.",
+                    )
+                    return
+                if str(exc) == "TELLA_WEB_MIN_FREE_BYTES_INVALID":
+                    self._error(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        "STORAGE_CONFIGURATION_INVALID",
+                        "The server storage policy is invalid.",
+                    )
+                    return
                 if str(exc) != "JOB_MANAGER_CLOSING":
                     raise
                 self._error(
@@ -231,6 +278,44 @@ class ProductionRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.ACCEPTED, job.model_dump(mode="json"))
             return
         match = _JOB_ROUTE.fullmatch(path)
+        if match and match.group("action") == "compact":
+            payload = self._read_json()
+            if payload is None:
+                return
+            if set(payload) != {"confirm"} or payload["confirm"] is not True:
+                self._error(
+                    HTTPStatus.BAD_REQUEST,
+                    "COMPACTION_CONFIRMATION_REQUIRED",
+                    "Explicit compaction confirmation is required.",
+                )
+                return
+            try:
+                result = self.server.manager.compact(match.group("job_id"))
+            except KeyError:
+                self._error(HTTPStatus.NOT_FOUND, "JOB_NOT_FOUND", "Job not found.")
+            except (OSError, ValueError) as exc:
+                code = str(exc)
+                if code == "ACTIVE_JOB_STORAGE_LOCKED":
+                    self._error(
+                        HTTPStatus.CONFLICT,
+                        code,
+                        "Queued and running jobs cannot be compacted.",
+                    )
+                elif code == "STORAGE_ARTIFACT_INVALID":
+                    self._error(
+                        HTTPStatus.CONFLICT,
+                        code,
+                        "The published artifact is unavailable; compaction was not applied.",
+                    )
+                else:
+                    self._error(
+                        HTTPStatus.CONFLICT,
+                        "STORAGE_PATH_UNSAFE",
+                        "Job storage could not be compacted safely.",
+                    )
+            else:
+                self._json(HTTPStatus.OK, result.model_dump(mode="json"))
+            return
         if match and match.group("action") == "cancel":
             self._discard_body()
             try:

@@ -89,7 +89,33 @@ class WebJobView(WebContract):
     output_bytes: int | None = Field(default=None, gt=0)
     plan_metadata: dict[str, object] | None = None
     tts_metadata: dict[str, object] | None = None
+    storage_compacted_at: str | None = None
     request: WebRenderRequest
+
+
+class WebJobStorage(WebContract):
+    job_id: str
+    bytes: int = Field(ge=0)
+    compacted_at: str | None = None
+
+
+class WebStorageSummary(WebContract):
+    schema_version: Literal[1] = 1
+    output_root_bytes: int = Field(ge=0)
+    free_disk_bytes: int = Field(ge=0)
+    minimum_free_bytes: int = Field(ge=0)
+    configuration_valid: StrictBool = True
+    submissions_allowed: StrictBool
+    jobs: tuple[WebJobStorage, ...] = ()
+
+
+class WebCompactionResult(WebContract):
+    schema_version: Literal[1] = 1
+    job_id: str
+    removed_bytes: int = Field(ge=0)
+    removed_entries: tuple[str, ...] = ()
+    storage_bytes: int = Field(ge=0)
+    compacted_at: str
 
 
 def utc_now() -> str:
@@ -102,8 +128,11 @@ __all__ = [
     "WEB_API_VERSION",
     "WebInputMode",
     "WebJobError",
+    "WebJobStorage",
     "WebJobStatus",
     "WebJobView",
+    "WebCompactionResult",
     "WebRenderRequest",
+    "WebStorageSummary",
     "utc_now",
 ]

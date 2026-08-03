@@ -97,6 +97,10 @@ export function canCancel(job) {
   return job?.status === "queued";
 }
 
+export function canCompact(job) {
+  return ["succeeded", "failed", "cancelled"].includes(job?.status);
+}
+
 export function safeJobId(value) {
   return JOB_ID_PATTERN.test(value ?? "") ? value : null;
 }

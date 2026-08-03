@@ -67,6 +67,7 @@
           <p class="step">System</p>
           <h2 id="readiness-heading" tabindex="-1">Readiness</h2>
           <p class="muted">Credentials remain on this server and are never sent to your browser.</p>
+          <p id="storage-summary" class="muted" role="status">Loading storage policy…</p>
           <ul id="health-checks" class="checks"><li>Loading checks…</li></ul>
           <button id="refresh-readiness" class="secondary" type="button">Refresh readiness</button>
         </aside>
@@ -95,6 +96,7 @@
             <button id="refresh-job" class="secondary" type="button" disabled>Refresh selected job</button>
             <button id="cancel-job" class="danger" type="button" hidden>Cancel queued job</button>
             <button id="retry-job" class="secondary" type="button" hidden>Retry with same settings</button>
+            <button id="compact-job" class="danger" type="button" hidden>Compact job storage</button>
           </div>
 
           <h3>Recent sanitized logs</h3>
