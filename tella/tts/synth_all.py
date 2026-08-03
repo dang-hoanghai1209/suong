@@ -141,23 +141,31 @@ async def _normalize_gemini_narration(raw_path: Path, out_path: Path) -> dict:
     """Normalize loudness without tempo, silence, or pitch processing."""
     original_duration = await _ffprobe_duration(raw_path)
     proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-y", "-loglevel", "error", "-i", str(raw_path),
-        "-af", "loudnorm=I=-16:TP=-1:LRA=7,alimiter=limit=0.891251:level=false",
-        "-ar", "24000", "-ac", "1", str(out_path),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        "ffmpeg",
+        "-y",
+        "-loglevel",
+        "error",
+        "-i",
+        str(raw_path),
+        "-af",
+        "loudnorm=I=-16:TP=-1.5:LRA=7,alimiter=limit=0.841395:level=false",
+        "-ar",
+        "24000",
+        "-ac",
+        "1",
+        str(out_path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
     _, stderr = await proc.communicate()
     if proc.returncode or not out_path.is_file():
         raise RuntimeError(
-            "Gemini loudness normalization failed: "
-            + stderr.decode(errors="replace")[-300:]
+            "Gemini loudness normalization failed: " + stderr.decode(errors="replace")[-300:]
         )
     processed_duration = await _ffprobe_duration(out_path)
     if abs(processed_duration - original_duration) > 0.01:
         out_path.unlink(missing_ok=True)
-        raise RuntimeError(
-            "Gemini normalization changed narration duration beyond 0.01 seconds"
-        )
+        raise RuntimeError("Gemini normalization changed narration duration beyond 0.01 seconds")
     return {
         "silence_postprocess_applied": False,
         "max_pause_ms": 0,
@@ -166,7 +174,7 @@ async def _normalize_gemini_narration(raw_path: Path, out_path: Path) -> dict:
         "duration_delta": round(processed_duration - original_duration, 6),
         "processing_steps": [
             "loudness_normalize_-16lufs",
-            "true_peak_limit_-1dbtp",
+            "true_peak_limit_-1_5dbtp",
             "mono_24000hz",
         ],
         "duration_change_expected": False,

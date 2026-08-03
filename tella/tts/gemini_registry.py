@@ -5,7 +5,10 @@ from dataclasses import dataclass
 
 REGISTRY_VERSION = 1
 BENCHMARK_LANGUAGE = "vi-VN"
-APPROVED_MODELS = ("gemini-3.1-flash-tts-preview",)
+APPROVED_MODELS = (
+    "gemini-3.1-flash-tts-preview",
+    "gemini-2.5-flash-preview-tts",
+)
 
 
 @dataclass(frozen=True)

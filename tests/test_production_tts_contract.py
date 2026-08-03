@@ -86,7 +86,7 @@ def _mock_durations(monkeypatch, *, raw: float = 12.4, processed: float = 12.0):
             "duration_delta": round(processed - raw, 6),
             "processing_steps": [
                 "loudness_normalize_-16lufs",
-                "true_peak_limit_-1dbtp",
+                "true_peak_limit_-1_5dbtp",
                 "mono_24000hz",
             ],
             "duration_change_expected": False,
@@ -221,7 +221,7 @@ def test_raw_processed_duration_and_steps_are_auditable(monkeypatch, tmp_path):
     assert metadata["duration_delta"] == pytest.approx(-0.453312)
     assert metadata["processing_steps"] == [
         "loudness_normalize_-16lufs",
-        "true_peak_limit_-1dbtp",
+        "true_peak_limit_-1_5dbtp",
         "mono_24000hz",
     ]
     assert metadata["requested_vs_narration_delta_seconds"] == pytest.approx(

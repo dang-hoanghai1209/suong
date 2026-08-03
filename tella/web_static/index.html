@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Create production-ready narrated videos with Tella.">
+    <title>Tella Production Studio</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Tella production studio home"><span aria-hidden="true">T</span>Tella Studio</a>
+      <div id="health-pill" class="health-pill checking" role="status" aria-live="polite">Checking system…</div>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="page-title">
+        <p class="eyebrow">Local production workspace</p>
+        <h1 id="page-title">Turn an idea into a finished story.</h1>
+        <p>Create a real still-image video with server-managed Gemini narration and the existing Tella production pipeline.</p>
+      </section>
+
+      <div id="app-error" class="notice error" role="alert" aria-live="assertive" tabindex="-1" hidden></div>
+
+      <section class="workspace" aria-label="Video creation and readiness">
+        <form id="render-form" class="card form-card" aria-labelledby="create-heading" novalidate>
+          <div class="section-heading">
+            <div>
+              <p class="step">01 · Create</p>
+              <h2 id="create-heading">New production</h2>
+            </div>
+            <span class="provider-lock">Gemini narration</span>
+          </div>
+
+          <fieldset class="segmented">
+            <legend>Input type</legend>
+            <label><input type="radio" name="input_mode" value="topic" checked> Topic</label>
+            <label><input type="radio" name="input_mode" value="script"> Exact narration script</label>
+          </fieldset>
+
+          <label class="field wide" for="content">
+            <span id="content-label">Topic</span>
+            <textarea id="content" name="content" maxlength="10000" required aria-describedby="content-help content-count"
+              placeholder="A quiet lesson about choosing courage over certainty"></textarea>
+            <small id="content-help">Describe the subject; Tella will plan the narration and scenes.</small>
+            <small id="content-count"><span id="char-count">0</span> entered · <span id="char-remaining">10,000</span> remaining</small>
+          </label>
+
+          <div class="form-grid">
+            <label class="field" for="language"><span>Language</span><select id="language" name="language"></select></label>
+            <label class="field" for="theme"><span>Visual style</span><select id="theme" name="theme"></select></label>
+            <label class="field" for="aspect_ratio"><span>Format</span><select id="aspect_ratio" name="aspect_ratio"><option>9:16</option><option>16:9</option></select></label>
+            <label class="field" for="duration_mode"><span>Length</span><select id="duration_mode" name="duration_mode"><option value="short">Short</option><option value="detailed">Detailed</option></select></label>
+          </div>
+
+          <div class="authority-notes">
+            <p><strong>Still-image production.</strong> Cloudflare-generated scenes use a server-owned gentle zoom-out. Timing follows narration and composition; roughly 4.5–7 seconds per image and 32–38 seconds per short video are common targets, not hard limits. Stock, provider controls, motion controls, and AI-video are unavailable here.</p>
+            <p><strong>Server-managed narrator.</strong> Provider, model, voice, credentials, and fallback policy are not browser controls.</p>
+          </div>
+
+          <label class="check"><input id="no_music" name="no_music" type="checkbox"> Render without background music</label>
+          <p id="submit-help" class="muted">Submission is available when local readiness checks pass. Active renders cannot currently be forcibly cancelled.</p>
+          <button id="submit-button" class="primary" type="submit" disabled aria-describedby="submit-help">Start production render</button>
+        </form>
+
+        <aside class="card readiness-card" aria-labelledby="readiness-heading">
+          <p class="step">System</p>
+          <h2 id="readiness-heading" tabindex="-1">Readiness</h2>
+          <p class="muted">Credentials remain on this server and are never sent to your browser.</p>
+          <ul id="health-checks" class="checks"><li>Loading checks…</li></ul>
+          <button id="refresh-readiness" class="secondary" type="button">Refresh readiness</button>
+        </aside>
+      </section>
+
+      <section class="production-layout" aria-label="Current production and history">
+        <section id="job-panel" class="card job-panel" aria-labelledby="job-title">
+          <div class="section-heading">
+            <div><p class="step">02 · Produce</p><h2 id="job-title" tabindex="-1">No production selected</h2></div>
+            <span id="job-status" class="status neutral">Empty</span>
+          </div>
+          <p id="job-summary" class="status-summary" role="status" aria-live="polite">Create a video or select one from history.</p>
+          <progress id="job-progress" value="0" max="100" aria-label="Render progress" aria-describedby="progress-copy">0%</progress>
+          <div id="progress-copy" class="progress-copy"><strong id="progress-value">0%</strong><span id="phase">Not started</span></div>
+
+          <ol class="production-steps" aria-label="Production stages">
+            <li>Input and planning</li>
+            <li>Still-image generation</li>
+            <li>Gemini narration</li>
+            <li>Timing and composition</li>
+            <li>FFmpeg render</li>
+            <li>FFprobe validation</li>
+          </ol>
+
+          <div class="job-actions">
+            <button id="refresh-job" class="secondary" type="button" disabled>Refresh selected job</button>
+            <button id="cancel-job" class="danger" type="button" hidden>Cancel queued job</button>
+            <button id="retry-job" class="secondary" type="button" hidden>Retry with same settings</button>
+          </div>
+
+          <h3>Recent sanitized logs</h3>
+          <pre id="logs" class="logs" tabindex="0">No job logs.</pre>
+
+          <div id="result" class="result" hidden>
+            <div>
+              <video id="preview" controls preload="metadata" aria-label="Completed video preview"></video>
+              <p id="preview-error" class="error" role="alert" hidden>Preview could not be loaded. The validated download may still be available.</p>
+            </div>
+            <div>
+              <h3 id="result-heading" tabindex="-1">Your validated video is ready</h3>
+              <p id="result-meta" class="muted"></p>
+              <a id="download" class="primary download" download>Download MP4</a>
+            </div>
+          </div>
+        </section>
+
+        <aside class="card history-card" aria-labelledby="history-heading">
+          <div class="section-heading compact">
+            <div><p class="step">History</p><h2 id="history-heading">Persisted jobs</h2></div>
+            <button id="refresh-history" class="secondary compact-button" type="button">Refresh</button>
+          </div>
+          <p id="history-state" class="muted" role="status" aria-live="polite">Loading history…</p>
+          <ul id="job-history" class="job-history"></ul>
+        </aside>
+      </section>
+    </main>
+
+    <footer>Local production · Real pipeline · No credential data in the browser</footer>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

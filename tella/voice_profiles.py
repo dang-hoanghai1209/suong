@@ -99,7 +99,7 @@ _PROFILES = {
         VoiceProfileDefinition(
             profile_id="gemini_callirrhoe_vi_gentle_emotional",
             provider="gemini",
-            model="gemini-3.1-flash-tts-preview",
+            model="gemini-2.5-flash-preview-tts",
             voice="Callirrhoe",
             style="gentle_emotional",
             language="vi-VN",
@@ -107,7 +107,7 @@ _PROFILES = {
             role="gentle emotionally soft female Vietnamese narrator",
             suitable_narrative_modes=["emotional_reflection"],
             post_tts_atempo_enabled=False,
-            automatic_edge_fallback_enabled=True,
+            automatic_edge_fallback_enabled=False,
             automatic_model_fallback_enabled=False,
         ),
         VoiceProfileDefinition(

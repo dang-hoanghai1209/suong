@@ -69,6 +69,20 @@ TEXT_BOX_OPACITY = 0.55
 # the safe-zone bottom edge so multi-line captions still fit.
 CAPTION_BOTTOM_PADDING = 60
 TITLE_TOP_PADDING = 50
+_RENDER_MOTION_PROFILE_ENV = "TELLA_RENDER_MOTION_PROFILE"
+_REGISTERED_MOTION_PROFILES = frozenset(
+    {
+        "controlled_slow_hold",
+        "controlled_slow_pan",
+        "gentle_progressive_motion",
+        "practical_pan_left_to_right",
+        "practical_pan_right_to_left",
+        "practical_pull_back",
+        "practical_stable_hold",
+        "practical_zoom_in",
+        "slow_ken_burns",
+    }
+)
 
 
 def _resolve_font_file() -> Path:
@@ -148,6 +162,15 @@ def _env_float(name: str, default: float, low: float, high: float) -> float:
         logger.warning("invalid %s=%r; using %.2f", name, raw, default)
         return default
     return max(low, min(high, value))
+
+
+def _render_motion_profile_override() -> str | None:
+    value = (os.environ.get(_RENDER_MOTION_PROFILE_ENV) or "").strip()
+    if not value:
+        return None
+    if value not in _REGISTERED_MOTION_PROFILES:
+        raise ValueError(f"unsupported {_RENDER_MOTION_PROFILE_ENV}: {value!r}")
+    return value
 
 
 def _write_text_file(path: Path, text: str) -> Path:
@@ -299,6 +322,29 @@ def _practical_motion_profile(scene) -> str:
     if scene.scene_role in {"today_action", "closing"}:
         return "practical_stable_hold"
     return "practical_zoom_in"
+
+
+def _select_scene_motion_profile(
+    plan: TellaScenePlan,
+    scene,
+    *,
+    default_profile: str,
+    ken_burns_max_scale: float,
+    override_profile: str | None,
+) -> tuple[str, float]:
+    if override_profile is not None:
+        return override_profile, ken_burns_max_scale
+    if plan.theme == "life_insight_symbolic" and scene.scene_role == "conclusion":
+        return "controlled_slow_hold", min(1.012, ken_burns_max_scale)
+    if plan.theme == "practical_life_steps":
+        profile = _practical_motion_profile(scene)
+        scale = (
+            min(1.012, ken_burns_max_scale)
+            if profile == "practical_stable_hold"
+            else ken_burns_max_scale
+        )
+        return profile, scale
+    return default_profile, ken_burns_max_scale
 
 
 def _render_progress_message(
@@ -658,6 +704,7 @@ async def render(
         "subtle_crossfade" if use_crossfade else "cut"
     )
     motion_profile = plan.motion_profile_id or "slow_ken_burns"
+    motion_profile_override = _render_motion_profile_override()
     logger.info(
         "render routing theme=%s subtitle=%s transition=%s motion=%s",
         plan.theme,
@@ -758,21 +805,13 @@ async def render(
         title_text = "\n".join(title_lines) if title_lines else None
         caption_text = "\n".join(caption_lines) if caption_lines else None
 
-        scene_motion_profile = motion_profile
-        scene_zoom_scale = ken_burns_max_scale
-        if (
-            plan.theme == "life_insight_symbolic"
-            and scene.scene_role == "conclusion"
-        ):
-            scene_motion_profile = "controlled_slow_hold"
-            scene_zoom_scale = min(1.012, ken_burns_max_scale)
-        elif plan.theme == "practical_life_steps":
-            scene_motion_profile = _practical_motion_profile(scene)
-            scene_zoom_scale = (
-                min(1.012, ken_burns_max_scale)
-                if scene_motion_profile == "practical_stable_hold"
-                else ken_burns_max_scale
-            )
+        scene_motion_profile, scene_zoom_scale = _select_scene_motion_profile(
+            plan,
+            scene,
+            default_profile=motion_profile,
+            ken_burns_max_scale=ken_burns_max_scale,
+            override_profile=motion_profile_override,
+        )
         scene.render_motion_profile = scene_motion_profile
         badge_layout = practical_step_badge_layout(
             subtitle_style=plan.subtitle_style,

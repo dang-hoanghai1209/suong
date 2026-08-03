@@ -2957,15 +2957,19 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                         _record_asset(scene, fallback_out)
                         return
 
-                    # Either daily neuron quota burned across every CF
-                    # account, or the safety filter false-positived a
-                    # specific scene's prompt. Either way, Pexels Photo
-                    # always works — fall through so the user still gets
-                    # a complete video instead of "all 5 accounts failed".
-                    logger.warning(
-                        "scene %d: AI image failed (%s) → fallback to Pexels",
-                        scene.scene_index, str(exc)[:120],
-                    )
+                    # Preserve the legacy Pexels fallback only when the
+                    # caller's environment has not disabled it.
+                    if _stock_fallback_disabled():
+                        logger.warning(
+                            "scene %d: AI image generation failed; stock fallback is disabled",
+                            scene.scene_index,
+                        )
+                    else:
+                        logger.warning(
+                            "scene %d: AI image failed (%s) → fallback to Pexels",
+                            scene.scene_index,
+                            str(exc)[:120],
+                        )
                     await _fallback_to_stock_photo(scene, base)
             elif plan.media_source == "stock_photo":
                 _assert_provider_submission_allowed()

@@ -31,6 +31,7 @@ dev = [
 [project.scripts]
 tella = "tella.cli:main"
 tella-objects = "tella.object_library.cli:main"
+tella-web = "tella.web:main"
 
 [project.urls]
 Homepage = "https://khuetran.com"
@@ -44,6 +45,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["tella*"]
 exclude = ["channels*", "scripts*", "SESSIONS*", "out*"]
+
+[tool.setuptools.package-data]
+tella = ["web_static/*"]
 
 [tool.ruff]
 line-length = 100

@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import shutil
 import socket
@@ -12,7 +13,7 @@ from scripts.benchmark_gemini_tts import BENCHMARK_TEXT, parse_voices, run_bench
 from scripts import render_practical_callirrhoe as production
 from tella.planner.models import Scene, TellaScenePlan
 from tella.recipes import list_recipes
-from tella.tts import gemini
+from tella.tts import gemini, synth_all
 from tella.tts.gemini_registry import (
     APPROVED_MODELS, REGISTRY_VERSION, STYLE_PRESETS, VOICE_NAMES,
     GeminiVoice, VOICES, resolve_style, resolve_voice,
@@ -23,6 +24,7 @@ from tella.voice_profiles import get_voice_profile, resolve_voice as resolve_pro
 from tella.production import CALLIRRHOE_PRODUCTION_CONFIG, ProductionRun, classify_error
 
 MODEL = "gemini-3.1-flash-tts-preview"
+WEB_MODEL = "gemini-2.5-flash-preview-tts"
 EXPECTED_NATURAL_VOCAL_SMILE = (
     "Use natural conversational Vietnamese with a subtle vocal smile. Keep the "
     "delivery calm, clear, warm, and direct, with normal conversational loudness, "
@@ -36,6 +38,7 @@ EXPECTED_NATURAL_VOCAL_SMILE = (
 
 
 def test_registry_accepts_exactly_six_canonical_voices():
+    assert APPROVED_MODELS == (MODEL, WEB_MODEL)
     assert VOICE_NAMES == ("Achernar", "Autonoe", "Callirrhoe", "Gacrux", "Leda", "Zephyr")
     assert tuple(VOICES) == VOICE_NAMES
     for name in VOICE_NAMES:
@@ -43,6 +46,20 @@ def test_registry_accepts_exactly_six_canonical_voices():
         assert voice.provider == "gemini"
         assert voice.benchmark_language == "vi-VN"
         assert voice.registry_version == REGISTRY_VERSION
+
+
+def test_web_callirrhoe_profile_authorizes_2_5_and_preserves_3_1_cli_profile():
+    web_profile = get_voice_profile("gemini_callirrhoe_vi_gentle_emotional")
+    cli_profile = get_voice_profile("gemini_callirrhoe_vi_natural_smile")
+
+    assert (web_profile.provider, web_profile.model, web_profile.voice) == (
+        "gemini",
+        WEB_MODEL,
+        "Callirrhoe",
+    )
+    assert resolve_voice("Callirrhoe", WEB_MODEL).canonical_name == "Callirrhoe"
+    assert cli_profile.model == MODEL
+    assert resolve_voice("Callirrhoe", MODEL).canonical_name == "Callirrhoe"
 
 
 def test_achernar_is_accepted_but_achenar_and_unknown_are_rejected():
@@ -121,9 +138,10 @@ def test_dry_run_has_zero_calls_and_distinct_paths(tmp_path, monkeypatch):
     assert all(e["raw_output_path"] != e["normalized_output_path"] for e in manifest["entries"])
 
 
-def test_normalizer_disables_limiter_auto_leveling():
-    source = Path("scripts/benchmark_gemini_tts.py").read_text(encoding="utf-8")
-    assert "alimiter=limit=0.891251:level=false" in source
+def test_production_normalizer_preserves_aac_true_peak_headroom():
+    source = inspect.getsource(synth_all._normalize_gemini_narration)
+    assert "loudnorm=I=-16:TP=-1.5:LRA=7" in source
+    assert "alimiter=limit=0.841395:level=false" in source
 
 
 def test_maximum_request_count_and_voice_limit_are_enforced(tmp_path):
