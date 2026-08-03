@@ -1,0 +1,1023 @@
+{
+    "schema_version":  1,
+    "description":  "Batch slicing and semantic mapping for Tella MVP character assets.",
+    "grid_convention":  "rows_x_columns; row-major, left-to-right then top-to-bottom",
+    "sheets":  [
+                   {
+                       "sheet_id":  "female_01_views_r2_c2",
+                       "character_id":  "female_01",
+                       "asset_group":  "views",
+                       "source":  "characters/female_01/source_sheets/female_01_views_r2_c2.png",
+                       "output_dir":  "characters/female_01/views",
+                       "mode":  "grid",
+                       "rows":  2,
+                       "columns":  2,
+                       "inset_px":  2,
+                       "items":  [
+                                     {
+                                         "asset_id":  "front_bust",
+                                         "description":  "Front bust reference",
+                                         "tier":  "reference",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "views"
+                                     },
+                                     {
+                                         "asset_id":  "three_quarter_bust_right",
+                                         "description":  "Three-quarter bust facing right",
+                                         "tier":  "reference",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+                                                         "three_quarter"
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "views"
+                                     },
+                                     {
+                                         "asset_id":  "left_profile_bust",
+                                         "description":  "Left profile bust reference",
+                                         "tier":  "reference",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+                                                         "profile_left"
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "views"
+                                     },
+                                     {
+                                         "asset_id":  "full_body_front",
+                                         "description":  "Full-body front reference",
+                                         "tier":  "reference",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "views"
+                                     }
+                                 ]
+                   },
+                   {
+                       "sheet_id":  "male_01_views_r2_c2",
+                       "character_id":  "male_01",
+                       "asset_group":  "views",
+                       "source":  "characters/male_01/source_sheets/male_01_views_r2_c2.png",
+                       "output_dir":  "characters/male_01/views",
+                       "mode":  "grid",
+                       "rows":  2,
+                       "columns":  2,
+                       "inset_px":  2,
+                       "items":  [
+                                     {
+                                         "asset_id":  "front_bust",
+                                         "description":  "Front bust reference",
+                                         "tier":  "reference",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "views"
+                                     },
+                                     {
+                                         "asset_id":  "three_quarter_bust_right",
+                                         "description":  "Three-quarter bust facing right",
+                                         "tier":  "reference",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+                                                         "three_quarter"
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "views"
+                                     },
+                                     {
+                                         "asset_id":  "left_profile_bust",
+                                         "description":  "Left profile bust reference",
+                                         "tier":  "reference",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+                                                         "profile_left"
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "views"
+                                     },
+                                     {
+                                         "asset_id":  "full_body_front",
+                                         "description":  "Full-body front reference",
+                                         "tier":  "reference",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "views"
+                                     }
+                                 ]
+                   },
+                   {
+                       "sheet_id":  "male_01_expressions_r3_c3",
+                       "character_id":  "male_01",
+                       "asset_group":  "expressions",
+                       "source":  "characters/male_01/source_sheets/male_01_expressions_r3_c3.png",
+                       "output_dir":  "characters/male_01/expressions",
+                       "mode":  "grid",
+                       "rows":  3,
+                       "columns":  3,
+                       "inset_px":  2,
+                       "items":  [
+                                     {
+                                         "asset_id":  "neutral",
+                                         "description":  "Neutral expression",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "expressions"
+                                     },
+                                     {
+                                         "asset_id":  "slightly_sad",
+                                         "description":  "Slightly sad expression",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "expressions"
+                                     },
+                                     {
+                                         "asset_id":  "deeply_sad_no_tears",
+                                         "description":  "Deeply sad without tears",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "expressions"
+                                     },
+                                     {
+                                         "asset_id":  "worried",
+                                         "description":  "Worried expression",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "expressions"
+                                     },
+                                     {
+                                         "asset_id":  "looking_down_thoughtfully",
+                                         "description":  "Looking down thoughtfully",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "expressions"
+                                     },
+                                     {
+                                         "asset_id":  "peaceful",
+                                         "description":  "Peaceful expression",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "expressions"
+                                     },
+                                     {
+                                         "asset_id":  "soft_gentle_smile",
+                                         "description":  "Soft gentle smile",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "expressions"
+                                     },
+                                     {
+                                         "asset_id":  "quietly_crying_one_tear",
+                                         "description":  "Quietly crying with one tear",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "expressions"
+                                     },
+                                     {
+                                         "asset_id":  "subtle_surprise",
+                                         "description":  "Subtle surprise",
+                                         "tier":  "optional",
+                                         "enabled_by_default":  false,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "expressions"
+                                     }
+                                 ]
+                   },
+                   {
+                       "sheet_id":  "female_01_stand_walk_r2_c2",
+                       "character_id":  "female_01",
+                       "asset_group":  "poses_stand_walk",
+                       "source":  "characters/female_01/source_sheets/female_01_stand_walk_r2_c2.png",
+                       "output_dir":  "characters/female_01/poses/stand_walk",
+                       "mode":  "grid",
+                       "rows":  2,
+                       "columns":  2,
+                       "inset_px":  2,
+                       "items":  [
+                                     {
+                                         "asset_id":  "stand_front",
+                                         "description":  "Standing front",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_stand_walk"
+                                     },
+                                     {
+                                         "asset_id":  "stand_head_down",
+                                         "description":  "Standing with head lowered",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+                                                         "stand_sad"
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_stand_walk"
+                                     },
+                                     {
+                                         "asset_id":  "walk_left",
+                                         "description":  "Walking toward the left",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_stand_walk"
+                                     },
+                                     {
+                                         "asset_id":  "walk_right",
+                                         "description":  "Walking toward the right",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_stand_walk"
+                                     }
+                                 ]
+                   },
+                   {
+                       "sheet_id":  "female_01_mixed_poses_r3_c3",
+                       "character_id":  "female_01",
+                       "asset_group":  "poses_mixed",
+                       "source":  "characters/female_01/source_sheets/female_01_mixed_poses_r3_c3.png",
+                       "output_dir":  "characters/female_01/poses/mixed",
+                       "mode":  "grid",
+                       "rows":  3,
+                       "columns":  3,
+                       "inset_px":  2,
+                       "items":  [
+                                     {
+                                         "asset_id":  "stand_front_backup",
+                                         "description":  "Backup standing front",
+                                         "tier":  "backup",
+                                         "enabled_by_default":  false,
+                                         "canonical":  false,
+                                         "aliases":  [
+                                                         "stand_front"
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_mixed"
+                                     },
+                                     {
+                                         "asset_id":  "stand_head_down_backup",
+                                         "description":  "Backup standing with head lowered",
+                                         "tier":  "backup",
+                                         "enabled_by_default":  false,
+                                         "canonical":  false,
+                                         "aliases":  [
+                                                         "stand_head_down"
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_mixed"
+                                     },
+                                     {
+                                         "asset_id":  "stand_wave",
+                                         "description":  "Standing and waving",
+                                         "tier":  "optional",
+                                         "enabled_by_default":  false,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_mixed"
+                                     },
+                                     {
+                                         "asset_id":  "stand_hands_clasped",
+                                         "description":  "Standing with hands clasped",
+                                         "tier":  "optional",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_mixed"
+                                     },
+                                     {
+                                         "asset_id":  "walk_left_backup",
+                                         "description":  "Backup walking left",
+                                         "tier":  "backup",
+                                         "enabled_by_default":  false,
+                                         "canonical":  false,
+                                         "aliases":  [
+                                                         "walk_left"
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_mixed"
+                                     },
+                                     {
+                                         "asset_id":  "walk_right_backup",
+                                         "description":  "Backup walking right",
+                                         "tier":  "backup",
+                                         "enabled_by_default":  false,
+                                         "canonical":  false,
+                                         "aliases":  [
+                                                         "walk_right"
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_mixed"
+                                     },
+                                     {
+                                         "asset_id":  "sit_floor_relaxed",
+                                         "description":  "Sitting on floor in a relaxed pose",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+                                                         "sit_relaxed"
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_mixed"
+                                     },
+                                     {
+                                         "asset_id":  "sit_hug_knees",
+                                         "description":  "Sitting while hugging knees",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+                                                         "sit_sad"
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_mixed"
+                                     },
+                                     {
+                                         "asset_id":  "stand_back_view",
+                                         "description":  "Standing back view",
+                                         "tier":  "optional",
+                                         "enabled_by_default":  false,
+                                         "canonical":  true,
+                                         "aliases":  [
+                                                         "back_view"
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_mixed"
+                                     }
+                                 ]
+                   },
+                   {
+                       "sheet_id":  "male_01_mixed_poses_r3_c3",
+                       "character_id":  "male_01",
+                       "asset_group":  "poses_mixed_backup",
+                       "source":  "characters/male_01/source_sheets/male_01_mixed_poses_r3_c3.png",
+                       "output_dir":  "characters/male_01/poses/mixed_backup",
+                       "mode":  "grid",
+                       "rows":  3,
+                       "columns":  3,
+                       "inset_px":  2,
+                       "items":  [
+                                     {
+                                         "asset_id":  "stand_front_backup",
+                                         "description":  "Backup standing front",
+                                         "tier":  "backup",
+                                         "enabled_by_default":  false,
+                                         "canonical":  false,
+                                         "aliases":  [
+                                                         "stand_front"
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_mixed_backup"
+                                     },
+                                     {
+                                         "asset_id":  "stand_head_down_backup",
+                                         "description":  "Backup standing with head lowered",
+                                         "tier":  "backup",
+                                         "enabled_by_default":  false,
+                                         "canonical":  false,
+                                         "aliases":  [
+                                                         "stand_head_down"
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_mixed_backup"
+                                     },
+                                     {
+                                         "asset_id":  "stand_wave_backup",
+                                         "description":  "Backup standing and waving",
+                                         "tier":  "backup",
+                                         "enabled_by_default":  false,
+                                         "canonical":  false,
+                                         "aliases":  [
+                                                         "stand_wave"
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_mixed_backup"
+                                     },
+                                     {
+                                         "asset_id":  "stand_hands_clasped_backup",
+                                         "description":  "Backup standing with hands clasped",
+                                         "tier":  "backup",
+                                         "enabled_by_default":  false,
+                                         "canonical":  false,
+                                         "aliases":  [
+                                                         "stand_hands_clasped"
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_mixed_backup"
+                                     },
+                                     {
+                                         "asset_id":  "walk_left_backup",
+                                         "description":  "Backup walking left",
+                                         "tier":  "backup",
+                                         "enabled_by_default":  false,
+                                         "canonical":  false,
+                                         "aliases":  [
+                                                         "walk_left"
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_mixed_backup"
+                                     },
+                                     {
+                                         "asset_id":  "walk_right_backup",
+                                         "description":  "Backup walking right",
+                                         "tier":  "backup",
+                                         "enabled_by_default":  false,
+                                         "canonical":  false,
+                                         "aliases":  [
+                                                         "walk_right"
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_mixed_backup"
+                                     },
+                                     {
+                                         "asset_id":  "sit_floor_relaxed_backup",
+                                         "description":  "Backup relaxed sitting pose",
+                                         "tier":  "backup",
+                                         "enabled_by_default":  false,
+                                         "canonical":  false,
+                                         "aliases":  [
+                                                         "sit_floor_relaxed"
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_mixed_backup"
+                                     },
+                                     {
+                                         "asset_id":  "sit_hug_knees_backup",
+                                         "description":  "Backup sitting while hugging knees",
+                                         "tier":  "backup",
+                                         "enabled_by_default":  false,
+                                         "canonical":  false,
+                                         "aliases":  [
+                                                         "sit_hug_knees"
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_mixed_backup"
+                                     },
+                                     {
+                                         "asset_id":  "stand_back_view_backup",
+                                         "description":  "Backup standing back view",
+                                         "tier":  "backup",
+                                         "enabled_by_default":  false,
+                                         "canonical":  false,
+                                         "aliases":  [
+                                                         "stand_back_view"
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_mixed_backup"
+                                     }
+                                 ]
+                   },
+                   {
+                       "sheet_id":  "female_01_phone_poses_r2_c3",
+                       "character_id":  "female_01",
+                       "asset_group":  "poses_phone",
+                       "source":  "characters/female_01/source_sheets/female_01_phone_poses_r2_c3.png",
+                       "output_dir":  "characters/female_01/poses/phone",
+                       "mode":  "grid",
+                       "rows":  2,
+                       "columns":  3,
+                       "inset_px":  3,
+                       "items":  [
+                                     {
+                                         "asset_id":  "stand_phone_two_hands",
+                                         "description":  "Standing and holding phone with both hands",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_phone"
+                                     },
+                                     {
+                                         "asset_id":  "stand_phone_one_hand",
+                                         "description":  "Standing and viewing phone in one hand",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_phone"
+                                     },
+                                     {
+                                         "asset_id":  "phone_call_happy",
+                                         "description":  "Standing phone call with gentle expression",
+                                         "tier":  "optional",
+                                         "enabled_by_default":  false,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_phone"
+                                     },
+                                     {
+                                         "asset_id":  "phone_call_sad",
+                                         "description":  "Standing sad phone call",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+                                                         "phone_call_worried"
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_phone"
+                                     },
+                                     {
+                                         "asset_id":  "sit_phone",
+                                         "description":  "Sitting while using phone",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_phone"
+                                     },
+                                     {
+                                         "asset_id":  "walk_phone_side",
+                                         "description":  "Walking while viewing phone",
+                                         "tier":  "optional",
+                                         "enabled_by_default":  false,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_phone"
+                                     }
+                                 ]
+                   },
+                   {
+                       "sheet_id":  "female_01_sitting_poses_r3_c2",
+                       "character_id":  "female_01",
+                       "asset_group":  "poses_sitting",
+                       "source":  "characters/female_01/source_sheets/female_01_sitting_poses_r3_c2.png",
+                       "output_dir":  "characters/female_01/poses/sitting",
+                       "mode":  "grid",
+                       "rows":  3,
+                       "columns":  2,
+                       "inset_px":  2,
+                       "items":  [
+                                     {
+                                         "asset_id":  "sit_floor_relaxed_backup",
+                                         "description":  "Backup relaxed floor sitting",
+                                         "tier":  "backup",
+                                         "enabled_by_default":  false,
+                                         "canonical":  false,
+                                         "aliases":  [
+                                                         "sit_floor_relaxed"
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_sitting"
+                                     },
+                                     {
+                                         "asset_id":  "sit_floor_sad",
+                                         "description":  "Sad floor sitting pose",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_sitting"
+                                     },
+                                     {
+                                         "asset_id":  "sit_phone_backup",
+                                         "description":  "Backup sitting with phone",
+                                         "tier":  "backup",
+                                         "enabled_by_default":  false,
+                                         "canonical":  false,
+                                         "aliases":  [
+                                                         "sit_phone"
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_sitting"
+                                     },
+                                     {
+                                         "asset_id":  "sit_by_window",
+                                         "description":  "Sitting beside a window",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_sitting"
+                                     },
+                                     {
+                                         "asset_id":  "sit_hands_clasped",
+                                         "description":  "Sitting with hands clasped",
+                                         "tier":  "optional",
+                                         "enabled_by_default":  false,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_sitting"
+                                     },
+                                     {
+                                         "asset_id":  "sit_hug_knees_backup",
+                                         "description":  "Backup sitting while hugging knees",
+                                         "tier":  "backup",
+                                         "enabled_by_default":  false,
+                                         "canonical":  false,
+                                         "aliases":  [
+                                                         "sit_hug_knees"
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_sitting"
+                                     }
+                                 ]
+                   },
+                   {
+                       "sheet_id":  "female_01_emotional_standing_r3_c2",
+                       "character_id":  "female_01",
+                       "asset_group":  "poses_emotional_standing",
+                       "source":  "characters/female_01/source_sheets/female_01_emotional_standing_r3_c2.png",
+                       "output_dir":  "characters/female_01/poses/emotional_standing",
+                       "mode":  "grid",
+                       "rows":  3,
+                       "columns":  2,
+                       "inset_px":  3,
+                       "items":  [
+                                     {
+                                         "asset_id":  "hand_on_chest",
+                                         "description":  "Standing with one hand on chest",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_emotional_standing"
+                                     },
+                                     {
+                                         "asset_id":  "arms_crossed_self_hug",
+                                         "description":  "Standing in a self-hug pose",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+                                                         "self_hug"
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_emotional_standing"
+                                     },
+                                     {
+                                         "asset_id":  "wipe_tear",
+                                         "description":  "Wiping a tear",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+                                                         "crying_stand"
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_emotional_standing"
+                                     },
+                                     {
+                                         "asset_id":  "side_profile_stand",
+                                         "description":  "Standing in side profile",
+                                         "tier":  "optional",
+                                         "enabled_by_default":  false,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_emotional_standing"
+                                     },
+                                     {
+                                         "asset_id":  "open_hand_reach",
+                                         "description":  "Extending one open hand",
+                                         "tier":  "optional",
+                                         "enabled_by_default":  false,
+                                         "canonical":  true,
+                                         "aliases":  [
+                                                         "offer_hand"
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_emotional_standing"
+                                     },
+                                     {
+                                         "asset_id":  "head_down_stand",
+                                         "description":  "Standing with head lowered deeply",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+                                                         "stand_dejected"
+                                                     ],
+                                         "character_id":  "female_01",
+                                         "asset_group":  "poses_emotional_standing"
+                                     }
+                                 ]
+                   },
+                   {
+                       "sheet_id":  "male_01_master_poses_r3_c5",
+                       "character_id":  "male_01",
+                       "asset_group":  "poses_master",
+                       "source":  "characters/male_01/source_sheets/male_01_master_poses_r3_c5.png",
+                       "output_dir":  "characters/male_01/poses/master",
+                       "mode":  "grid",
+                       "rows":  3,
+                       "columns":  5,
+                       "inset_px":  2,
+                       "items":  [
+                                     {
+                                         "asset_id":  "stand_front",
+                                         "description":  "Standing front",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_master"
+                                     },
+                                     {
+                                         "asset_id":  "stand_head_down",
+                                         "description":  "Standing with head lowered",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+                                                         "stand_sad"
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_master"
+                                     },
+                                     {
+                                         "asset_id":  "stand_phone_two_hands",
+                                         "description":  "Standing and holding phone with both hands",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_master"
+                                     },
+                                     {
+                                         "asset_id":  "stand_phone_one_hand",
+                                         "description":  "Standing and viewing phone in one hand",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_master"
+                                     },
+                                     {
+                                         "asset_id":  "walk_right",
+                                         "description":  "Walking toward the right",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_master"
+                                     },
+                                     {
+                                         "asset_id":  "walk_left",
+                                         "description":  "Walking toward the left",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_master"
+                                     },
+                                     {
+                                         "asset_id":  "sit_floor_relaxed",
+                                         "description":  "Sitting on floor in a relaxed pose",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_master"
+                                     },
+                                     {
+                                         "asset_id":  "sit_hug_knees",
+                                         "description":  "Sitting while hugging knees",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+                                                         "sit_sad"
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_master"
+                                     },
+                                     {
+                                         "asset_id":  "sit_cross_leg_phone",
+                                         "description":  "Sitting cross-legged while using phone",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+                                                         "sit_phone"
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_master"
+                                     },
+                                     {
+                                         "asset_id":  "sit_by_window_side",
+                                         "description":  "Side sitting pose beside a window",
+                                         "tier":  "optional",
+                                         "enabled_by_default":  false,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_master"
+                                     },
+                                     {
+                                         "asset_id":  "hand_on_chest",
+                                         "description":  "Standing with one hand on chest",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_master"
+                                     },
+                                     {
+                                         "asset_id":  "arms_crossed",
+                                         "description":  "Standing with arms crossed",
+                                         "tier":  "optional",
+                                         "enabled_by_default":  false,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_master"
+                                     },
+                                     {
+                                         "asset_id":  "wipe_tear",
+                                         "description":  "Wiping a tear",
+                                         "tier":  "core",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+                                                         "crying_stand"
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_master"
+                                     },
+                                     {
+                                         "asset_id":  "side_profile_stand",
+                                         "description":  "Standing in side profile",
+                                         "tier":  "optional",
+                                         "enabled_by_default":  false,
+                                         "canonical":  true,
+                                         "aliases":  [
+
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_master"
+                                     },
+                                     {
+                                         "asset_id":  "open_hand_reach",
+                                         "description":  "Extending one open hand",
+                                         "tier":  "optional",
+                                         "enabled_by_default":  false,
+                                         "canonical":  true,
+                                         "aliases":  [
+                                                         "offer_hand"
+                                                     ],
+                                         "character_id":  "male_01",
+                                         "asset_group":  "poses_master"
+                                     }
+                                 ]
+                   },
+                   {
+                       "sheet_id":  "crowd_group_cheering_01",
+                       "character_id":  null,
+                       "asset_group":  "background_crowd",
+                       "source":  "backgrounds/source_sheets/crowd_group_cheering_01.png",
+                       "output_dir":  "backgrounds/crowd",
+                       "mode":  "copy",
+                       "items":  [
+                                     {
+                                         "asset_id":  "crowd_group_cheering_01",
+                                         "description":  "Five anonymous dark-gray people cheering with raised arms",
+                                         "tier":  "background",
+                                         "enabled_by_default":  true,
+                                         "canonical":  true,
+                                         "aliases":  [
+                                                         "crowd_cheering",
+                                                         "people_shouting"
+                                                     ],
+                                         "asset_group":  "background_crowd"
+                                     }
+                                 ]
+                   }
+               ]
+}

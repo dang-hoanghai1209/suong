@@ -1,0 +1,24 @@
+{
+  "schema_version": 2,
+  "presets": {
+    "bedroom_night_sad": {
+      "seed": 20260717,
+      "canvas": {"width": 1080, "height": 1920},
+      "background": "backgrounds/indoor/bedroom_night_01.png",
+      "character_request": {
+        "character_id": "female_01",
+        "action": "sit_hug_knees",
+        "emotion": "sad",
+        "direction": "front"
+      },
+      "character": {"target_height": 750, "x": 310, "bottom": 220},
+      "character_shadow": {"alpha": 30, "blur": 12, "height": 34, "inset_x": 90},
+      "objects": [
+        {"asset_id": "pillow", "target_height": 175, "x": 245, "bottom": 238, "rotation": 0},
+        {"asset_id": "phone_dark", "target_height": 125, "x": 610, "bottom": 202, "rotation": 10}
+      ],
+      "layer_order": ["background", "character_shadow", "pillow", "character", "phone_dark"],
+      "output": "bedroom_night__female_01__sit_hug_knees_sad__phone_dark__pillow.png"
+    }
+  }
+}

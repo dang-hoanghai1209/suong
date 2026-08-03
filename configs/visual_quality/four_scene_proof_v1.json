@@ -1,0 +1,163 @@
+{
+  "proof_id": "four_scene_proof_v1",
+  "candidate_count": 2,
+  "max_generation_attempts_per_scene": 3,
+  "max_repairs_per_candidate": 1,
+  "reference_strategy": "priority_bounded",
+  "scenes": [
+    {
+      "scene_id": "scene_01",
+      "scene_type": "solo_emotional_vignette",
+      "narrative_text": "Growth can begin with very small personal moments.",
+      "narrative_meaning": "Growth can begin with very small personal moments.",
+      "characters": ["female"],
+      "emotion": ["quiet", "reflective", "slightly uncertain", "emotionally soft"],
+      "action": ["standing calmly", "one hand lightly touching her chest"],
+      "interaction": {
+        "symbols": "tiny integrated doodles belonging to the same illustration, never a toolbar"
+      },
+      "environment_cues": [],
+      "symbolic_elements": [
+        "tiny hand-drawn ticket",
+        "small cup",
+        "simple flower",
+        "two or three tiny leaf or scribble motifs"
+      ],
+      "composition": [
+        "character small in lower-middle",
+        "large negative space above",
+        "irregular warm cream halo behind her",
+        "balanced asymmetrical composition"
+      ],
+      "negative_constraints": [
+        "no large UI icons",
+        "no symmetrical icon layout",
+        "no floating toolbar-like objects",
+        "female must not dominate the canvas"
+      ],
+      "reference_roles": ["female_identity_anchor", "style_anchor"],
+      "natural_interaction_required": false
+    },
+    {
+      "scene_id": "scene_02",
+      "scene_type": "couple_interaction",
+      "narrative_text": "Two people share a quiet moment of connection.",
+      "narrative_meaning": "Quiet warmth, gentle closeness, and calm companionship.",
+      "characters": ["female", "male"],
+      "emotion": ["quiet warmth", "gentle closeness", "calm companionship"],
+      "action": [
+        "both sitting naturally on a simple wooden bench",
+        "slightly turned toward each other",
+        "sharing a quiet moment"
+      ],
+      "interaction": {
+        "bench": "both bodies make natural seated contact with the same bench",
+        "couple": "subtle shared attention with anatomically plausible limbs and scale"
+      },
+      "environment_cues": [
+        "one simple potted plant",
+        "one small warm lantern",
+        "minimal ground or contact shadow",
+        "no detailed park or city background"
+      ],
+      "symbolic_elements": [],
+      "composition": [
+        "couple lower-middle",
+        "male on left",
+        "female on right",
+        "natural scale relationship",
+        "large negative space above"
+      ],
+      "negative_constraints": [
+        "no floating above the bench",
+        "no unnatural limb overlap",
+        "no body scale mismatch",
+        "no pasted bench, plant, or lantern"
+      ],
+      "reference_roles": ["couple_identity_anchor", "female_identity_anchor", "style_anchor"],
+      "natural_interaction_required": true
+    },
+    {
+      "scene_id": "scene_03",
+      "scene_type": "organic_daily_vignette",
+      "narrative_text": "She is becoming comfortable with her own company.",
+      "narrative_meaning": "Daily-life self-company can become quietly content and nourishing.",
+      "characters": ["female"],
+      "emotion": ["quietly content", "comfortable with being alone"],
+      "action": ["sitting naturally at a small table", "actively eating a pleasant simple meal"],
+      "interaction": {
+        "utensil": "fork or spoon held naturally and aligned with her hand",
+        "meal": "meal directly in front of her at plausible scale",
+        "cup": "small cup resting naturally on the table beside the meal",
+        "vase": "tiny vase and flower remain a secondary integrated prop",
+        "furniture": "body, chair, and table share coherent contact and perspective"
+      },
+      "environment_cues": [
+        "simple small table and chair",
+        "one plant",
+        "one hanging lamp or warm lamp cue",
+        "subtle framed flower doodle only if composition allows"
+      ],
+      "symbolic_elements": [],
+      "composition": [
+        "organic cream vignette or blob behind scene cluster",
+        "character, table, and props read as one illustration",
+        "no detailed café or realistic restaurant"
+      ],
+      "negative_constraints": [
+        "no utensils misaligned with hands",
+        "no impossible table interaction",
+        "no oversized cup or food",
+        "no floating character",
+        "no incoherent table perspective",
+        "no overly detailed café background"
+      ],
+      "reference_roles": [
+        "female_identity_anchor",
+        "style_anchor",
+        "daily_vignette_reference"
+      ],
+      "natural_interaction_required": true
+    },
+    {
+      "scene_id": "scene_04",
+      "scene_type": "emotional_metaphor",
+      "narrative_text": "Absence can feel like a quiet shape beside us.",
+      "narrative_meaning": "Loneliness and silent ache are represented by a faint absence, not a literal person.",
+      "characters": ["female"],
+      "emotion": ["lonely", "heavy", "silent ache"],
+      "action": ["sitting curled up", "hugging her knees"],
+      "interaction": {
+        "empty_silhouette": "faint empty human silhouette beside her represents absence and is not a detailed person",
+        "metaphor": "all symbolic marks belong emotionally and spatially to the scene"
+      },
+      "environment_cues": ["muted taupe or cream vignette behind emotional cluster"],
+      "symbolic_elements": [
+        "scribbled dark cloud overhead",
+        "subtle small falling marks or teardrops",
+        "small broken-heart symbol",
+        "a few fallen leaves",
+        "restrained cream botanical doodles"
+      ],
+      "composition": [
+        "female lower-right or lower-center-right",
+        "empty silhouette on left",
+        "large quiet negative space",
+        "emotionally integrated restrained metaphor"
+      ],
+      "negative_constraints": [
+        "empty silhouette must not become a detailed real person",
+        "no UI-like symbols",
+        "no cluttered metaphor",
+        "cloud and broken heart must not dominate",
+        "no severe female identity drift"
+      ],
+      "reference_roles": [
+        "female_identity_anchor",
+        "style_anchor",
+        "emotional_metaphor_reference"
+      ],
+      "natural_interaction_required": false
+    }
+  ]
+}

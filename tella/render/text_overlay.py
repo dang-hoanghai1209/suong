@@ -60,6 +60,15 @@ _INSIGHT_REEL_SHADOW_COLOR = (20, 27, 32, 225)
 _INSIGHT_REEL_STROKE_COLOR = (28, 36, 42, 240)
 _INSIGHT_REEL_SHADOW_OFFSET = 3
 _INSIGHT_REEL_STROKE_WIDTH = 2
+_PRACTICAL_REEL_TEXT_COLOR = (38, 51, 47, 255)
+_PRACTICAL_REEL_HIGHLIGHT_COLOR = (198, 88, 67, 255)
+_PRACTICAL_REEL_SHADOW_COLOR = (247, 246, 239, 235)
+_PRACTICAL_REEL_STROKE_COLOR = (244, 244, 237, 245)
+_PRACTICAL_REEL_SHADOW_OFFSET = 2
+_PRACTICAL_REEL_STROKE_WIDTH = 2
+_PRACTICAL_BADGE_FONT_SIZE = 30
+_PRACTICAL_BADGE_PAD_X = 14
+_PRACTICAL_BADGE_PAD_Y = 9
 _REEL_MINIMAL_CAPTION_CENTER_Y_RATIO = 0.79
 _REEL_MINIMAL_CAPTION_SAFE_TOP_RATIO = 0.72
 _REEL_MINIMAL_CAPTION_SAFE_BOTTOM_RATIO = 0.84
@@ -192,6 +201,8 @@ def _draw_reel_caption(
     wrap_w: int,
     highlight_words: list[str],
     subtitle_style: str = "reel_minimal",
+    caption_center_y_ratio: float | None = None,
+    translucent_panel: bool = False,
 ) -> None:
     caption = subtitle_text_for_style(caption, subtitle_style).text
     highlight_words = sanitize_highlight_words(highlight_words, subtitle_style)
@@ -212,7 +223,17 @@ def _draw_reel_caption(
         block_h=block_h,
         safe_top=safe_top,
         safe_bottom=safe_bottom,
+        center_y_ratio=caption_center_y_ratio,
     )
+
+    if translucent_panel:
+        panel_top = max(safe_top, cur_y - TEXT_BOX_PADDING)
+        panel_bottom = min(safe_bottom, cur_y + block_h + TEXT_BOX_PADDING)
+        draw.rounded_rectangle(
+            (int(canvas_w * 0.06), panel_top, int(canvas_w * 0.94), panel_bottom),
+            radius=18,
+            fill=(15, 20, 24, 150),
+        )
 
     for line, line_h in zip(lines, line_heights, strict=True):
         tokens = re.findall(r"\S+|\s+", line)
@@ -230,7 +251,17 @@ def _draw_reel_caption(
                     or _ascii_key(stripped) in phrase_word_keys
                 )
             )
-            if subtitle_style == "insight_reel":
+            if subtitle_style == "practical_steps_reel":
+                fill = (
+                    _PRACTICAL_REEL_HIGHLIGHT_COLOR
+                    if is_highlight
+                    else _PRACTICAL_REEL_TEXT_COLOR
+                )
+                shadow_color = _PRACTICAL_REEL_SHADOW_COLOR
+                stroke_color = _PRACTICAL_REEL_STROKE_COLOR
+                shadow_offset = _PRACTICAL_REEL_SHADOW_OFFSET
+                stroke_width = _PRACTICAL_REEL_STROKE_WIDTH
+            elif subtitle_style == "insight_reel":
                 fill = (
                     _INSIGHT_REEL_HIGHLIGHT_COLOR
                     if is_highlight
@@ -277,8 +308,12 @@ def _reel_minimal_caption_top_y(
     block_h: int,
     safe_top: int,
     safe_bottom: int,
+    center_y_ratio: float | None = None,
 ) -> int:
-    preferred_center = canvas_h * _REEL_MINIMAL_CAPTION_CENTER_Y_RATIO
+    preferred_center = canvas_h * (
+        _REEL_MINIMAL_CAPTION_CENTER_Y_RATIO
+        if center_y_ratio is None else center_y_ratio
+    )
     region_top = max(safe_top, int(canvas_h * _REEL_MINIMAL_CAPTION_SAFE_TOP_RATIO))
     region_bottom = min(
         safe_bottom,
@@ -287,6 +322,65 @@ def _reel_minimal_caption_top_y(
     preferred_top = int(round(preferred_center - block_h / 2))
     latest_top = max(region_top, region_bottom - block_h)
     return max(region_top, min(preferred_top, latest_top))
+
+
+def practical_step_badge_text(subtitle_style: str, step_number: int) -> str:
+    if subtitle_style != "practical_steps_reel" or step_number not in {1, 2, 3}:
+        return ""
+    return f"BƯỚC {step_number}"
+
+
+def practical_step_badge_layout(
+    *,
+    subtitle_style: str,
+    step_number: int,
+    canvas_w: int,
+    safe_top: int,
+    safe_left: int,
+    font_file: Path,
+) -> dict[str, int | str] | None:
+    text = practical_step_badge_text(subtitle_style, step_number)
+    if not text:
+        return None
+    font = ImageFont.truetype(str(font_file), _PRACTICAL_BADGE_FONT_SIZE)
+    left, top, right, bottom = font.getbbox(text)
+    width = right - left + 2 * _PRACTICAL_BADGE_PAD_X
+    height = bottom - top + 2 * _PRACTICAL_BADGE_PAD_Y
+    return {
+        "text": text,
+        "x": max(safe_left, int(canvas_w * 0.08)),
+        "y": safe_top + 24,
+        "width": width,
+        "height": height,
+    }
+
+
+def _draw_practical_step_badge(
+    draw: ImageDraw.ImageDraw,
+    *,
+    layout: dict[str, int | str],
+    font_file: Path,
+) -> None:
+    text = str(layout["text"])
+    x = int(layout["x"])
+    y = int(layout["y"])
+    width = int(layout["width"])
+    height = int(layout["height"])
+    font = ImageFont.truetype(str(font_file), _PRACTICAL_BADGE_FONT_SIZE)
+    draw.rounded_rectangle(
+        (x, y, x + width, y + height),
+        radius=6,
+        fill=(238, 240, 231, 238),
+        outline=(91, 127, 118, 245),
+        width=2,
+    )
+    left, top, _, _ = font.getbbox(text)
+    draw.text(
+        (x + _PRACTICAL_BADGE_PAD_X - left, y + _PRACTICAL_BADGE_PAD_Y - top),
+        text,
+        font=font,
+        fill=(38, 51, 47, 255),
+    )
 
 
 def _highlight_token_indexes(tokens: list[str], highlight_words: list[str]) -> set[int]:
@@ -403,6 +497,8 @@ def render_overlay_png(
     highlight_words: list[str] | None = None,
     channel_name: str | None = None,
     channel_avatar: str | None = None,
+    step_number: int = 0,
+    subtitle_layout: dict[str, object] | None = None,
 ) -> Path | None:
     """Render an RGBA PNG with an optional channel brand row at the very top,
     the scene title below it, and the caption at the bottom (all inside the
@@ -412,7 +508,15 @@ def render_overlay_png(
     Returns ``out_path`` on success, or ``None`` when there is nothing to
     draw (caller can skip the overlay filter entirely).
     """
-    if not title and not caption and not channel_name:
+    badge_layout = practical_step_badge_layout(
+        subtitle_style=subtitle_style,
+        step_number=step_number,
+        canvas_w=canvas_w,
+        safe_top=safe_top,
+        safe_left=safe_left,
+        font_file=font_file,
+    )
+    if not title and not caption and not channel_name and badge_layout is None:
         return None
 
     canvas = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
@@ -424,6 +528,12 @@ def render_overlay_png(
 
     # ── Channel brand row (top), if any ────────────────────────────────
     title_top = safe_top + TITLE_TOP_PADDING
+    if badge_layout is not None:
+        _draw_practical_step_badge(
+            draw,
+            layout=badge_layout,
+            font_file=font_file,
+        )
     if channel_name:
         brand_font = ImageFont.truetype(str(font_file), BRAND_FONT_SIZE)
         brand_bottom = _draw_brand_row(
@@ -455,7 +565,7 @@ def render_overlay_png(
 
     if caption:
         cap_font = ImageFont.truetype(str(font_file), CAPTION_FONT_SIZE)
-        if subtitle_style in {"reel_minimal", "insight_reel"}:
+        if subtitle_style in {"reel_minimal", "insight_reel", "practical_steps_reel"}:
             _draw_reel_caption(
                 draw,
                 caption=caption,
@@ -467,6 +577,14 @@ def render_overlay_png(
                 wrap_w=wrap_w,
                 highlight_words=highlight_words or [],
                 subtitle_style=subtitle_style,
+                caption_center_y_ratio=(
+                    float(subtitle_layout["caption_center_y_ratio"])
+                    if subtitle_layout and "caption_center_y_ratio" in subtitle_layout
+                    else None
+                ),
+                translucent_panel=bool(
+                    subtitle_layout and subtitle_layout.get("translucent_panel", False)
+                ),
             )
             cap_lines = []
         else:
@@ -496,5 +614,7 @@ def render_overlay_png(
 
 
 __all__ = [
+    "practical_step_badge_layout",
+    "practical_step_badge_text",
     "render_overlay_png",
 ]

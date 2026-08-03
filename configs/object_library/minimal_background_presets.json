@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "presets": {
+    "dark_brown_solitude": {
+      "background_color": "#1B1512",
+      "gradient_end": "#100C0A",
+      "texture": {"type": "noise", "opacity": 0.025},
+      "object_zones": ["lower_left", "lower_right", "character_adjacent"],
+      "character_anchor": {"x_ratio": 0.5, "ground_y_ratio": 0.86},
+      "max_supporting_objects": 2
+    },
+    "brown_black_reflection": {
+      "background_color": "#15110F",
+      "gradient_end": "#090807",
+      "texture": {"type": "noise", "opacity": 0.018},
+      "object_zones": ["lower_third", "character_adjacent"],
+      "character_anchor": {"x_ratio": 0.48, "ground_y_ratio": 0.84},
+      "max_supporting_objects": 2
+    },
+    "muted_warm_healing": {
+      "background_color": "#302720",
+      "gradient_end": "#1D1814",
+      "texture": {"type": "noise", "opacity": 0.02},
+      "object_zones": ["lower_left", "lower_right"],
+      "character_anchor": {"x_ratio": 0.52, "ground_y_ratio": 0.85},
+      "max_supporting_objects": 2
+    }
+  }
+}

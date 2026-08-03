@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from tella._voice_pace import VoicePace
+from tella._voice_pace import VoicePace, normalize_voice_rate
 from tella.planner.models import Scene, TellaScenePlan
 from tella.planner.life_insight_visuals import apply_life_insight_visuals
 from tella.planner.voices import edge_voice_for
@@ -356,6 +356,7 @@ def _prepare_and_fit_narration(
     plan.original_total_word_count = original_words
     plan.original_estimated_duration_seconds = original_seconds
     plan.duration_target_seconds = _DURATION_TARGET_SECONDS
+    plan.requested_production_duration_seconds = _DURATION_TARGET_SECONDS
     plan.seven_scene_fallback_considered = False
     plan.seven_scene_fallback_applied = False
 
@@ -1419,8 +1420,7 @@ def _estimate_scene_duration(
 
 
 def _words_per_second(voice_rate: str) -> float:
-    match = re.fullmatch(r"([+-]?\d{1,3})%", (voice_rate or "-5%").strip())
-    percent = int(match.group(1)) if match else -5
+    percent = int(normalize_voice_rate(voice_rate).rstrip("%"))
     # 3.0 words/second is calibrated to the recipe's firm_male_vi rate (-5%).
     return max(1.5, 3.0 * (100 + percent) / 95.0)
 

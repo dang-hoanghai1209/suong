@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "status": "evaluation_only",
+  "fixed_background": "#332821",
+  "decision": "NEEDS_STYLE_ADAPTATION",
+  "evaluation_source": "human_review",
+  "production_expansion_allowed": false,
+  "provisional_policy": {
+    "primary_family": "mdi",
+    "secondary_family": "boxicons",
+    "fallback_family": null,
+    "family_by_category": {
+      "symbolic_tech": "mdi",
+      "daily_physical_props": "mdi",
+      "emotional_story_props": "mdi",
+      "outing_context_props": "boxicons"
+    },
+    "constraints": [
+      "No unrestricted family mixing.",
+      "Use one family within a scene unless a reviewed exception improves semantic clarity.",
+      "Apply the same warm palette, crop, scale, and grounding rules to every family.",
+      "Keep all candidates evaluation-only until human review approves the adapted result.",
+      "Reject ambiguous license metadata."
+    ]
+  },
+  "next_gate": {
+    "character_compatibility_min": 8.0,
+    "low_ui_icon_feeling_min": 7.5,
+    "story_prop_naturalness_min": 7.5,
+    "family_consistency_min": 8.0
+  }
+}

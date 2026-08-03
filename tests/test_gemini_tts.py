@@ -1,0 +1,483 @@
+import asyncio
+import inspect
+import json
+import shutil
+import socket
+import wave
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from scripts.benchmark_gemini_tts import BENCHMARK_TEXT, parse_voices, run_benchmark
+from scripts import render_practical_callirrhoe as production
+from tella.planner.models import Scene, TellaScenePlan
+from tella.recipes import list_recipes
+from tella.tts import gemini, synth_all
+from tella.tts.gemini_registry import (
+    APPROVED_MODELS, REGISTRY_VERSION, STYLE_PRESETS, VOICE_NAMES,
+    GeminiVoice, VOICES, resolve_style, resolve_voice,
+)
+from tella.tts.providers import EdgeTTSProvider, GeminiTTSProvider, get_tts_provider
+from tella.voice_profiles import list_voice_profiles
+from tella.voice_profiles import get_voice_profile, resolve_voice as resolve_project_voice
+from tella.production import CALLIRRHOE_PRODUCTION_CONFIG, ProductionRun, classify_error
+
+MODEL = "gemini-3.1-flash-tts-preview"
+WEB_MODEL = "gemini-2.5-flash-preview-tts"
+EXPECTED_NATURAL_VOCAL_SMILE = (
+    "Use natural conversational Vietnamese with a subtle vocal smile. Keep the "
+    "delivery calm, clear, warm, and direct, with normal conversational loudness, "
+    "a natural medium speaking pace, clear pronunciation, and short natural pauses. "
+    "Narration must remain intelligible and grounded.\n\n"
+    "Do not whisper or use a breathy or dramatic delivery.\n"
+    "Do not lower the volume or slow the speaking pace to create intimacy.\n"
+    "Do not prolong final syllables, exaggerate pitch changes, giggle, add "
+    "non-verbal sounds, or use a radio, advertisement, or virtual-assistant tone."
+)
+
+
+def test_registry_accepts_exactly_six_canonical_voices():
+    assert APPROVED_MODELS == (MODEL, WEB_MODEL)
+    assert VOICE_NAMES == ("Achernar", "Autonoe", "Callirrhoe", "Gacrux", "Leda", "Zephyr")
+    assert tuple(VOICES) == VOICE_NAMES
+    for name in VOICE_NAMES:
+        voice = resolve_voice(name, MODEL)
+        assert voice.provider == "gemini"
+        assert voice.benchmark_language == "vi-VN"
+        assert voice.registry_version == REGISTRY_VERSION
+
+
+def test_web_callirrhoe_profile_authorizes_2_5_and_preserves_3_1_cli_profile():
+    web_profile = get_voice_profile("gemini_callirrhoe_vi_gentle_emotional")
+    cli_profile = get_voice_profile("gemini_callirrhoe_vi_natural_smile")
+
+    assert (web_profile.provider, web_profile.model, web_profile.voice) == (
+        "gemini",
+        WEB_MODEL,
+        "Callirrhoe",
+    )
+    assert resolve_voice("Callirrhoe", WEB_MODEL).canonical_name == "Callirrhoe"
+    assert cli_profile.model == MODEL
+    assert resolve_voice("Callirrhoe", MODEL).canonical_name == "Callirrhoe"
+
+
+def test_achernar_is_accepted_but_achenar_and_unknown_are_rejected():
+    assert resolve_voice("Achernar", MODEL).canonical_name == "Achernar"
+    with pytest.raises(ValueError, match="unknown"):
+        resolve_voice("Achenar", MODEL)
+    with pytest.raises(ValueError, match="unknown"):
+        resolve_voice("Missing", MODEL)
+
+
+def test_disabled_and_incompatible_voices_are_rejected(monkeypatch):
+    monkeypatch.setitem(VOICES, "Achernar", GeminiVoice(
+        "gemini", "Achernar", False, "vi-VN", (), APPROVED_MODELS, REGISTRY_VERSION
+    ))
+    with pytest.raises(ValueError, match="disabled"):
+        resolve_voice("Achernar", MODEL)
+    with pytest.raises(ValueError, match="incompatible"):
+        resolve_voice("Autonoe", "unapproved-model")
+
+
+def test_three_styles_resolve_deterministically():
+    assert tuple(STYLE_PRESETS) == (
+        "natural",
+        "vocal_smile",
+        "natural_vocal_smile",
+        "gentle_emotional",
+    )
+    for name, instruction in STYLE_PRESETS.items():
+        assert resolve_style(name) == instruction == resolve_style(name)
+    assert resolve_style("natural_vocal_smile") == EXPECTED_NATURAL_VOCAL_SMILE
+
+
+def test_combined_input_is_deterministic_and_preserves_canonical_transcript():
+    instruction = resolve_style("natural_vocal_smile")
+    first = gemini.serialize_provider_input(BENCHMARK_TEXT, instruction)
+    second = gemini.serialize_provider_input(BENCHMARK_TEXT, instruction)
+    assert first == second
+    assert first.count(instruction) == 1
+    assert first.count(BENCHMARK_TEXT) == 1
+    assert "Speak only the transcript" in first
+    assert "Do not translate, paraphrase, add, or omit any words" in first
+    assert "BEGIN NARRATION TRANSCRIPT" not in BENCHMARK_TEXT
+    assert gemini.sha256_text(BENCHMARK_TEXT) == gemini.sha256_text(BENCHMARK_TEXT)
+
+
+def test_edge_and_recipe_defaults_are_unchanged():
+    assert isinstance(get_tts_provider("edge"), EdgeTTSProvider)
+    assert isinstance(get_tts_provider("gemini"), GeminiTTSProvider)
+    recipe_profile_ids = {recipe.voice_profile_id for recipe in list_recipes()}
+    assert recipe_profile_ids
+    legacy_profile_ids = {
+        recipe.voice_profile_id for recipe in list_recipes()
+        if recipe.recipe_id != "practical_life_steps_callirrhoe_v1"
+    }
+    assert all(
+        profile.provider == "edge"
+        for profile in list_voice_profiles()
+        if profile.profile_id in legacy_profile_ids
+    )
+
+
+def test_dry_run_has_zero_calls_and_distinct_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: (_ for _ in ()).throw(AssertionError("network")))
+    calls = []
+    async def fail_synth(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("provider called in dry-run")
+    manifest = asyncio.run(run_benchmark(
+        voices=VOICE_NAMES, model=MODEL, style="natural_vocal_smile",
+        output_dir=tmp_path, dry_run=True, max_requests=6, no_retry=True,
+        synthesize_fn=fail_synth,
+    ))
+    assert calls == []
+    assert manifest["request_count"] == 0
+    assert manifest["post_tts_atempo_applied"] is False
+    assert all(e["raw_output_path"] != e["normalized_output_path"] for e in manifest["entries"])
+
+
+def test_production_normalizer_preserves_aac_true_peak_headroom():
+    source = inspect.getsource(synth_all._normalize_gemini_narration)
+    assert "loudnorm=I=-16:TP=-1.5:LRA=7" in source
+    assert "alimiter=limit=0.841395:level=false" in source
+
+
+def test_maximum_request_count_and_voice_limit_are_enforced(tmp_path):
+    with pytest.raises(ValueError, match="maximum"):
+        asyncio.run(run_benchmark(
+            voices=VOICE_NAMES, model=MODEL, style="natural", output_dir=tmp_path,
+            dry_run=True, max_requests=5, no_retry=True,
+        ))
+    with pytest.raises(ValueError, match="six"):
+        parse_voices("Achernar,Autonoe,Callirrhoe,Gacrux,Leda,Zephyr,Extra")
+
+
+def _write_wav(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(24000)
+        output.writeframes(b"\0\0" * 240)
+
+
+def test_live_runner_is_sequential_one_attempt_per_voice_and_has_metadata(tmp_path):
+    active = 0
+    order = []
+    async def fake_synth(text, path, *, model, voice, style):
+        nonlocal active
+        assert active == 0
+        active += 1
+        order.append(voice)
+        _write_wav(path)
+        await asyncio.sleep(0)
+        active -= 1
+        return {"provider": "gemini", "model": model, "voice": voice,
+                "voice_registry_version": 1, "language": "vi-VN",
+                "requested_style": style, "resolved_style_instruction": resolve_style(style),
+                "source_narration_text_hash": "hash", "raw_output_path": str(path),
+                "request_attempt_count": 1, "fallback_used": False}
+    async def fake_normalize(raw, normalized): shutil.copyfile(raw, normalized)
+    async def fake_duration(path): return 0.01
+    selected = ("Achernar", "Autonoe", "Leda")
+    result = asyncio.run(run_benchmark(
+        voices=selected, model=MODEL, style="natural_vocal_smile", output_dir=tmp_path,
+        dry_run=False, max_requests=3, no_retry=True, synthesize_fn=fake_synth,
+        normalize_fn=fake_normalize, duration_fn=fake_duration,
+    ))
+    assert order == list(selected)
+    assert result["request_count"] == 3
+    assert all(e["request_attempt_count"] == 1 and not e["fallback_used"] for e in result["entries"])
+    assert all(e["post_tts_duration_fit_status"].startswith("skipped") for e in result["entries"])
+
+
+def test_live_mode_requires_no_retry(tmp_path):
+    with pytest.raises(ValueError, match="no-retry"):
+        asyncio.run(run_benchmark(
+            voices=("Achernar",), model=MODEL, style="natural",
+            output_dir=tmp_path, dry_run=False, max_requests=1, no_retry=False,
+        ))
+
+
+def test_partial_failure_stops_without_fallback(tmp_path):
+    calls = []
+    async def fake_synth(text, path, *, model, voice, style):
+        calls.append(voice)
+        if voice == "Autonoe":
+            raise RuntimeError("provider failure")
+        _write_wav(path)
+        return {"provider": "gemini", "model": model, "voice": voice, "fallback_used": False}
+    async def fake_normalize(raw, normalized): shutil.copyfile(raw, normalized)
+    async def fake_duration(path): return 0.01
+    with pytest.raises(RuntimeError, match="provider failure"):
+        asyncio.run(run_benchmark(
+            voices=("Achernar", "Autonoe", "Callirrhoe"), model=MODEL, style="natural",
+            output_dir=tmp_path, dry_run=False, max_requests=3, no_retry=True,
+            synthesize_fn=fake_synth, normalize_fn=fake_normalize, duration_fn=fake_duration,
+        ))
+    assert calls == ["Achernar", "Autonoe"]
+    manifest = json.loads((tmp_path / "benchmark_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["status"] == "failed_stopped_on_first_provider_failure"
+    assert manifest["request_count"] == 2
+    assert manifest["entries"][2]["status"] == "not_submitted_stopped_after_failure"
+
+
+def test_credentials_are_identified_but_never_serialized(tmp_path, monkeypatch):
+    secret = "super-secret-key-value"
+    monkeypatch.setenv("GEMINI_API_KEY", secret)
+    manifest = asyncio.run(run_benchmark(
+        voices=("Achernar",), model=MODEL, style="natural", output_dir=tmp_path,
+        dry_run=True, max_requests=1, no_retry=True,
+    ))
+    serialized = json.dumps(manifest)
+    assert manifest["credential_environment_variable"] == "GEMINI_API_KEY"
+    assert secret not in serialized
+    assert BENCHMARK_TEXT in manifest["narration_text"]
+
+
+def test_official_sdk_shape_is_extracted_with_fake_client(tmp_path):
+    pcm = b"\0\0" * 240
+    inline = SimpleNamespace(data=pcm, mime_type="audio/L16;rate=24000")
+    response = SimpleNamespace(candidates=[SimpleNamespace(
+        content=SimpleNamespace(parts=[SimpleNamespace(inline_data=inline)])
+    )])
+    calls = []
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            calls.append(kwargs)
+            return response
+    client = SimpleNamespace(models=FakeModels())
+    output = tmp_path / "achernar_raw.wav"
+    metadata = asyncio.run(gemini.synthesize(
+        BENCHMARK_TEXT, output, model=MODEL, voice="Achernar",
+        style="natural_vocal_smile", client_factory=lambda: client,
+    ))
+    assert calls[0]["model"] == MODEL
+    combined = gemini.serialize_provider_input(
+        BENCHMARK_TEXT, resolve_style("natural_vocal_smile")
+    )
+    assert calls[0]["contents"] == combined
+    config = calls[0]["config"]
+    assert config.system_instruction is None
+    assert config.speech_config.voice_config.prebuilt_voice_config.voice_name == "Achernar"
+    assert output.read_bytes().startswith(b"RIFF")
+    assert metadata["provider"] == "gemini"
+    assert metadata["voice"] == "Achernar"
+    assert metadata["requested_style"] == "natural_vocal_smile"
+    assert metadata["canonical_narration_text"] == BENCHMARK_TEXT
+    assert metadata["canonical_narration_text_hash"] == gemini.sha256_text(BENCHMARK_TEXT)
+    assert metadata["serialized_provider_input_hash"] == gemini.sha256_text(combined)
+    assert metadata["request_format_version"] == gemini.REQUEST_FORMAT_VERSION
+    assert metadata["request_attempt_count"] == 1
+    assert metadata["fallback_used"] is False
+
+
+def test_gemini_provider_failure_propagates_without_fallback(monkeypatch, tmp_path):
+    async def fail(*args, **kwargs):
+        raise RuntimeError("fake Gemini failure")
+    monkeypatch.setattr(gemini, "synthesize", fail)
+    provider = GeminiTTSProvider()
+    with pytest.raises(RuntimeError, match="fake Gemini failure"):
+        asyncio.run(provider.synthesize(
+            "text", tmp_path / "raw.wav", voice="Achernar", language="vi-VN",
+            speed=1.0, codec="wav", sample_rate=24000,
+            metadata={"model": MODEL, "style": "natural"},
+        ))
+
+
+def _production_source(tmp_path: Path) -> Path:
+    source = tmp_path / "source"
+    assets = source / "assets"
+    assets.mkdir(parents=True)
+    scenes = []
+    for index in range(1, 8):
+        relative = f"assets/scene_{index:02d}.jpg"
+        (source / relative).write_bytes(b"reused-image")
+        scenes.append(Scene(
+            scene_index=index, kind="scene", title=str(index),
+            voice_script=f"Câu thử nghiệm số {index}.", image_filenames=[relative],
+            audio_duration=2.0,
+        ))
+    plan = TellaScenePlan(
+        title="Callirrhoe A/B", language="vi", aspect_ratio="9:16",
+        media_source="ai_image", duration_mode="short", theme="practical_life_steps",
+        recipe_id="practical_life_steps_v1", recipe_version=1,
+        voice_profile_id="clear_female_vi", narrative_mode="practical_steps",
+        global_narration_text=BENCHMARK_TEXT, scenes=scenes,
+    )
+    (source / "plan.json").write_text(plan.model_dump_json(), encoding="utf-8")
+    (source / "recipe.json").write_text("{}", encoding="utf-8")
+    return source
+
+
+def test_callirrhoe_project_profile_is_explicit_and_opt_in_only():
+    profile = get_voice_profile(production.PROFILE_ID)
+    assert (profile.provider, profile.model, profile.voice) == (
+        "gemini", MODEL, "Callirrhoe"
+    )
+    assert (profile.style, profile.language) == ("natural_vocal_smile", "vi-VN")
+    assert profile.post_tts_atempo_enabled is False
+    assert profile.automatic_edge_fallback_enabled is False
+    assert profile.automatic_model_fallback_enabled is False
+    resolution = resolve_project_voice(
+        explicit_profile_id=production.PROFILE_ID,
+        recipe_profile_id="clear_female_vi", narrative_mode="practical_steps",
+    )
+    assert resolution.resolved_tts_provider == "gemini"
+    assert resolution.resolved_tts_model == MODEL
+    assert resolution.resolved_tts_style == "natural_vocal_smile"
+    assert get_voice_profile("clear_female_vi").provider == "edge"
+    assert all(
+        recipe.voice_profile_id != production.PROFILE_ID
+        for recipe in list_recipes()
+        if recipe.recipe_id != "practical_life_steps_callirrhoe_v1"
+    )
+
+
+def test_callirrhoe_plan_reuses_all_images_and_adapts_visual_timeline(tmp_path):
+    plan, metadata = production.build_production_plan(_production_source(tmp_path))
+    assert metadata["reused_image_indices"] == [1, 2, 3, 4, 5, 6, 7]
+    assert metadata["image_provider_request_count"] == 0
+    assert metadata["gemini_request_limit"] == 1
+    production.adapt_visual_timeline(plan, 15.48)
+    assert plan.duration_fit_applied is False
+    assert plan.duration_fit_tempo == 1.0
+    assert plan.duration_fit_scale == 1.0
+    assert plan.total_duration == pytest.approx(15.48, abs=0.05)
+    assert len(plan.scene_timing_map) == 7
+    assert len(plan.subtitle_segments) == 7
+
+
+def test_callirrhoe_controlled_render_one_request_metadata_and_failure_stop(monkeypatch, tmp_path):
+    source = _production_source(tmp_path)
+    calls = []
+    renders = []
+    async def fake_synth(text, path, *, model, voice, style):
+        calls.append((model, voice, style, text))
+        _write_wav(path)
+        return {"provider": "gemini", "model": model, "voice": voice,
+                "requested_style": style, "voice_registry_version": 1,
+                "canonical_narration_text_hash": gemini.sha256_text(text),
+                "serialized_provider_input_hash": "input-hash", "fallback_used": False}
+    async def fake_normalize(raw, normalized): shutil.copyfile(raw, normalized)
+    async def fake_duration(path): return 15.48
+    async def fake_render(plan, output_dir):
+        renders.append(plan)
+        output = output_dir / "video.mp4"
+        output.write_bytes(b"video")
+        return output
+    monkeypatch.setattr(production, "configure_music", lambda plan, job, **kwargs: (
+        setattr(plan, "music_enabled", True),
+        setattr(plan, "selected_music_track_id", "practical_calm_01"),
+        setattr(plan, "selected_music_profile_id", "practical_calm_rhythm"),
+    ))
+    output = asyncio.run(production.run_production_ab(
+        source, tmp_path / "success", max_gemini_requests=1, no_retry=True,
+        synthesize_fn=fake_synth, normalize_fn=fake_normalize,
+        duration_fn=fake_duration, render_fn=fake_render,
+    ))
+    assert output.is_file() and len(calls) == 1 and len(renders) == 1
+    metadata = json.loads((tmp_path / "success" / "production_metadata.json").read_text(encoding="utf-8"))
+    assert metadata["selected_voice_profile"] == production.PROFILE_ID
+    assert metadata["voice"] == "Callirrhoe"
+    assert metadata["atempo_status"] == "disabled"
+    assert metadata["gemini_request_count"] == 1
+    assert metadata["fallback_used"] is False
+
+    async def fail_synth(*args, **kwargs):
+        raise RuntimeError("fake provider failure")
+    with pytest.raises(RuntimeError, match="fake provider failure"):
+        asyncio.run(production.run_production_ab(
+            source, tmp_path / "failure", max_gemini_requests=1, no_retry=True,
+            synthesize_fn=fail_synth, render_fn=fake_render,
+        ))
+    assert len(renders) == 1
+
+
+def test_official_gemini_client_disables_sdk_transport_retry(monkeypatch):
+    from google import genai
+
+    captured = {}
+    sentinel = object()
+    aliases = (
+        "GEMINI_API_KEY",
+        "GEMINI_API_KEYS",
+        "GOOGLE_API_KEY",
+        "GOOGLE_TTS_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "TELLA_GEMINI_PROCESS_CREDENTIAL_NAME",
+    )
+
+    def fake_client(**kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    def forbidden_socket(*args, **kwargs):
+        pytest.fail("official-client retry test attempted a socket connection")
+
+    for name in aliases:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "unit-test-dummy-never-authenticate")
+    monkeypatch.setattr(genai, "Client", fake_client)
+    monkeypatch.setattr(socket, "create_connection", forbidden_socket)
+    monkeypatch.setattr(socket.socket, "connect", forbidden_socket)
+    assert gemini._official_client() is sentinel
+    retry = captured["http_options"].retry_options
+    assert retry.attempts == 1
+
+
+def test_official_gemini_client_still_rejects_missing_credentials(monkeypatch):
+    from google import genai
+
+    for name in (
+        "GEMINI_API_KEY",
+        "GEMINI_API_KEYS",
+        "GOOGLE_API_KEY",
+        "GOOGLE_TTS_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "TELLA_GEMINI_PROCESS_CREDENTIAL_NAME",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    def forbidden_client(**kwargs):
+        pytest.fail("SDK client was constructed without a credential")
+
+    def forbidden_socket(*args, **kwargs):
+        pytest.fail("missing-credential test attempted a socket connection")
+
+    monkeypatch.setattr(genai, "Client", forbidden_client)
+    monkeypatch.setattr(socket, "create_connection", forbidden_socket)
+    monkeypatch.setattr(socket.socket, "connect", forbidden_socket)
+    with pytest.raises(
+        RuntimeError, match="Gemini TTS credential is not configured"
+    ):
+        gemini._official_client()
+
+
+def test_fake_gemini_429_is_one_submission_no_retry_or_fallback(tmp_path):
+    calls = []
+
+    class Models:
+        def generate_content(self, **kwargs):
+            calls.append(kwargs)
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
+    fake_client = SimpleNamespace(models=Models())
+    with pytest.raises(RuntimeError, match="429"):
+        asyncio.run(gemini.synthesize(
+            "Bản kể không đổi.", tmp_path / "raw.wav", model=MODEL,
+            voice="Callirrhoe", style="natural_vocal_smile",
+            client_factory=lambda: fake_client,
+        ))
+    run = ProductionRun(tmp_path / "job", CALLIRRHOE_PRODUCTION_CONFIG)
+    run.counts["gemini"] = len(calls)
+    run.fail("TTS", RuntimeError("429 RESOURCE_EXHAUSTED"))
+    summary = json.loads(run.summary_path.read_text())
+    assert len(calls) == 1
+    assert classify_error(RuntimeError("429 RESOURCE_EXHAUSTED"))[0] == "quota_failure"
+    assert summary["external_submission_counts"] == {
+        "gemini": 1, "edge": 0, "image_provider": 0,
+        "retries": 0, "fallbacks": 0,
+    }

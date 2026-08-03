@@ -1,0 +1,29 @@
+{
+  "name": "practical_life_steps",
+  "display_name": "Practical Life Steps",
+  "description": "Bright practical hand-drawn reels with pale sage-gray space, muted teal structure, warm coral emphasis, and clear adult actions.",
+  "image_style_suffix": ", minimalist hand-drawn symbolic editorial illustration, bright warm off-white pale sage-gray background, muted teal and slate-green primary forms, soft coral warm orange and muted yellow emphasis, charcoal line art, simple readable adult figures, clear practical action, clean encouraging atmosphere, controlled negative space, medium visual contrast, wordless unbranded artwork",
+  "color_palette": {
+    "primary": "#5b7f76",
+    "accent": "#df8668",
+    "bg": "#eef0e7",
+    "text": "#26332f"
+  },
+  "font_family": "sans-serif",
+  "voice_pace_default": "medium",
+  "voice_gender_default": "female",
+  "transition": "cut",
+  "image_grade": {
+    "enabled": true,
+    "brightness": 1.02,
+    "contrast": 1.04,
+    "saturation": 0.96,
+    "overlay_color": "#eef1e8",
+    "overlay_opacity": 0.06
+  },
+  "ken_burns": {
+    "start_scale": 1.0,
+    "end_scale": 1.025,
+    "easing": "linear"
+  }
+}

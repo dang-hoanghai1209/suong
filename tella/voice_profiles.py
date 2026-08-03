@@ -4,7 +4,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from tella._voice_pace import normalize_voice_rate
 
 logger = logging.getLogger("tella.voice_profiles")
 
@@ -19,9 +21,20 @@ class VoiceProfileDefinition(BaseModel):
     profile_id: str = Field(..., pattern=r"^[a-z][a-z0-9_]*$", max_length=80)
     provider: str = Field(..., min_length=2, max_length=40)
     voice: str = Field(..., min_length=2, max_length=120)
-    rate: str = Field(..., pattern=r"^[+-]?\d{1,3}%$")
+    rate: str = Field(..., pattern=r"^[+-]\d{1,3}%$")
     role: str = Field(..., min_length=2, max_length=160)
     suitable_narrative_modes: list[str] = Field(..., min_length=1)
+    model: str = Field("", exclude=True)
+    style: str = Field("", exclude=True)
+    language: str = Field("", exclude=True)
+    post_tts_atempo_enabled: bool = Field(True, exclude=True)
+    automatic_edge_fallback_enabled: bool = Field(True, exclude=True)
+    automatic_model_fallback_enabled: bool = Field(True, exclude=True)
+
+    @field_validator("rate", mode="before")
+    @classmethod
+    def _normalize_rate(cls, value: str) -> str:
+        return normalize_voice_rate(value)
 
 
 class VoiceResolution(BaseModel):
@@ -40,6 +53,12 @@ class VoiceResolution(BaseModel):
     resolved_tts_provider: str = "edge"
     resolved_voice: str = ""
     resolved_voice_rate: str = ""
+    resolved_tts_model: str = ""
+    resolved_tts_style: str = ""
+    resolved_tts_language: str = ""
+    post_tts_atempo_enabled: bool = True
+    automatic_edge_fallback_enabled: bool = True
+    automatic_model_fallback_enabled: bool = True
     recipe_voice_override_applied: bool = False
     voice_profile_compatibility_status: Literal[
         "compatible",
@@ -77,6 +96,34 @@ _PROFILES = {
             role="clear practical guide",
             suitable_narrative_modes=["practical_steps"],
         ),
+        VoiceProfileDefinition(
+            profile_id="gemini_callirrhoe_vi_gentle_emotional",
+            provider="gemini",
+            model="gemini-2.5-flash-preview-tts",
+            voice="Callirrhoe",
+            style="gentle_emotional",
+            language="vi-VN",
+            rate="0%",
+            role="gentle emotionally soft female Vietnamese narrator",
+            suitable_narrative_modes=["emotional_reflection"],
+            post_tts_atempo_enabled=False,
+            automatic_edge_fallback_enabled=False,
+            automatic_model_fallback_enabled=False,
+        ),
+        VoiceProfileDefinition(
+            profile_id="gemini_callirrhoe_vi_natural_smile",
+            provider="gemini",
+            model="gemini-3.1-flash-tts-preview",
+            voice="Callirrhoe",
+            style="natural_vocal_smile",
+            language="vi-VN",
+            rate="0%",
+            role="explicit selected Vietnamese practical narration voice",
+            suitable_narrative_modes=["practical_steps"],
+            post_tts_atempo_enabled=False,
+            automatic_edge_fallback_enabled=False,
+            automatic_model_fallback_enabled=False,
+        ),
     )
 }
 
@@ -113,14 +160,21 @@ def validate_voice_profiles() -> list[str]:
                 f"registry key {profile_id!r} does not match profile id "
                 f"{profile.profile_id!r}"
             )
-        if profile.provider != "edge":
+        if profile.provider not in {"edge", "gemini"}:
             errors.append(
                 f"profile {profile_id} uses unsupported provider {profile.provider!r}"
             )
-        if not profile.voice.startswith("vi-VN-"):
+        if profile.provider == "edge" and not profile.voice.startswith("vi-VN-"):
             errors.append(
                 f"profile {profile_id} voice {profile.voice!r} is not Vietnamese"
             )
+        if profile.provider == "gemini":
+            try:
+                from tella.tts.gemini_registry import resolve_style, resolve_voice
+                resolve_voice(profile.voice, profile.model)
+                resolve_style(profile.style)
+            except ValueError as exc:
+                errors.append(f"profile {profile_id} has invalid Gemini settings: {exc}")
 
     from tella.recipes import list_recipes
 
@@ -169,7 +223,7 @@ def resolve_voice(
     else:
         provider = (legacy_provider or "edge").strip().lower()
         voice = (legacy_voice or "").strip()
-        rate = (legacy_rate or "").strip()
+        rate = legacy_rate or ""
         compatibility = "not_checked"
 
     direct_overrides: list[str] = []
@@ -180,8 +234,11 @@ def resolve_voice(
         voice = explicit_voice.strip()
         direct_overrides.append("voice")
     if explicit_voice_rate is not None:
-        rate = explicit_voice_rate.strip()
+        rate = explicit_voice_rate
         direct_overrides.append("rate")
+
+    if rate:
+        rate = normalize_voice_rate(rate)
 
     if profile is not None:
         source = (
@@ -213,6 +270,12 @@ def resolve_voice(
         resolved_tts_provider=provider,
         resolved_voice=voice,
         resolved_voice_rate=rate,
+        resolved_tts_model=profile.model if profile else "",
+        resolved_tts_style=profile.style if profile else "",
+        resolved_tts_language=profile.language if profile else "",
+        post_tts_atempo_enabled=(profile.post_tts_atempo_enabled if profile else True),
+        automatic_edge_fallback_enabled=(profile.automatic_edge_fallback_enabled if profile else True),
+        automatic_model_fallback_enabled=(profile.automatic_model_fallback_enabled if profile else True),
         recipe_voice_override_applied=recipe_override,
         voice_profile_compatibility_status=compatibility,
         direct_override_fields=direct_overrides,
@@ -245,6 +308,9 @@ def apply_voice_resolution_metadata(plan: Any, resolution: VoiceResolution) -> N
     plan.resolved_tts_provider = resolution.resolved_tts_provider
     plan.resolved_voice = resolved_voice
     plan.resolved_voice_rate = resolved_rate
+    plan.resolved_tts_model = resolution.resolved_tts_model
+    plan.resolved_tts_style = resolution.resolved_tts_style
+    plan.resolved_tts_language = resolution.resolved_tts_language
     plan.recipe_voice_override_applied = resolution.recipe_voice_override_applied
     plan.voice_profile_compatibility_status = (
         resolution.voice_profile_compatibility_status

@@ -1,0 +1,632 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+import io
+import json
+from pathlib import Path
+
+import pytest
+from PIL import Image
+
+from tella.visual_generation.cli import main
+from tella.visual_generation.continuity import select_references
+from tella.visual_generation.orchestrator import (
+    DRY_RUN_CAPABILITIES,
+    load_proof_plan,
+    render_proof,
+)
+from tella.visual_generation.prompt_builder import build_generation_request, request_hash
+from tella.visual_generation.providers.cloudflare_flux import (
+    CloudflareFluxError,
+    CloudflareFluxSceneImageProvider,
+    DEV_MODEL,
+    HTTP_TIMEOUT,
+    KLEIN_4B_FIXED_STEPS,
+    KLEIN_4B_MODEL,
+    prepare_reference,
+    provider_request_hash,
+)
+import tella.visual_generation.providers.cloudflare_flux as cloudflare_module
+from tella.visual_generation.references import REFERENCE_FILES, resolve_reference_catalog
+from tella.visual_generation.style_bible import load_style_bible
+
+ROOT = Path(__file__).parents[1]
+PLAN = ROOT / "configs" / "visual_quality" / "four_scene_proof_v1.json"
+STYLE = ROOT / "configs" / "visual_quality" / "soft_emotional_reference_v1.json"
+
+
+@pytest.fixture(autouse=True)
+def _live(monkeypatch):
+    monkeypatch.setenv("TELLA_VISUAL_QUALITY_LIVE", "1")
+    monkeypatch.setenv("CF_ACCOUNT_ID", "test-account")
+    monkeypatch.setenv("CF_AI_TOKEN", "test-token")
+
+
+def _refs(tmp_path: Path, *, size=(1080, 1920)) -> Path:
+    root = tmp_path / "refs"
+    root.mkdir()
+    for index, (filename, _, _) in enumerate(sorted(set(REFERENCE_FILES.values()))):
+        Image.new("RGB", size, (50 + index, 30, 30)).save(root / filename)
+    return root
+
+
+def _request(tmp_path: Path, scene=0):
+    brief = load_proof_plan(PLAN).scenes[scene]
+    pack = select_references(
+        brief, resolve_reference_catalog(_refs(tmp_path)), DRY_RUN_CAPABILITIES
+    )
+    return build_generation_request(
+        brief,
+        load_style_bible(STYLE),
+        pack,
+        candidate_index=1,
+        attempt=1,
+        seed=101,
+    )
+
+
+def _png(width=576, height=1024) -> bytes:
+    stream = io.BytesIO()
+    Image.new("RGB", (width, height), "#534238").save(stream, "PNG")
+    return stream.getvalue()
+
+
+class FakeResponse:
+    def __init__(self, payload=None, *, status=200, text=""):
+        self.payload = payload
+        self.status_code = status
+        self.text = text or json.dumps(payload)
+        self.content = self.text.encode()
+
+    def json(self):
+        if isinstance(self.payload, Exception):
+            raise self.payload
+        return self.payload
+
+
+class Sender:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    async def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.response
+
+
+def _provider(sender, **kwargs):
+    return CloudflareFluxSceneImageProvider(
+        credential_resolver=lambda: [("account", "token")],
+        request_sender=sender,
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_dev_serializes_steps_seed_and_real_reference(tmp_path):
+    sender = Sender(_success())
+    provider = _provider(sender, model=DEV_MODEL, steps=25)
+    request = _request(tmp_path).model_copy(update={"seed": 27183})
+    metadata = await provider.generate_scene(request, tmp_path / "candidate.png")
+
+    call = sender.calls[0]
+    assert call["url"].endswith(f"/ai/run/{DEV_MODEL}")
+    assert call["data"]["steps"] == "25"
+    assert call["data"]["seed"] == "27183"
+    assert list(call["files"]) == ["input_image_0"]
+    assert call["files"]["input_image_0"][1]
+    assert metadata.steps == 25
+    assert metadata.seed == 27183
+    assert metadata.provider_request_hash
+    assert metadata.request_timeout_seconds == HTTP_TIMEOUT
+
+
+def test_klein_rejects_dev_only_steps():
+    with pytest.raises(ValueError, match="only for flux-2-dev"):
+        _provider(Sender(_success()), steps=25)
+
+
+@pytest.mark.asyncio
+async def test_klein_4b_uses_fixed_steps_seed_and_multipart_references(tmp_path):
+    sender = Sender(_success())
+    provider = _provider(
+        sender,
+        model=KLEIN_4B_MODEL,
+        steps=4,
+        tier="draft",
+        intended_usage_class="draft",
+    )
+    request = _request(tmp_path, scene=1).model_copy(update={"seed": 27183})
+    metadata = await provider.generate_scene(request, tmp_path / "candidate.png")
+
+    call = sender.calls[0]
+    assert call["url"].endswith(f"/ai/run/{KLEIN_4B_MODEL}")
+    assert "steps" not in call["data"]
+    assert call["data"]["seed"] == "27183"
+    assert list(call["files"]) == ["input_image_0", "input_image_1"]
+    assert all(item[1] for item in call["files"].values())
+    assert metadata.steps == KLEIN_4B_FIXED_STEPS
+    assert metadata.model == KLEIN_4B_MODEL
+    assert metadata.tier == "draft"
+    assert metadata.intended_usage_class == "draft"
+    assert metadata.logical_request_hash == metadata.request_hash
+    assert metadata.reference_hashes == [item.sha256 for item in request.references]
+    assert metadata.provider_request_hash
+    assert metadata.request_timeout_seconds == HTTP_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_live_request_accepts_upstream_logical_identity_without_changing_transport(
+    tmp_path,
+):
+    sender = Sender(_success())
+    provider = _provider(
+        sender,
+        model=KLEIN_4B_MODEL,
+        steps=4,
+        tier="draft",
+        intended_usage_class="draft",
+    )
+    request = _request(tmp_path).model_copy(
+        update={"reference_authority_contract": "illustrated_scene_v1"}
+    )
+    logical_identity = "f" * 64
+    prompt = cloudflare_module.cloudflare_prompt(request)
+    expected_provider_hash = provider_request_hash(
+        request=request,
+        prompt=prompt,
+        model=KLEIN_4B_MODEL,
+        width=576,
+        height=1024,
+        steps=KLEIN_4B_FIXED_STEPS,
+        logical_request_hash=logical_identity,
+    )
+
+    metadata = await provider.generate_scene(
+        request,
+        tmp_path / "candidate.png",
+        logical_request_hash=logical_identity,
+    )
+
+    assert len(sender.calls) == 1
+    assert sender.calls[0]["data"]["prompt"] == prompt
+    assert metadata.logical_request_hash == logical_identity
+    assert metadata.provider_request_hash == expected_provider_hash
+    assert metadata.request_hash == request_hash(request)
+
+
+def test_klein_4b_defaults_to_fixed_steps_and_rejects_dev_steps():
+    assert _provider(Sender(_success()), model=KLEIN_4B_MODEL).steps == 4
+    with pytest.raises(ValueError, match="fixed 4-step"):
+        _provider(Sender(_success()), model=KLEIN_4B_MODEL, steps=25)
+
+
+@pytest.mark.asyncio
+async def test_klein_default_timeout_is_unchanged_and_reaches_sender(tmp_path):
+    sender = Sender(_success())
+    provider = _provider(sender)
+    await provider.generate_scene(_request(tmp_path), tmp_path / "candidate.png")
+    assert provider.timeout_seconds == 120.0 == HTTP_TIMEOUT
+    assert sender.calls[0]["timeout_seconds"] == 120.0
+
+
+@pytest.mark.asyncio
+async def test_dev_timeout_override_is_single_call_and_observable(tmp_path):
+    calls = []
+
+    async def timeout_sender(**kwargs):
+        calls.append(kwargs)
+        raise TimeoutError("controlled timeout")
+
+    provider = _provider(
+        timeout_sender, model=DEV_MODEL, steps=25, timeout_seconds=300.0
+    )
+    with pytest.raises(CloudflareFluxError) as raised:
+        await provider.generate_scene(_request(tmp_path), tmp_path / "candidate.png")
+    assert len(calls) == 1
+    assert calls[0]["timeout_seconds"] == 300.0
+    assert raised.value.stage == "api_request"
+    assert raised.value.exception_class == "TimeoutError"
+    assert raised.value.request_reached_provider is True
+    assert raised.value.response_received is False
+    assert raised.value.image_bytes_present is False
+
+
+@pytest.mark.asyncio
+async def test_timeout_override_reaches_http_client(monkeypatch):
+    observed = {}
+
+    class FakeClient:
+        def __init__(self, *, timeout):
+            observed["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(cloudflare_module.httpx, "AsyncClient", FakeClient)
+    await cloudflare_module._post_once(
+        url="https://example.invalid",
+        headers={},
+        data={},
+        files={},
+        timeout_seconds=300.0,
+    )
+    assert observed["timeout"] == 300.0
+
+
+def test_provider_request_hash_is_deterministic_and_provider_specific(tmp_path):
+    request = _request(tmp_path).model_copy(update={"seed": 27183})
+    prompt = "exact provider prompt"
+
+    def digest(*, model=DEV_MODEL, steps=25, candidate=request):
+        return provider_request_hash(
+            request=candidate,
+            prompt=prompt,
+            model=model,
+            width=576,
+            height=1024,
+            steps=steps,
+        )
+
+    baseline_logical_hash = request_hash(request)
+    assert digest() == digest()
+    assert digest(model="@cf/black-forest-labs/flux-2-klein-9b", steps=None) != digest()
+    klein_4b = digest(model=KLEIN_4B_MODEL, steps=KLEIN_4B_FIXED_STEPS)
+    assert klein_4b == digest(model=KLEIN_4B_MODEL, steps=KLEIN_4B_FIXED_STEPS)
+    assert klein_4b != digest()
+    assert digest(steps=24) != digest()
+    assert digest(candidate=request.model_copy(update={"seed": 10101})) != digest()
+    assert request_hash(request) == baseline_logical_hash
+
+    second = request.references[0].model_copy(
+        update={"role": "second", "semantic_roles": ["second"], "sha256": "b" * 64}
+    )
+    forward = request.model_copy(update={"references": [request.references[0], second]})
+    reverse = request.model_copy(update={"references": [second, request.references[0]]})
+    assert digest(candidate=forward) != digest(candidate=reverse)
+    assert "test-token" not in digest()
+
+
+def _success(image=None):
+    encoded = base64.b64encode(image or _png()).decode("ascii")
+    return FakeResponse({"success": True, "result": {"image": encoded}})
+
+
+def test_capabilities_and_credentials_are_truthful(monkeypatch):
+    provider = CloudflareFluxSceneImageProvider(
+        credential_resolver=lambda: [("account", "secret")]
+    )
+    caps = provider.capabilities()
+    assert caps.provider_id == "cloudflare-flux"
+    assert caps.model == "@cf/black-forest-labs/flux-2-klein-9b"
+    assert caps.supports_reference_images and caps.supports_multiple_references
+    assert caps.supports_seed and caps.supports_9_16
+    assert caps.max_reference_images == 4
+    assert caps.supports_image_edit is False
+    assert provider.credentials_present() is True
+    assert "secret" not in repr(provider.__dict__)
+
+
+def test_reference_preparation_is_deterministic_and_preserves_original(tmp_path):
+    original = _refs(tmp_path).joinpath("scene_01_style_anchor.png")
+    before = original.read_bytes()
+    digest = hashlib.sha256(before).hexdigest()
+    first = prepare_reference(original, digest, tmp_path / "cache")
+    second = prepare_reference(original, digest, tmp_path / "cache")
+    assert first == second
+    assert original.read_bytes() == before
+    assert first["prepared_sha256"] == hashlib.sha256(
+        Path(first["prepared_path"]).read_bytes()
+    ).hexdigest()
+    assert (first["prepared_width"], first["prepared_height"]) == (287, 511)
+    assert first["prepared_width"] / first["prepared_height"] == pytest.approx(
+        1080 / 1920, abs=0.002
+    )
+    assert max(first["prepared_width"], first["prepared_height"]) < 512
+
+
+@pytest.mark.asyncio
+async def test_scene_one_uploads_one_multipart_reference_with_image_zero_prompt(tmp_path):
+    sender = Sender(_success())
+    metadata = await _provider(sender).generate_scene(
+        _request(tmp_path), tmp_path / "candidate.png"
+    )
+    call = sender.calls[0]
+    assert list(call["files"]) == ["input_image_0"]
+    assert call["files"]["input_image_0"][2] == "image/png"
+    assert "Use image 0 as guidance" in call["data"]["prompt"]
+    assert call["data"]["width"] == "576"
+    assert call["data"]["height"] == "1024"
+    assert call["data"]["seed"] == "101"
+    assert metadata.reference_roles == [["female_identity_anchor", "style_anchor"]]
+    assert len(metadata.prepared_references) == 1
+
+
+@pytest.mark.asyncio
+async def test_text_only_request_uploads_no_reference_and_calls_transport_once(tmp_path):
+    sender = Sender(_success())
+    request = _request(tmp_path).model_copy(update={"references": []})
+
+    metadata = await _provider(
+        sender,
+        model=KLEIN_4B_MODEL,
+        steps=4,
+        tier="draft",
+        intended_usage_class="draft",
+        allow_text_only=True,
+    ).generate_scene(request, tmp_path / "candidate.png")
+
+    assert len(sender.calls) == 1
+    assert sender.calls[0]["files"] == {}
+    assert "generic text brief only" in sender.calls[0]["data"]["prompt"]
+    assert "Use image 0" not in sender.calls[0]["data"]["prompt"]
+    assert metadata.reference_hashes == []
+    assert metadata.prepared_references == []
+
+
+@pytest.mark.asyncio
+async def test_text_only_request_requires_explicit_provider_authorization(tmp_path):
+    sender = Sender(_success())
+    request = _request(tmp_path).model_copy(update={"references": []})
+
+    with pytest.raises(RuntimeError, match="REFERENCE_MISSING"):
+        await _provider(sender).generate_scene(request, tmp_path / "candidate.png")
+
+    assert sender.calls == []
+
+
+@pytest.mark.asyncio
+async def test_base64_image_is_validated_written_and_recorded(tmp_path):
+    metadata = await _provider(Sender(_success(_png(600, 1000)))).generate_scene(
+        _request(tmp_path), tmp_path / "candidate.bin"
+    )
+    assert metadata.output_path.suffix == ".png"
+    assert metadata.mime_type == "image/png"
+    assert (metadata.actual_width, metadata.actual_height) == (600, 1000)
+    assert (metadata.requested_width, metadata.requested_height) == (576, 1024)
+    assert Image.open(metadata.output_path).size == (600, 1000)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "stage"),
+    [
+        (FakeResponse({"success": False, "errors": ["bad"]}), "cloudflare_envelope"),
+        (FakeResponse({"success": True, "result": {}}), "empty_response"),
+        (
+            FakeResponse({"success": True, "result": {"image": "not-base64"}}),
+            "base64_decode",
+        ),
+        (FakeResponse(None, status=429, text="daily neuron quota exhausted"), "quota_exceeded"),
+    ],
+)
+async def test_provider_failures_are_staged(response, stage, tmp_path):
+    with pytest.raises(CloudflareFluxError) as raised:
+        await _provider(Sender(response)).generate_scene(
+            _request(tmp_path), tmp_path / "candidate.png"
+        )
+    assert raised.value.stage == stage
+
+
+@pytest.mark.asyncio
+async def test_transport_error_is_sanitized_without_token_or_payload(tmp_path, monkeypatch):
+    secret = "cloudflare-secret-token"
+    monkeypatch.setenv("CF_AI_TOKEN", secret)
+
+    async def fail(**_kwargs):
+        raise RuntimeError(
+            f"Authorization: Bearer {secret} payload=" + "QUJD" * 40
+        )
+
+    with pytest.raises(CloudflareFluxError) as raised:
+        await _provider(fail).generate_scene(_request(tmp_path), tmp_path / "x.png")
+    rendered = str(raised.value)
+    assert raised.value.stage == "api_request"
+    assert secret not in rendered
+    assert "QUJD" * 20 not in rendered
+    assert "[REDACTED]" in rendered
+
+
+@pytest.mark.asyncio
+async def test_live_off_blocks_before_network(tmp_path, monkeypatch):
+    monkeypatch.delenv("TELLA_VISUAL_QUALITY_LIVE", raising=False)
+    sender = Sender(_success())
+    with pytest.raises(RuntimeError, match="OPT_IN_REQUIRED"):
+        await _provider(sender).generate_scene(_request(tmp_path), tmp_path / "x.png")
+    assert sender.calls == []
+
+
+@pytest.mark.asyncio
+async def test_single_scene_render_is_bounded_to_one_call(tmp_path):
+    sender = Sender(_success(_png(1080, 1920)))
+    summary = await render_proof(
+        plan_path=PLAN,
+        style_path=STYLE,
+        reference_root=_refs(tmp_path),
+        out_root=tmp_path / "out",
+        job_id="single-cloudflare",
+        dry_run=False,
+        provider=_provider(sender),
+        scene_id="scene_01",
+    )
+    assert len(sender.calls) == 1
+    assert summary["selected_scenes"] == ["scene_01"]
+    assert summary["maximum_generation_calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_default_scene_seed_remains_deterministic(tmp_path):
+    sender = Sender(_success(_png(1080, 1920)))
+    await render_proof(
+        plan_path=PLAN,
+        style_path=STYLE,
+        reference_root=_refs(tmp_path),
+        out_root=tmp_path / "out",
+        job_id="default-seed",
+        dry_run=False,
+        provider=_provider(sender, width=1080, height=1920),
+        scene_id="scene_01",
+    )
+    request = json.loads(
+        (tmp_path / "out" / "visual_quality_v1" / "default-seed" / "scene_01" / "request.json").read_text()
+    )
+    assert request["seed"] == 10101
+    assert sender.calls[0]["data"]["seed"] == "10101"
+
+
+@pytest.mark.asyncio
+async def test_explicit_seed_override_reaches_request_and_cloudflare(tmp_path):
+    sender = Sender(_success(_png(1080, 1920)))
+    await render_proof(
+        plan_path=PLAN,
+        style_path=STYLE,
+        reference_root=_refs(tmp_path),
+        out_root=tmp_path / "out",
+        job_id="override-seed",
+        dry_run=False,
+        provider=_provider(sender, width=1080, height=1920),
+        scene_id="scene_01",
+        seed_override=27183,
+    )
+    request = json.loads(
+        (tmp_path / "out" / "visual_quality_v1" / "override-seed" / "scene_01" / "request.json").read_text()
+    )
+    assert request["seed"] == 27183
+    assert sender.calls[0]["data"]["seed"] == "27183"
+
+
+@pytest.mark.asyncio
+async def test_seed_override_dry_run_is_network_free(tmp_path):
+    sender = Sender(_success())
+    summary = await render_proof(
+        plan_path=PLAN,
+        style_path=STYLE,
+        reference_root=_refs(tmp_path),
+        out_root=tmp_path / "out",
+        job_id="dry-override-seed",
+        dry_run=True,
+        provider=_provider(sender),
+        scene_id="scene_01",
+        seed_override=27183,
+    )
+    request = json.loads(
+        (tmp_path / "out" / "visual_quality_v1" / "dry-override-seed" / "scene_01" / "request.json").read_text()
+    )
+    assert request["seed"] == 27183
+    assert sender.calls == []
+    assert summary["external_calls_made"] == 0
+
+
+@pytest.mark.asyncio
+async def test_provider_neutral_dry_run_makes_no_cloudflare_call(tmp_path):
+    sender = Sender(_success())
+    summary = await render_proof(
+        plan_path=PLAN,
+        style_path=STYLE,
+        reference_root=_refs(tmp_path),
+        out_root=tmp_path / "out",
+        job_id="dry-cloudflare",
+        dry_run=True,
+        provider=_provider(sender),
+        scene_id="scene_01",
+    )
+    assert sender.calls == []
+    assert summary["external_calls_made"] == 0
+
+
+def test_cli_selects_cloudflare_flux_for_scene_one(monkeypatch, tmp_path):
+    captured = {}
+
+    async def fake_render(**kwargs):
+        captured.update(kwargs)
+        return {"external_calls_made": 0}
+
+    monkeypatch.setattr("tella.visual_generation.cli.render_proof", fake_render)
+    result = main(
+        [
+            "render-proof",
+            "--plan", str(PLAN),
+            "--style", str(STYLE),
+            "--reference-root", str(tmp_path),
+            "--out", str(tmp_path / "out"),
+            "--job-id", "cloudflare-cli",
+            "--provider", "cloudflare-flux",
+            "--model", "@cf/black-forest-labs/flux-2-klein-9b",
+            "--scene", "scene_01",
+            "--live",
+        ]
+    )
+    assert result == 0
+    assert captured["scene_id"] == "scene_01"
+    assert isinstance(captured["provider"], CloudflareFluxSceneImageProvider)
+
+
+def test_cli_dry_run_carries_dev_model_steps_and_seed(monkeypatch, tmp_path):
+    captured = {}
+
+    async def fake_render(**kwargs):
+        captured.update(kwargs)
+        return {"external_calls_made": 0}
+
+    monkeypatch.setattr("tella.visual_generation.cli.render_proof", fake_render)
+    result = main(
+        [
+            "render-proof",
+            "--plan", str(PLAN),
+            "--style", str(STYLE),
+            "--reference-root", str(tmp_path),
+            "--out", str(tmp_path / "out"),
+            "--job-id", "cloudflare-dev-dry",
+            "--provider", "cloudflare-flux",
+            "--model", DEV_MODEL,
+            "--scene", "scene_01",
+            "--seed", "27183",
+            "--steps", "25",
+            "--timeout-seconds", "300",
+            "--dry-run",
+        ]
+    )
+    assert result == 0
+    assert captured["dry_run"] is True
+    assert captured["seed_override"] == 27183
+    assert captured["provider"].model == DEV_MODEL
+    assert captured["provider"].steps == 25
+    assert captured["provider"].timeout_seconds == 300.0
+
+
+def test_cli_dry_run_reports_klein_4b_fixed_steps(monkeypatch, tmp_path):
+    captured = {}
+
+    async def fake_render(**kwargs):
+        captured.update(kwargs)
+        return {"external_calls_made": 0}
+
+    monkeypatch.setattr("tella.visual_generation.cli.render_proof", fake_render)
+    result = main(
+        [
+            "render-proof",
+            "--plan", str(PLAN),
+            "--style", str(STYLE),
+            "--reference-root", str(tmp_path),
+            "--out", str(tmp_path / "out"),
+            "--job-id", "cloudflare-klein4b-dry",
+            "--provider", "cloudflare-flux",
+            "--model", KLEIN_4B_MODEL,
+            "--scene", "scene_01",
+            "--seed", "27183",
+            "--steps", "4",
+            "--dry-run",
+        ]
+    )
+    assert result == 0
+    assert captured["dry_run"] is True
+    assert captured["seed_override"] == 27183
+    assert captured["provider"].model == KLEIN_4B_MODEL
+    assert captured["provider"].steps == KLEIN_4B_FIXED_STEPS

@@ -454,57 +454,6 @@ def test_existing_recipe_definitions_and_life_planner_are_unchanged():
     ]
 
 
-def test_normal_cli_render_is_blocked_before_external_calls(monkeypatch, tmp_path):
-    monkeypatch.setattr(cli, "run_pipeline", _fail_call)
-    monkeypatch.setattr(cli, "fetch_assets", _fail_call)
-    monkeypatch.setattr(cli, "synthesize_all", _fail_call)
-    monkeypatch.setattr(cli, "render", _fail_call)
-
-    result = cli.main(
-        [
-            "--script-file",
-            str(_VALID_FIXTURE),
-            "--recipe",
-            "practical_life_steps_v1",
-            "--lang",
-            "vi",
-            "--out",
-            str(tmp_path),
-            "--job-id",
-            "blocked",
-        ]
-    )
-
-    assert result == 2
-    assert not (tmp_path / "blocked").exists()
-
-
-def test_direct_pipeline_guard_runs_before_external_calls(monkeypatch, tmp_path):
-    monkeypatch.setattr(cli, "fetch_assets", _fail_call)
-    monkeypatch.setattr(cli, "synthesize_all", _fail_call)
-    monkeypatch.setattr(cli, "render", _fail_call)
-
-    with pytest.raises(RuntimeError, match="planner-only"):
-        asyncio.run(
-            cli.run_pipeline(
-                topic="exact script",
-                target_lang="vi",
-                theme="practical_life_steps",
-                media_source="ai_image",
-                duration_mode="short",
-                aspect_ratio="9:16",
-                voice_pace_name=None,
-                voice_rate_custom="-2%",
-                voice_gender="female",
-                out_root=tmp_path,
-                user_script=_valid_script(),
-                recipe=get_recipe("practical_life_steps_v1"),
-            )
-        )
-
-    assert list(tmp_path.iterdir()) == []
-
-
 def test_dry_run_plan_makes_zero_external_calls(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "fetch_assets", _fail_call)
     monkeypatch.setattr(cli, "synthesize_all", _fail_call)

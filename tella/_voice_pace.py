@@ -11,7 +11,7 @@ Three presets:
   ===========  ==========  ==============  ==================================
   ``slow``     ``-10%``    ``0.90``        bedtime kids stories / parable / mindfulness
   ``minimalist_emotional`` theme default uses ``-3%`` for a softer but less broken read.
-  ``medium``   ``0%``      ``1.00``        default narrative pace
+  ``medium``   ``+0%``     ``1.00``        default narrative pace
   ``fast``     ``+15%``    ``1.15``        energetic, urgent, quiz-style
   ===========  ==========  ==============  ==================================
 
@@ -28,7 +28,7 @@ is given):
   ``minimalist_emotional`` ``slow`` at ``-3%``
   ===============  ==============
 
-Power user override: any ``"[+-]\\d{1,3}%"`` string passed via
+Power user override: ``"0%"`` or any ``"[+-]\\d{1,3}%"`` string passed via
 ``custom_edge_rate=`` becomes a custom :class:`VoicePace` with Google
 rate auto-computed (clamped to Google's allowed ``[0.25, 4.0]``).
 """
@@ -43,14 +43,14 @@ class VoicePace:
     """One voice pacing choice with both Edge and Google rate encodings."""
 
     name: str            # 'slow' | 'medium' | 'fast' | 'custom'
-    edge_rate: str       # '-5%' | '0%' | '+5%' | custom
+    edge_rate: str       # '-5%' | '+0%' | '+5%' | custom
     google_rate: float   # 0.92 | 1.00 | 1.05 | custom
 
 
 SLOW = VoicePace(name="slow", edge_rate="-10%", google_rate=0.90)
 EMOTIONAL_SLOW = VoicePace(name="slow", edge_rate="-3%", google_rate=0.97)
 SYMBOLIC_SLOW = VoicePace(name="slow", edge_rate="-7%", google_rate=0.93)
-MEDIUM = VoicePace(name="medium", edge_rate="0%", google_rate=1.00)
+MEDIUM = VoicePace(name="medium", edge_rate="+0%", google_rate=1.00)
 FAST = VoicePace(name="fast", edge_rate="+15%", google_rate=1.15)
 
 PRESETS: dict[str, VoicePace] = {
@@ -73,7 +73,28 @@ THEME_DEFAULT_PACE: dict[str, VoicePace] = {
 # Themes Tella ships with — exported for the wizard's validation step.
 KNOWN_THEMES: tuple[str, ...] = tuple(THEME_DEFAULT_PACE.keys())
 
-_CUSTOM_RATE_RE = re.compile(r"^[+-]\d{1,3}%$")
+_CUSTOM_RATE_RE = re.compile(r"^(?:[+-]\d{1,3}|0)%$")
+
+
+def normalize_voice_rate(edge_rate: str) -> str:
+    """Validate and canonicalize an Edge-style speaking rate.
+
+    Neutral values are always represented as ``+0%``. Non-zero values must
+    carry an explicit sign and retain it. The historical three-digit bound is
+    preserved.
+    """
+    if not isinstance(edge_rate, str):
+        raise ValueError("voice rate must be a string")
+    value = edge_rate
+    if not _CUSTOM_RATE_RE.fullmatch(value):
+        raise ValueError(
+            f"voice rate must match 0% or [+-]\\d{{1,3}}% "
+            f"(e.g. '+3%' or '-7%'), got {edge_rate!r}"
+        )
+    percentage = int(value[:-1])
+    if percentage == 0:
+        return "+0%"
+    return value
 
 
 def default_pace_for_theme(theme: str) -> VoicePace:
@@ -101,7 +122,7 @@ def resolve_pace(
 
     Raises:
         ValueError: when ``override`` is not a known preset, or
-            ``custom_edge_rate`` doesn't match ``[+-]\\d{1,3}%``.
+            ``custom_edge_rate`` isn't ``0%`` or ``[+-]\\d{1,3}%``.
     """
     if custom_edge_rate:
         return _custom_to_pace(custom_edge_rate)
@@ -118,12 +139,7 @@ def resolve_pace(
 
 def _custom_to_pace(edge_rate: str) -> VoicePace:
     """Convert e.g. ``'+3%'`` to a :class:`VoicePace` with computed Google rate."""
-    s = (edge_rate or "").strip()
-    if not _CUSTOM_RATE_RE.fullmatch(s):
-        raise ValueError(
-            f"voice rate must match [+-]\\d{{1,3}}% (e.g. '+3%' or '-7%'), "
-            f"got {edge_rate!r}"
-        )
+    s = normalize_voice_rate(edge_rate)
     pct = int(s.rstrip("%"))
     google = max(0.25, min(4.0, 1.0 + pct / 100.0))
     return VoicePace(name="custom", edge_rate=s, google_rate=round(google, 3))
@@ -140,5 +156,6 @@ __all__ = [
     "THEME_DEFAULT_PACE",
     "VoicePace",
     "default_pace_for_theme",
+    "normalize_voice_rate",
     "resolve_pace",
 ]

@@ -7,8 +7,10 @@ from dataclasses import dataclass
 from itertools import combinations
 from typing import Any
 
-from tella._voice_pace import VoicePace
+from tella._voice_pace import VoicePace, normalize_voice_rate
 from tella.planner.models import Scene, TellaScenePlan
+from tella.planner.practical_life_steps_visuals import apply_practical_life_steps_visuals
+from tella.planner.practical_visual_profiles import PracticalVisualProfile
 from tella.planner.voices import edge_voice_for
 
 
@@ -82,6 +84,7 @@ _ACTIONS = (
     ActionDefinition("đặt", ("đặt",), "environment_control"),
     ActionDefinition("di chuyển", ("di chuyển", "dời"), "environment_control"),
     ActionDefinition("chuẩn bị", ("chuẩn bị",), "preparation"),
+    ActionDefinition("xếp", ("xếp",), "preparation"),
     ActionDefinition("chọn", ("chọn",), "focused_execution"),
     ActionDefinition("thực hiện", ("thực hiện", "làm"), "focused_execution"),
     ActionDefinition("dành", ("dành",), "time_blocking"),
@@ -167,6 +170,7 @@ _PREDICATE_TERMS = {
     "nằm",
     "bắt đầu",
     "thay đổi",
+    "trở nên",
     "bỏ cuộc",
     *(alias for action in _ACTIONS for alias in action.aliases),
 }
@@ -187,6 +191,7 @@ _VISUAL_ACTION_PHRASES = {
     "đặt": "placing",
     "di chuyển": "moving",
     "chuẩn bị": "arranging",
+    "xếp": "packing",
     "chọn": "selecting",
     "thực hiện": "working with",
     "dành": "setting aside",
@@ -212,7 +217,9 @@ def plan_practical_life_steps_from_script(
     duration_mode: str = "short",
     voice_pace: VoicePace | None = None,
     voice_gender: str | None = None,
+    preserve_narration: bool = False,
     seed: int = 0,
+    visual_profile: PracticalVisualProfile | None = None,
 ) -> TellaScenePlan:
     del seed
     if target_lang != "vi":
@@ -257,8 +264,10 @@ def plan_practical_life_steps_from_script(
         global_narration_text=" ".join(segments),
         scenes=scenes,
     )
-    enforce_practical_life_steps_plan(plan, roles=roles)
-    return plan
+    enforce_practical_life_steps_plan(
+        plan, roles=roles, preserve_narration=preserve_narration
+    )
+    return apply_practical_life_steps_visuals(plan, visual_profile=visual_profile)
 
 
 def plan_practical_life_steps_from_topic(*, topic: str, target_lang: str, **kwargs: Any):
@@ -273,6 +282,7 @@ def enforce_practical_life_steps_plan(
     plan: TellaScenePlan,
     *,
     roles: tuple[str, ...] | None = None,
+    preserve_narration: bool = False,
 ) -> None:
     scenes = [scene for scene in plan.scenes if scene.kind == "scene"]
     resolved_roles = roles or _roles_for_segments([scene.voice_script for scene in scenes])
@@ -283,7 +293,9 @@ def enforce_practical_life_steps_plan(
         errors.append("scene-role assignment does not match scene count")
 
     _initialize_scene_metadata(scenes, resolved_roles, plan.voice_edge_rate)
-    _fit_duration(plan, scenes, resolved_roles)
+    _fit_duration(
+        plan, scenes, resolved_roles, preserve_narration=preserve_narration
+    )
     if plan.duration_validation_status == "failed":
         errors.append(plan.duration_failure_reason)
 
@@ -380,6 +392,8 @@ def _fit_duration(
     plan: TellaScenePlan,
     scenes: list[Scene],
     roles: tuple[str, ...],
+    *,
+    preserve_narration: bool = False,
 ) -> None:
     original_words = sum(_word_count(scene.original_voice_script) for scene in scenes)
     original_duration = _estimated_total(
@@ -389,11 +403,23 @@ def _fit_duration(
     plan.original_total_word_count = original_words
     plan.original_estimated_duration_seconds = original_duration
     plan.duration_target_seconds = _DURATION_TARGET_SECONDS
+    plan.requested_production_duration_seconds = _DURATION_TARGET_SECONDS
     plan.narration_fit_required = not (
         _HARD_DURATION_RANGE[0] <= original_duration <= _HARD_DURATION_RANGE[1]
     )
     plan.narration_fit_applied = False
     plan.narration_fit_pass_count = 0
+
+    if preserve_narration:
+        plan.narration_fit_required = False
+        plan.fitted_total_word_count = original_words
+        plan.fitted_estimated_duration_seconds = original_duration
+        plan.duration_reduction_seconds = 0.0
+        plan.duration_reduction_ratio = 0.0
+        plan.duration_validation_status = "passed"
+        plan.duration_failure_reason = ""
+        plan.narration_fit_status = "disabled_for_canonical_natural_duration"
+        return
 
     if original_duration > _HARD_DURATION_RANGE[1]:
         role_priority = (
@@ -1074,8 +1100,7 @@ def _estimate_scene_duration(word_count: int, index: int, voice_rate: str) -> fl
 
 
 def _words_per_second(voice_rate: str) -> float:
-    match = re.fullmatch(r"([+-]?\d{1,3})%", (voice_rate or "-2%").strip())
-    percent = int(match.group(1)) if match else -2
+    percent = int(normalize_voice_rate(voice_rate).rstrip("%"))
     return max(1.5, 3.0 * (100 + percent) / 98.0)
 
 

@@ -305,7 +305,7 @@ unlocks an upgrade in its provider chain.
 | `GEMINI_API_KEY` | **Required** — story planning + translation | ✅ Free tier |
 | `CF_ACCOUNTS` (or `CF_ACCOUNT_ID`+`CF_AI_TOKEN`) | AI image mode (Cloudflare Workers AI / FLUX) | ✅ 10k images/day/account |
 | `PEXELS_API_KEY` | Stock photo + stock video modes | ✅ 200 req/hr, 20k/mo |
-| `GOOGLE_TTS_API_KEY` *or* `GOOGLE_APPLICATION_CREDENTIALS` | Studio-quality Chirp 3 HD voices | Pay-as-you-go (tiny) |
+| `GOOGLE_TTS_API_KEY` | Optional legacy/CLI Google TTS adapter | Pay-as-you-go (tiny) |
 
 Narration falls back to **Edge TTS**, which needs no key at all — so the
 minimum to render a complete video is just `GEMINI_API_KEY` + one image
@@ -333,11 +333,110 @@ reclaim disk.
 
 ---
 
+## Local production web UI
+
+The web UI invokes the same `tella.cli.run_pipeline` entry point as the CLI.
+It uses a single persisted worker because provider selection is process-wide,
+and it marks a job complete only after `ffprobe` confirms that the MP4 contains
+positive-duration audio and video streams.
+
+```powershell
+Copy-Item .env.example .env
+# Set GEMINI_API_KEY and one media provider.
+uv sync --extra dev
+uv run tella-web
+```
+
+Open `http://127.0.0.1:8787`. On macOS/Linux, use `cp .env.example .env`.
+Jobs and their crash-safe `job.json` records are stored under
+`TELLA_WEB_OUTPUT_DIR` (default `out/web_jobs`).
+
+The production web profile uses backend-owned Gemini narration:
+
+- `GEMINI_API_KEY`, `GEMINI_API_KEYS`, or `GOOGLE_API_KEY` supplies the existing
+  Gemini planner and narration credential.
+- The browser cannot select a provider, key, URL, model, or raw voice.
+- The server selects the registered
+  `gemini_callirrhoe_vi_gentle_emotional` profile and applies strict provider
+  mode. Gemini errors fail the job and never fall back to Edge TTS.
+- The existing Google Cloud TTS adapter remains available to CLI callers, but
+  it is not part of the production web profile. Service-account authentication
+  is not implemented by that adapter.
+
+`GET /api/health` reports local credential/configuration presence for Gemini
+and the default AI-image route, `ffmpeg`, `ffprobe`, and output-directory
+writability without returning secret values. The production web UI is
+still-image-only: it always submits `media_source="ai_image"`; stock modes
+remain available to the CLI but are not exposed or accepted by the web API.
+`POST /api/jobs` applies readiness before queueing and returns `503
+PRODUCTION_NOT_READY` without creating a job when a prerequisite is missing.
+These local checks do not contact providers or guarantee later provider,
+balance, quota, or network availability. In particular, Pollinations readiness
+confirms local configuration and authority compatibility, not live Pollen
+balance.
+
+The parent `JobManager` owns the queue, persistence, and artifact publication.
+Each active render runs `tella.cli.run_pipeline(...)` in a dedicated child
+process with a server-built environment that neutralizes inherited settings
+which could select another narrator, reuse/skip assets, allow local or
+placeholder fallbacks, or alter the web profile. `TELLA_WEB_MAX_WORKERS` accepts
+only `1` or `2` and defaults to `1`; the browser cannot set it. Browser-visible
+logs and errors redact credentials, authorization tokens, secret query
+parameters, provider response bodies, and private absolute paths.
+
+Invalid or oversized HTTP bodies are rejected with structured errors; the
+connection closes when unread bytes could otherwise remain on HTTP/1.1.
+Shutdown rejects new work, safely cancels queued jobs, waits for active work,
+and explicitly reports an incomplete timeout rather than claiming the worker
+stopped. A failed or interrupted job can be inspected in the UI; only a
+validated successful MP4 is available through preview and download routes.
+
+The production web profile uses Cloudflare as its primary still-image provider.
+When `POLLINATIONS_API_KEY` is configured, Pollinations is an optional fallback
+for backend-authorized `PUBLIC_SAFE` scenes after Cloudflare rate-limit, quota,
+availability, or timeout failures. `PRIVATE` scenes remain Cloudflare-only and
+`LOCAL_ONLY` scenes never call an external provider. Missing or stale authority
+fails closed. Both 9:16 and 16:9 are validated without silent cropping. Pexels,
+local/reused assets, placeholder sprites, and AI-video remain disabled in the
+web profile; legacy CLI behavior is unchanged.
+
+Every generated still in the web profile receives the server-owned
+`practical_pull_back` motion. It starts slightly enlarged and moves gently
+toward the fitted frame. A scene commonly lasts about 4.5–7 seconds and a short
+video may land around 32–38 seconds, but neither range is enforced: continuous
+narration and existing composition rules determine timing, and FFprobe reports
+the authoritative final duration. The browser exposes neither provider nor
+motion controls.
+
+The UI loads persisted job history on startup, recovers the remembered or
+newest relevant job, supports queued-job cancellation, and retries failed or
+cancelled jobs as new IDs. Adaptive polling is based only on server state and
+stops at terminal states; it never simulates progress. Browser storage holds
+only the selected job ID. Provider selection, privacy classification, keys, and
+provider URLs remain server-owned.
+
+For a credential-gated real-render test:
+
+```powershell
+$env:TELLA_WEB_REAL_E2E = "1"
+uv run --extra dev python -m pytest tests/test_web_production.py -k real_web_render_e2e -q
+```
+
+If readiness reports setup errors, check that the environment is loaded in the
+server process, both FFmpeg tools are on `PATH`, and `TELLA_WEB_OUTPUT_DIR` is
+writable.
+
+Real-production acceptance has been completed with a newly generated MP4 whose
+audio/video streams, preview, download, restart persistence, and serialized
+queue behavior were validated end to end.
+
+---
+
 ## Cost
 
-A typical short with Gemini + Edge TTS + (Cloudflare FLUX **or** Pexels) +
-ffmpeg costs **$0**. Adding Google Chirp 3 HD narration bumps it to a few
-hundredths of a cent per video.
+A typical short uses Gemini planning and narration plus the configured visual
+provider and FFmpeg. Provider pricing and quota depend on the configured
+accounts. The web profile does not silently switch narration to Edge.
 
 ---
 

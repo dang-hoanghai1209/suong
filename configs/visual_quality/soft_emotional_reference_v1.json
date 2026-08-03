@@ -1,0 +1,81 @@
+{
+  "style_id": "soft_emotional_reference_v1",
+  "canvas": {
+    "width": 1080,
+    "height": 1920,
+    "aspect_ratio": "9:16"
+  },
+  "background": [
+    "stable dark warm brown background across scenes",
+    "subtle painterly paper texture",
+    "no detailed scenery unless required for meaning"
+  ],
+  "drawing": [
+    "soft hand-drawn emotional editorial illustration",
+    "thin charcoal and warm-brown outlines",
+    "slightly imperfect handmade organic geometry",
+    "flat muted color with subtle paper or painterly texture",
+    "characters, props, environment cues, symbols, and lighting form one coherent image"
+  ],
+  "palette": [
+    "dark warm brown",
+    "muted dusty pink and coral",
+    "warm cream",
+    "beige and taupe",
+    "muted warm brown",
+    "small restrained accent colors"
+  ],
+  "composition": [
+    "large quiet negative space",
+    "illustration cluster mostly in the lower or middle frame",
+    "no oversized isolated object",
+    "character remains the primary focal point",
+    "props integrate naturally with bodies and environment"
+  ],
+  "lighting": [
+    "subtle warm cream halo or vignette",
+    "gentle non-cinematic lighting",
+    "no realistic hard lighting"
+  ],
+  "negative_constraints": [
+    "no anime",
+    "no photorealism",
+    "no 3D",
+    "no UI icons",
+    "no sticker collage",
+    "no isolated pasted assets",
+    "no polished vector-icon aesthetic",
+    "no excessive background detail",
+    "no text, logo, or watermark unless explicitly requested"
+  ],
+  "character_archetypes": {
+    "female": {
+      "character_id": "female",
+      "identity_locks": [
+        "young adult",
+        "short rounded dark bob haircut",
+        "small soft cream-colored face",
+        "tiny simple dark eyes and tiny simple mouth",
+        "slim simple body proportions",
+        "long muted dusty-pink or coral dress",
+        "dark simple flat shoes",
+        "gentle understated emotional expression"
+      ],
+      "unconstrained": ["pose", "gesture", "camera angle", "interaction"]
+    },
+    "male": {
+      "character_id": "male",
+      "identity_locks": [
+        "young adult",
+        "short dark slightly soft or messy hair",
+        "simple warm cream face",
+        "understated expression",
+        "warm brown, tan, or muted brick top",
+        "dark or muted neutral pants",
+        "simple shoes",
+        "same illustration language as female"
+      ],
+      "unconstrained": ["pose", "gesture", "camera angle", "interaction"]
+    }
+  }
+}

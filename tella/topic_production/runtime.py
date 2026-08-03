@@ -1,0 +1,916 @@
+"""Pure, fail-closed execution/QC transitions with no provider operations."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from tella.visual_generation.providers.kinds import ProviderKind
+
+from .models import GenerationTier, ProductionSceneStatus, ReadinessResult
+from .execution_models import (
+    ProductionRunPlan,
+    _revalidate_current_production_run_plan,
+)
+from .pollinations_readiness import (
+    PollinationsReadinessSnapshot,
+)
+from .runtime_models import (
+    AcceptedCandidateRecord,
+    CallBudgetSummary,
+    DraftAcceptanceAuthorization,
+    EventType,
+    ExecutionEvent,
+    ExecutionRunState,
+    FailureReason,
+    GenerationAttempt,
+    PromotionReason,
+    PromotionRecord,
+    ProcessedNarrationDurationMeasurement,
+    QCChecks,
+    QCDecision,
+    QCRecord,
+    ResumeAction,
+    ResumePlan,
+    ReviewSource,
+    SceneCallBudget,
+    SceneResumePlan,
+    SceneRuntimeState,
+    TechnicalStatus,
+)
+from .strategy import ProductionStrategy, SceneDataSensitivity
+
+
+def _revalidate_execution_state(state: ExecutionRunState) -> ExecutionRunState:
+    schema_version = getattr(state, "schema_version", None)
+    if type(schema_version) is not int or schema_version != 2:
+        raise ValueError("in-memory ExecutionRunState authority requires schema_version 2")
+    run_plan = _revalidate_current_production_run_plan(state.run_plan)
+    payload = state.model_dump(mode="python")
+    payload["run_plan"] = run_plan.model_dump(mode="python")
+    return ExecutionRunState.model_validate(payload)
+
+
+def initialize_execution_state(run_plan: ProductionRunPlan) -> ExecutionRunState:
+    run_plan = _revalidate_current_production_run_plan(run_plan)
+    scenes = [SceneRuntimeState(execution_plan=item) for item in run_plan.scene_execution_plans]
+    events = [
+        ExecutionEvent(
+            sequence=index,
+            scene_id=scene.scene_id,
+            event_type=EventType.PLANNED,
+            detail={"status": ProductionSceneStatus.DRAFT_PENDING.value},
+        )
+        for index, scene in enumerate(scenes, start=1)
+    ]
+    return ExecutionRunState(
+        schema_version=2,
+        run_plan=run_plan,
+        scenes=scenes,
+        event_history=events,
+        processed_narration_measurement=None,
+    )
+
+
+def bind_processed_narration_measurement(
+    state: ExecutionRunState,
+    measurement: ProcessedNarrationDurationMeasurement,
+) -> ExecutionRunState:
+    """Bind one caller-supplied measurement without filesystem activity."""
+
+    validated_state = _revalidate_execution_state(state)
+    validated_measurement = ProcessedNarrationDurationMeasurement.model_validate(
+        measurement.model_dump(mode="python")
+    )
+    current = validated_state.processed_narration_measurement
+    if current is not None:
+        if current == validated_measurement:
+            return validated_state
+        raise ValueError(
+            "processed narration measurement already exists; clear it before replacement"
+        )
+    return validated_state.model_copy(
+        update={"processed_narration_measurement": validated_measurement},
+        deep=True,
+    )
+
+
+def clear_processed_narration_measurement(
+    state: ExecutionRunState,
+) -> ExecutionRunState:
+    """Clear measured authority explicitly without filesystem activity."""
+
+    validated_state = _revalidate_execution_state(state)
+    if validated_state.processed_narration_measurement is None:
+        return validated_state
+    return validated_state.model_copy(
+        update={"processed_narration_measurement": None},
+        deep=True,
+    )
+
+
+def record_pollinations_readiness(
+    state: ExecutionRunState,
+    snapshot: PollinationsReadinessSnapshot,
+    *,
+    refresh: bool = False,
+) -> ExecutionRunState:
+    """Attach one reusable run-level snapshot or perform an explicit refresh."""
+
+    current = state.pollinations_readiness
+    if current is not None and not refresh:
+        raise ValueError("Pollinations readiness is already recorded for this run")
+    if current is not None and snapshot.checked_at <= current.checked_at:
+        raise ValueError("refreshed Pollinations readiness must be newer than the prior snapshot")
+    return state.model_copy(
+        update={
+            "pollinations_readiness": snapshot,
+            "readiness_external_calls": state.readiness_external_calls + snapshot.readiness_calls,
+        },
+        deep=True,
+    )
+
+
+def _scene_index(state: ExecutionRunState, scene_id: str) -> int:
+    matches = [index for index, scene in enumerate(state.scenes) if scene.scene_id == scene_id]
+    if len(matches) != 1:
+        raise ValueError(f"expected exactly one runtime scene for {scene_id}")
+    return matches[0]
+
+
+def _replace_scene(
+    state: ExecutionRunState,
+    index: int,
+    scene: SceneRuntimeState,
+    event_type: EventType,
+    detail: dict[str, Any],
+) -> ExecutionRunState:
+    scenes = list(state.scenes)
+    scenes[index] = scene
+    event = ExecutionEvent(
+        sequence=len(state.event_history) + 1,
+        scene_id=scene.scene_id,
+        event_type=event_type,
+        detail=detail,
+    )
+    return state.model_copy(
+        update={"scenes": scenes, "event_history": [*state.event_history, event]}, deep=True
+    )
+
+
+def _failure_reason(status: TechnicalStatus) -> FailureReason:
+    return {
+        TechnicalStatus.PROVIDER_QUOTA_BLOCKED: FailureReason.PROVIDER_QUOTA_BLOCKED,
+        TechnicalStatus.TECHNICAL_GENERATION_FAIL: FailureReason.TECHNICAL_GENERATION_FAIL,
+        TechnicalStatus.REFERENCE_BLOCKED: FailureReason.REFERENCE_BLOCKED,
+    }[status]
+
+
+def record_generation_attempt(
+    state: ExecutionRunState, attempt: GenerationAttempt
+) -> ExecutionRunState:
+    index = _scene_index(state, attempt.scene_id)
+    scene = state.scenes[index]
+    if any(
+        prior.candidate_id == attempt.candidate_id
+        for candidate_scene in state.scenes
+        for prior in candidate_scene.generation_attempts
+    ):
+        raise ValueError("candidate ID is already recorded")
+    expected_status = (
+        ProductionSceneStatus.DRAFT_PENDING
+        if attempt.tier is GenerationTier.DRAFT
+        else ProductionSceneStatus.ACCEPTANCE_PENDING
+    )
+    if scene.status is not expected_status:
+        raise ValueError(
+            f"{attempt.tier.value} generation is not authorized from {scene.status.value}"
+        )
+    if any(prior.tier is attempt.tier for prior in scene.generation_attempts):
+        raise ValueError("call budget exhausted; retries are not authorized")
+    request = (
+        scene.execution_plan.draft
+        if attempt.tier is GenerationTier.DRAFT
+        else scene.execution_plan.acceptance
+    )
+    if (attempt.provider, attempt.model, attempt.seed) != (
+        request.provider,
+        request.model,
+        request.seed,
+    ):
+        raise ValueError("generation attempt does not match its authorized request template")
+    planning_identity = attempt.planning_request_hash or attempt.logical_request_hash
+    if planning_identity != scene.execution_plan.draft.logical_visual_request_hash:
+        raise ValueError("generation attempt planning request hash does not match scene plan")
+    expected_reference_hashes = [item.sha256 for item in request.references]
+    if attempt.reference_hashes != expected_reference_hashes:
+        raise ValueError("generation attempt reference hashes do not match scene plan")
+    return _apply_generation_attempt(state, index, scene, attempt)
+
+
+def record_local_generation_attempt(
+    state: ExecutionRunState, attempt: GenerationAttempt
+) -> ExecutionRunState:
+    """Record a local candidate without applying external-provider request semantics."""
+
+    index = _scene_index(state, attempt.scene_id)
+    scene = state.scenes[index]
+    local_plan = scene.execution_plan.local_execution
+    if local_plan is None:
+        raise ValueError("scene has no authorized local execution plan")
+    routing = scene.execution_plan.routing
+    if routing is None:
+        raise ValueError("scene has no authorized provider route")
+    if scene.status is not ProductionSceneStatus.DRAFT_PENDING:
+        raise ValueError(f"local generation is not authorized from {scene.status.value}")
+    if scene.generation_attempts:
+        raise ValueError("local candidate is already recorded")
+    if (
+        attempt.tier is not GenerationTier.DRAFT
+        or attempt.provider_kind is not ProviderKind.LOCAL_COMPOSITOR
+        or attempt.provider != ProviderKind.LOCAL_COMPOSITOR.value
+        or attempt.model != "semantic_asset_compositor_v2"
+        or attempt.seed != local_plan.request.seed
+        or attempt.logical_request_hash != local_plan.logical_request_hash
+        or attempt.planning_request_hash != local_plan.logical_request_hash
+        or attempt.reference_hashes
+        or attempt.consumes_ai_call
+        or attempt.consumes_ai_retry
+    ):
+        raise ValueError("local attempt does not match its authorized execution plan")
+    if routing.route.selected_provider is not ProviderKind.LOCAL_COMPOSITOR:
+        raise ValueError("local compositor is not the authorized route")
+    if any(
+        prior.candidate_id == attempt.candidate_id
+        for candidate_scene in state.scenes
+        for prior in candidate_scene.generation_attempts
+    ):
+        raise ValueError("candidate ID is already recorded")
+    return _apply_generation_attempt(state, index, scene, attempt)
+
+
+def record_pollinations_generation_attempt(
+    state: ExecutionRunState,
+    attempt: GenerationAttempt,
+    *,
+    prior_candidate_id: str,
+) -> ExecutionRunState:
+    """Record one explicitly authorized PUBLIC_SAFE Cloudflare overflow attempt."""
+
+    index = _scene_index(state, attempt.scene_id)
+    scene = state.scenes[index]
+    routing = scene.execution_plan.routing
+    if scene.status is not ProductionSceneStatus.BLOCKED:
+        raise ValueError("Pollinations overflow requires a blocked Cloudflare attempt")
+    if routing is None or routing.sensitivity.value != "public_safe":
+        raise ValueError("Pollinations overflow requires an explicit PUBLIC_SAFE scene plan")
+    if ProviderKind.POLLINATIONS not in routing.route.eligible_providers:
+        raise ValueError("Pollinations is not eligible for this scene route")
+    prior = next(
+        (item for item in scene.generation_attempts if item.candidate_id == prior_candidate_id),
+        None,
+    )
+    if (
+        prior is None
+        or prior.tier is not GenerationTier.DRAFT
+        or prior.technical_status is TechnicalStatus.SUCCEEDED
+        or prior.provider != scene.execution_plan.draft.provider
+    ):
+        raise ValueError("matching failed Cloudflare draft attempt is required")
+    if (
+        attempt.tier is not GenerationTier.DRAFT
+        or attempt.provider_kind is not ProviderKind.POLLINATIONS
+        or attempt.provider != ProviderKind.POLLINATIONS.value
+        or not attempt.consumes_ai_call
+        or not attempt.consumes_ai_retry
+        or attempt.reference_hashes
+        or attempt.provider_request_hash != attempt.logical_request_hash
+    ):
+        raise ValueError("Pollinations attempt violates overflow accounting or privacy contract")
+    if any(
+        existing.candidate_id == attempt.candidate_id
+        for candidate_scene in state.scenes
+        for existing in candidate_scene.generation_attempts
+    ):
+        raise ValueError("candidate ID is already recorded")
+    if attempt.technical_status is TechnicalStatus.SUCCEEDED:
+        status = ProductionSceneStatus.DRAFT_GENERATED
+        event_type = EventType.DRAFT_GENERATED
+        reasons: list[FailureReason] = []
+    else:
+        status = ProductionSceneStatus.BLOCKED
+        event_type = EventType.DRAFT_GENERATION_FAILED
+        reasons = list(
+            dict.fromkeys([*scene.block_reasons, _failure_reason(attempt.technical_status)])
+        )
+    updated = scene.model_copy(
+        update={
+            "status": status,
+            "generation_attempts": [*scene.generation_attempts, attempt],
+            "block_reasons": reasons,
+        },
+        deep=True,
+    )
+    return _replace_scene(
+        state,
+        index,
+        updated,
+        event_type,
+        {
+            "candidate_id": attempt.candidate_id,
+            "tier": attempt.tier.value,
+            "provider": ProviderKind.POLLINATIONS.value,
+            "consumes_ai_retry": True,
+            "technical_status": attempt.technical_status.value,
+        },
+    )
+
+
+def record_volume_retry_attempt(
+    state: ExecutionRunState,
+    attempt: GenerationAttempt,
+    *,
+    prior_candidate_id: str,
+) -> ExecutionRunState:
+    """Record one policy-authorized Cloudflare retry after a Volume QC hard fail."""
+
+    if state.run_plan.production_strategy.strategy is not ProductionStrategy.VOLUME:
+        raise ValueError("Volume retry recording requires Volume strategy")
+    policy = state.run_plan.production_strategy.volume_policy
+    if policy is None:
+        raise ValueError("Volume retry policy is missing")
+    index = _scene_index(state, attempt.scene_id)
+    scene = state.scenes[index]
+    routing = scene.execution_plan.routing
+    if routing is None:
+        raise ValueError("Volume retry requires a sensitivity-aware scene plan")
+    if scene.status not in {
+        ProductionSceneStatus.DRAFT_QC_FAIL,
+        ProductionSceneStatus.BLOCKED,
+    }:
+        raise ValueError("Volume retry requires a recorded draft QC hard failure")
+    prior = next(
+        (item for item in scene.generation_attempts if item.candidate_id == prior_candidate_id),
+        None,
+    )
+    if prior is None or prior.technical_status is not TechnicalStatus.SUCCEEDED:
+        raise ValueError("Volume retry requires a successful prior candidate")
+    prior_qc = next(
+        (
+            item
+            for item in reversed(scene.qc_records)
+            if item.candidate_id == prior_candidate_id and item.tier is GenerationTier.DRAFT
+        ),
+        None,
+    )
+    if prior_qc is None or not prior_qc.hard_fail_reasons:
+        raise ValueError("Volume retry requires explicit QC hard-failure reasons")
+    used_scene_retries = sum(item.consumes_ai_retry for item in scene.generation_attempts)
+    used_run_retries = sum(
+        item.consumes_ai_retry
+        for runtime_scene in state.scenes
+        for item in runtime_scene.generation_attempts
+    )
+    if used_scene_retries >= policy.hard_fail_retry_per_scene:
+        raise PermissionError("Volume per-scene hard-fail retry ceiling is exhausted")
+    if used_run_retries >= policy.max_ai_retries_per_run:
+        raise PermissionError("Volume run-level AI retry ceiling is exhausted")
+    if routing.sensitivity is SceneDataSensitivity.LOCAL_ONLY:
+        raise PermissionError("LOCAL_ONLY hard failures cannot externalize")
+    if prior.provider == ProviderKind.POLLINATIONS.value:
+        raise PermissionError("Pollinations hard failures cannot trigger another provider retry")
+    draft = scene.execution_plan.draft
+    expected_references = [item.sha256 for item in draft.references]
+    if (
+        attempt.tier is not GenerationTier.DRAFT
+        or attempt.provider_kind is not ProviderKind.CLOUDFLARE_KLEIN_4B
+        or attempt.provider != draft.provider
+        or attempt.model != draft.model
+        or attempt.seed != draft.seed
+        or (attempt.planning_request_hash or attempt.logical_request_hash)
+        != draft.logical_visual_request_hash
+        or attempt.reference_hashes != expected_references
+        or not attempt.consumes_ai_call
+        or not attempt.consumes_ai_retry
+    ):
+        raise ValueError("Volume retry attempt does not match the authorized Cloudflare draft")
+    if any(
+        existing.candidate_id == attempt.candidate_id
+        for runtime_scene in state.scenes
+        for existing in runtime_scene.generation_attempts
+    ):
+        raise ValueError("candidate ID is already recorded")
+    return _apply_generation_attempt(state, index, scene, attempt)
+
+
+def _apply_generation_attempt(
+    state: ExecutionRunState,
+    index: int,
+    scene: SceneRuntimeState,
+    attempt: GenerationAttempt,
+) -> ExecutionRunState:
+    if attempt.technical_status is TechnicalStatus.SUCCEEDED:
+        status = (
+            ProductionSceneStatus.DRAFT_GENERATED
+            if attempt.tier is GenerationTier.DRAFT
+            else ProductionSceneStatus.ACCEPTANCE_GENERATED
+        )
+        event_type = (
+            EventType.DRAFT_GENERATED
+            if attempt.tier is GenerationTier.DRAFT
+            else EventType.ACCEPTANCE_GENERATED
+        )
+        reasons = scene.block_reasons
+    else:
+        status = ProductionSceneStatus.BLOCKED
+        event_type = (
+            EventType.DRAFT_GENERATION_FAILED
+            if attempt.tier is GenerationTier.DRAFT
+            else EventType.ACCEPTANCE_GENERATION_FAILED
+        )
+        reasons = list(
+            dict.fromkeys([*scene.block_reasons, _failure_reason(attempt.technical_status)])
+        )
+    updated = scene.model_copy(
+        update={
+            "status": status,
+            "generation_attempts": [*scene.generation_attempts, attempt],
+            "block_reasons": reasons,
+        },
+        deep=True,
+    )
+    return _replace_scene(
+        state,
+        index,
+        updated,
+        event_type,
+        {
+            "candidate_id": attempt.candidate_id,
+            "tier": attempt.tier.value,
+            "technical_status": attempt.technical_status.value,
+        },
+    )
+
+
+def record_qc(state: ExecutionRunState, record: QCRecord) -> ExecutionRunState:
+    index = _scene_index(state, record.scene_id)
+    scene = state.scenes[index]
+    attempt = next(
+        (
+            item
+            for item in scene.generation_attempts
+            if item.candidate_id == record.candidate_id and item.tier is record.tier
+        ),
+        None,
+    )
+    if attempt is None:
+        raise ValueError("QC candidate is not a recorded generation attempt for this scene/tier")
+    if attempt.technical_status is not TechnicalStatus.SUCCEEDED:
+        raise ValueError("QC cannot approve a technically failed generation attempt")
+    expected_status = (
+        ProductionSceneStatus.DRAFT_GENERATED
+        if record.tier is GenerationTier.DRAFT
+        else ProductionSceneStatus.ACCEPTANCE_GENERATED
+    )
+    if scene.status is not expected_status:
+        raise ValueError(f"QC is not valid from scene status {scene.status.value}")
+    if any(item.qc_record_id == record.qc_record_id for item in scene.qc_records):
+        raise ValueError("QC record ID is already recorded")
+    reasons = list(scene.block_reasons)
+    if record.decision is QCDecision.PASS:
+        status = (
+            ProductionSceneStatus.DRAFT_QC_PASS
+            if record.tier is GenerationTier.DRAFT
+            else ProductionSceneStatus.ACCEPTANCE_QC_PASS
+        )
+        reasons = [item for item in reasons if item is not FailureReason.HUMAN_REVIEW_REQUIRED]
+    elif record.decision is QCDecision.FAIL:
+        status = (
+            ProductionSceneStatus.DRAFT_QC_FAIL
+            if record.tier is GenerationTier.DRAFT
+            else ProductionSceneStatus.ACCEPTANCE_QC_FAIL
+        )
+        failure = (
+            FailureReason.DRAFT_QC_FAIL
+            if record.tier is GenerationTier.DRAFT
+            else FailureReason.ACCEPTANCE_QC_FAIL
+        )
+        reasons = list(dict.fromkeys([*reasons, failure]))
+    elif record.decision is QCDecision.BLOCKED:
+        status = ProductionSceneStatus.BLOCKED
+        reasons = list(dict.fromkeys([*reasons, FailureReason.HUMAN_REVIEW_REQUIRED]))
+    else:
+        status = expected_status
+        reasons = list(dict.fromkeys([*reasons, FailureReason.HUMAN_REVIEW_REQUIRED]))
+    updated = scene.model_copy(
+        update={
+            "status": status,
+            "qc_records": [*scene.qc_records, record],
+            "block_reasons": reasons,
+        },
+        deep=True,
+    )
+    event = EventType.DRAFT_QC if record.tier is GenerationTier.DRAFT else EventType.ACCEPTANCE_QC
+    return _replace_scene(
+        state,
+        index,
+        updated,
+        event,
+        {
+            "qc_record_id": record.qc_record_id,
+            "candidate_id": record.candidate_id,
+            "decision": record.decision.value,
+            "review_source": record.review_source.value,
+        },
+    )
+
+
+def record_human_qc(
+    state: ExecutionRunState,
+    *,
+    qc_record_id: str,
+    scene_id: str,
+    candidate_id: str,
+    tier: GenerationTier,
+    decision: QCDecision,
+    reviewer: str,
+    checks: QCChecks | None = None,
+    scores: dict[str, float] | None = None,
+    hard_fail_reasons: list[str] | None = None,
+    soft_fail_reasons: list[str] | None = None,
+    notes: str = "",
+    review_metadata: dict[str, Any] | None = None,
+) -> ExecutionRunState:
+    return record_qc(
+        state,
+        QCRecord(
+            qc_record_id=qc_record_id,
+            scene_id=scene_id,
+            candidate_id=candidate_id,
+            tier=tier,
+            decision=decision,
+            checks=checks or QCChecks(),
+            scores=scores or {},
+            hard_fail_reasons=hard_fail_reasons or [],
+            soft_fail_reasons=soft_fail_reasons or [],
+            review_source=ReviewSource.HUMAN,
+            reviewer=reviewer,
+            notes=notes,
+            review_metadata=review_metadata or {},
+        ),
+    )
+
+
+def promote_scene_to_acceptance(
+    state: ExecutionRunState,
+    *,
+    scene_id: str,
+    reason: PromotionReason,
+    authorized_by: str,
+    metadata: dict[str, Any] | None = None,
+) -> ExecutionRunState:
+    if state.run_plan.production_strategy.strategy is ProductionStrategy.VOLUME:
+        raise PermissionError("Volume strategy prohibits premium acceptance-tier promotion")
+    index = _scene_index(state, scene_id)
+    scene = state.scenes[index]
+    if scene.status not in {
+        ProductionSceneStatus.DRAFT_QC_PASS,
+        ProductionSceneStatus.DRAFT_QC_FAIL,
+        ProductionSceneStatus.DRAFT_GENERATED,
+    }:
+        raise ValueError(f"scene cannot be promoted from {scene.status.value}")
+    draft_attempts = [
+        item for item in scene.generation_attempts if item.tier is GenerationTier.DRAFT
+    ]
+    draft_qc = [item for item in scene.qc_records if item.tier is GenerationTier.DRAFT]
+    if not draft_attempts or not draft_qc:
+        raise ValueError("promotion requires a recorded draft attempt and draft QC history")
+    if scene.promotions:
+        raise ValueError("scene is already promoted")
+    promotion = PromotionRecord(
+        scene_id=scene_id,
+        reason=reason,
+        authorized_by=authorized_by,
+        metadata=metadata or {},
+    )
+    updated = scene.model_copy(
+        update={
+            "status": ProductionSceneStatus.ACCEPTANCE_PENDING,
+            "promotions": [promotion],
+            "block_reasons": [
+                item for item in scene.block_reasons if item is not FailureReason.PROMOTION_REQUIRED
+            ],
+        },
+        deep=True,
+    )
+    return _replace_scene(
+        state,
+        index,
+        updated,
+        EventType.PROMOTED,
+        {"reason": reason.value, "authorized_by": authorized_by},
+    )
+
+
+def authorize_draft_acceptance(
+    state: ExecutionRunState,
+    *,
+    scene_id: str,
+    reason: str,
+    authorized_by: str,
+    metadata: dict[str, Any] | None = None,
+) -> ExecutionRunState:
+    index = _scene_index(state, scene_id)
+    scene = state.scenes[index]
+    if scene.status is not ProductionSceneStatus.DRAFT_QC_PASS:
+        raise ValueError("draft acceptance eligibility requires DRAFT_QC_PASS")
+    if scene.draft_acceptance_authorizations:
+        raise ValueError("draft acceptance is already explicitly authorized")
+    authorization = DraftAcceptanceAuthorization(
+        scene_id=scene_id,
+        reason=reason,
+        authorized_by=authorized_by,
+        metadata=metadata or {},
+    )
+    updated = scene.model_copy(
+        update={"draft_acceptance_authorizations": [authorization]}, deep=True
+    )
+    return _replace_scene(
+        state,
+        index,
+        updated,
+        EventType.DRAFT_ACCEPTANCE_AUTHORIZED,
+        {"reason": reason, "authorized_by": authorized_by},
+    )
+
+
+def register_accepted_candidate(
+    state: ExecutionRunState,
+    *,
+    scene_id: str,
+    candidate_id: str,
+    qc_record_id: str,
+    accepted_by: str,
+    accepted_at: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> ExecutionRunState:
+    index = _scene_index(state, scene_id)
+    scene = state.scenes[index]
+    if scene.accepted_candidate is not None:
+        raise ValueError("accepted candidate cannot be silently replaced")
+    attempt = next(
+        (item for item in scene.generation_attempts if item.candidate_id == candidate_id), None
+    )
+    if attempt is None:
+        raise ValueError("candidate is not a recorded attempt for this scene")
+    if attempt.technical_status is not TechnicalStatus.SUCCEEDED:
+        raise ValueError("failed candidate cannot be accepted")
+    qc = next((item for item in scene.qc_records if item.qc_record_id == qc_record_id), None)
+    if qc is None or qc.candidate_id != candidate_id or qc.tier is not attempt.tier:
+        raise ValueError("QC evidence does not correspond to candidate and source tier")
+    if qc.decision is not QCDecision.PASS:
+        raise ValueError("candidate requires corresponding QC PASS evidence")
+    expected_status = (
+        ProductionSceneStatus.DRAFT_QC_PASS
+        if attempt.tier is GenerationTier.DRAFT
+        else ProductionSceneStatus.ACCEPTANCE_QC_PASS
+    )
+    if scene.status is not expected_status:
+        raise ValueError(f"candidate cannot be accepted from {scene.status.value}")
+    if attempt.tier is GenerationTier.DRAFT and not scene.draft_acceptance_authorizations:
+        raise ValueError("draft candidate requires explicit draft-acceptance authorization")
+    if attempt.tier is GenerationTier.ACCEPTANCE and not scene.promotions:
+        raise ValueError("acceptance candidate requires explicit promotion history")
+    assert attempt.candidate_path is not None
+    assert attempt.artifact_sha256 is not None
+    accepted = AcceptedCandidateRecord(
+        scene_id=scene_id,
+        candidate_id=candidate_id,
+        artifact_path=attempt.candidate_path,
+        artifact_sha256=attempt.artifact_sha256,
+        source_tier=attempt.tier,
+        provider=attempt.provider,
+        model=attempt.model,
+        seed=attempt.seed,
+        logical_request_hash=attempt.logical_request_hash,
+        planning_request_hash=attempt.planning_request_hash,
+        provider_request_hash=attempt.provider_request_hash,
+        reference_hashes=attempt.reference_hashes,
+        qc_record_id=qc_record_id,
+        accepted_by=accepted_by,
+        accepted_at=accepted_at,
+        metadata=metadata or {},
+    )
+    updated = scene.model_copy(
+        update={
+            "status": ProductionSceneStatus.ACCEPTED,
+            "accepted_candidate": accepted,
+            "block_reasons": [],
+        },
+        deep=True,
+    )
+    return _replace_scene(
+        state,
+        index,
+        updated,
+        EventType.ACCEPTED,
+        {
+            "candidate_id": candidate_id,
+            "source_tier": attempt.tier.value,
+            "qc_record_id": qc_record_id,
+            "accepted_by": accepted_by,
+        },
+    )
+
+
+def block_scene(
+    state: ExecutionRunState, *, scene_id: str, reason: FailureReason
+) -> ExecutionRunState:
+    index = _scene_index(state, scene_id)
+    scene = state.scenes[index]
+    updated = scene.model_copy(
+        update={
+            "status": ProductionSceneStatus.BLOCKED,
+            "block_reasons": list(dict.fromkeys([*scene.block_reasons, reason])),
+        },
+        deep=True,
+    )
+    return _replace_scene(state, index, updated, EventType.BLOCKED, {"reason": reason.value})
+
+
+def evaluate_execution_readiness(state: ExecutionRunState) -> ReadinessResult:
+    reasons: dict[str, list[str]] = {}
+    for scene in state.scenes:
+        scene_reasons: list[str] = []
+        if scene.status is not ProductionSceneStatus.ACCEPTED:
+            scene_reasons.append(f"scene status is {scene.status.value}, not ACCEPTED")
+        accepted = scene.accepted_candidate
+        if accepted is None:
+            scene_reasons.append("accepted candidate registration is missing")
+        else:
+            attempt = next(
+                (
+                    item
+                    for item in scene.generation_attempts
+                    if item.candidate_id == accepted.candidate_id
+                ),
+                None,
+            )
+            if attempt is None:
+                scene_reasons.append("accepted candidate has no recorded generation attempt")
+            else:
+                if not accepted.artifact_path or accepted.artifact_path != attempt.candidate_path:
+                    scene_reasons.append("accepted artifact path is missing or mismatched")
+                if accepted.artifact_sha256 != attempt.artifact_sha256:
+                    scene_reasons.append("accepted artifact SHA-256 is missing or mismatched")
+                if accepted.source_tier is not attempt.tier:
+                    scene_reasons.append("accepted source tier is missing or mismatched")
+                if (
+                    accepted.provider != attempt.provider
+                    or accepted.model != attempt.model
+                    or accepted.seed != attempt.seed
+                    or accepted.logical_request_hash != attempt.logical_request_hash
+                    or accepted.planning_request_hash != attempt.planning_request_hash
+                    or accepted.provider_request_hash != attempt.provider_request_hash
+                    or accepted.reference_hashes != attempt.reference_hashes
+                ):
+                    scene_reasons.append("accepted candidate provenance does not match attempt")
+            qc = next(
+                (item for item in scene.qc_records if item.qc_record_id == accepted.qc_record_id),
+                None,
+            )
+            if (
+                qc is None
+                or qc.decision is not QCDecision.PASS
+                or qc.candidate_id != accepted.candidate_id
+                or qc.tier is not accepted.source_tier
+            ):
+                scene_reasons.append("matching QC PASS evidence is missing")
+        if scene.block_reasons:
+            scene_reasons.extend(f"unresolved block: {item.value}" for item in scene.block_reasons)
+        if scene_reasons:
+            reasons[scene.scene_id] = scene_reasons
+    return ReadinessResult(
+        ready=bool(state.scenes) and not reasons,
+        unresolved_scene_ids=list(reasons),
+        reasons=reasons,
+    )
+
+
+def summarize_call_budget(state: ExecutionRunState) -> CallBudgetSummary:
+    budgets: list[SceneCallBudget] = []
+    for scene in state.scenes:
+        draft_completed = sum(
+            item.tier is GenerationTier.DRAFT and item.consumes_ai_call
+            for item in scene.generation_attempts
+        )
+        acceptance_completed = sum(
+            item.tier is GenerationTier.ACCEPTANCE and item.consumes_ai_call
+            for item in scene.generation_attempts
+        )
+        retry_calls = sum(item.consumes_ai_retry for item in scene.generation_attempts)
+        strategy = state.run_plan.production_strategy
+        routing = scene.execution_plan.routing
+        initial_is_local = bool(
+            routing is not None and routing.route.selected_provider is ProviderKind.LOCAL_COMPOSITOR
+        )
+        volume_retry_capacity = (
+            strategy.volume_policy.hard_fail_retry_per_scene
+            if strategy.strategy is ProductionStrategy.VOLUME and strategy.volume_policy is not None
+            else 0
+        )
+        draft_max_calls = 1 + (volume_retry_capacity if not initial_is_local else 0)
+        budgets.append(
+            SceneCallBudget(
+                scene_id=scene.scene_id,
+                draft_max_calls=draft_max_calls,
+                acceptance_max_calls=1 if scene.promotions else 0,
+                draft_completed_calls=draft_completed,
+                acceptance_completed_calls=acceptance_completed,
+                retry_calls=retry_calls,
+            )
+        )
+    authorized = sum(item.acceptance_max_calls for item in budgets)
+    completed = sum(
+        item.draft_completed_calls + item.acceptance_completed_calls for item in budgets
+    )
+    remaining = sum(
+        item.draft_max_calls
+        + item.acceptance_max_calls
+        - item.draft_completed_calls
+        - item.acceptance_completed_calls
+        for item in budgets
+    )
+    return CallBudgetSummary(
+        scenes=budgets,
+        planned_draft_calls=len(budgets),
+        currently_authorized_acceptance_calls=authorized,
+        completed_calls=completed,
+        remaining_authorized_calls=remaining,
+        retry_calls=sum(item.retry_calls for item in budgets),
+    )
+
+
+def plan_resume(state: ExecutionRunState) -> ResumePlan:
+    state = _revalidate_execution_state(state)
+    action_by_status = {
+        ProductionSceneStatus.DRAFT_PENDING: ResumeAction.EXECUTE_DRAFT,
+        ProductionSceneStatus.DRAFT_GENERATED: ResumeAction.AWAIT_DRAFT_QC,
+        ProductionSceneStatus.DRAFT_QC_PASS: ResumeAction.AWAIT_EXPLICIT_TIER_DECISION,
+        ProductionSceneStatus.DRAFT_QC_FAIL: ResumeAction.AWAIT_EXPLICIT_INTERVENTION,
+        ProductionSceneStatus.ACCEPTANCE_PENDING: ResumeAction.EXECUTE_ACCEPTANCE,
+        ProductionSceneStatus.ACCEPTANCE_GENERATED: ResumeAction.AWAIT_ACCEPTANCE_QC,
+        ProductionSceneStatus.ACCEPTANCE_QC_PASS: ResumeAction.READY_FOR_EXPLICIT_ACCEPTANCE,
+        ProductionSceneStatus.ACCEPTANCE_QC_FAIL: ResumeAction.AWAIT_EXPLICIT_INTERVENTION,
+        ProductionSceneStatus.ACCEPTED: ResumeAction.SKIP_ACCEPTED,
+        ProductionSceneStatus.BLOCKED: ResumeAction.REMAIN_BLOCKED,
+        ProductionSceneStatus.PLANNED: ResumeAction.EXECUTE_DRAFT,
+    }
+    plans: list[SceneResumePlan] = []
+    for scene in state.scenes:
+        action = action_by_status[scene.status]
+        reason = f"persisted status {scene.status.value}; no automatic retry or fallback"
+        if state.run_plan.production_strategy.strategy is ProductionStrategy.VOLUME:
+            if scene.status is ProductionSceneStatus.DRAFT_QC_PASS:
+                action = ResumeAction.COMPLETE_VOLUME_ACCEPTANCE
+                reason = "acceptable Volume QC is recorded; complete authoritative acceptance"
+            elif scene.status is ProductionSceneStatus.DRAFT_QC_FAIL:
+                policy = state.run_plan.production_strategy.volume_policy
+                routing = scene.execution_plan.routing
+                latest_qc = scene.qc_records[-1] if scene.qc_records else None
+                scene_retries = sum(item.consumes_ai_retry for item in scene.generation_attempts)
+                run_retries = sum(
+                    item.consumes_ai_retry
+                    for runtime_scene in state.scenes
+                    for item in runtime_scene.generation_attempts
+                )
+                prior = scene.generation_attempts[-1] if scene.generation_attempts else None
+                retry_allowed = bool(
+                    policy is not None
+                    and routing is not None
+                    and routing.sensitivity is not SceneDataSensitivity.LOCAL_ONLY
+                    and latest_qc is not None
+                    and latest_qc.hard_fail_reasons
+                    and prior is not None
+                    and prior.provider != ProviderKind.POLLINATIONS.value
+                    and scene_retries < policy.hard_fail_retry_per_scene
+                    and run_retries < policy.max_ai_retries_per_run
+                )
+                action = ResumeAction.RETRY_VOLUME if retry_allowed else ResumeAction.REMAIN_BLOCKED
+                reason = (
+                    "persisted Volume hard fail has one authorized Cloudflare retry"
+                    if retry_allowed
+                    else "persisted Volume hard fail has no safe retry budget or route"
+                )
+        elif (
+            scene.status is ProductionSceneStatus.DRAFT_QC_PASS
+            and scene.draft_acceptance_authorizations
+        ):
+            action = ResumeAction.READY_FOR_EXPLICIT_ACCEPTANCE
+        plans.append(
+            SceneResumePlan(
+                scene_id=scene.scene_id,
+                action=action,
+                reason=reason,
+            )
+        )
+    return ResumePlan(scenes=plans)

@@ -35,18 +35,23 @@ import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 import sys
 from pathlib import Path
 
 from PIL import Image, ImageEnhance, ImageOps
 
+from tella.atomic_write import atomic_write_json
 from tella.composer.compose import compose_timing
+from tella.composer.timing import validate_actual_render_duration
 from tella.composer.safe_zone import render_dims_for, safe_zone_for
 from tella.composer.text_wrap import chars_per_line, wrap
 from tella.planner.models import TellaScenePlan
-from tella.render.text_overlay import render_overlay_png
+from tella.render.text_overlay import practical_step_badge_layout, render_overlay_png
+from tella.render.subtitle_layout import (
+    PRACTICAL_DYNAMIC_SUBTITLE_POLICY,
+    resolve_practical_subtitle_layout,
+)
 from tella.subtitles import sanitize_highlight_words, subtitle_text_for_style
 from tella.themes.loader import ImageGrade
 
@@ -64,6 +69,20 @@ TEXT_BOX_OPACITY = 0.55
 # the safe-zone bottom edge so multi-line captions still fit.
 CAPTION_BOTTOM_PADDING = 60
 TITLE_TOP_PADDING = 50
+_RENDER_MOTION_PROFILE_ENV = "TELLA_RENDER_MOTION_PROFILE"
+_REGISTERED_MOTION_PROFILES = frozenset(
+    {
+        "controlled_slow_hold",
+        "controlled_slow_pan",
+        "gentle_progressive_motion",
+        "practical_pan_left_to_right",
+        "practical_pan_right_to_left",
+        "practical_pull_back",
+        "practical_stable_hold",
+        "practical_zoom_in",
+        "slow_ken_burns",
+    }
+)
 
 
 def _resolve_font_file() -> Path:
@@ -145,6 +164,15 @@ def _env_float(name: str, default: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+def _render_motion_profile_override() -> str | None:
+    value = (os.environ.get(_RENDER_MOTION_PROFILE_ENV) or "").strip()
+    if not value:
+        return None
+    if value not in _REGISTERED_MOTION_PROFILES:
+        raise ValueError(f"unsupported {_RENDER_MOTION_PROFILE_ENV}: {value!r}")
+    return value
+
+
 def _write_text_file(path: Path, text: str) -> Path:
     """Write text to a temp file ffmpeg's drawtext ``textfile=`` can read.
 
@@ -164,6 +192,7 @@ def _build_bg_filter(
     ken_burns_max_scale: float,
     motion_profile: str = "",
     scene_index: int = 1,
+    image_translation_y_ratio: float = 0.0,
 ) -> str:
     """Background-only filter chain (scale+crop+Ken Burns / fps).
 
@@ -180,18 +209,43 @@ def _build_bg_filter(
     if not is_video:
         total_frames = max(2, int(duration * OUTPUT_FPS))
         zoom_step = (ken_burns_max_scale - 1.0) / max(1, total_frames - 1)
-        if motion_profile == "controlled_slow_pan":
+        if motion_profile in {
+            "controlled_slow_pan",
+            "practical_pan_left_to_right",
+            "practical_pan_right_to_left",
+        }:
             last_frame = max(1, total_frames - 1)
-            if scene_index % 2:
+            move_left_to_right = (
+                motion_profile == "practical_pan_left_to_right"
+                or motion_profile == "controlled_slow_pan" and scene_index % 2
+            )
+            if move_left_to_right:
                 x_expr = f"(iw-iw/zoom)*(0.35+0.30*on/{last_frame})"
             else:
                 x_expr = f"(iw-iw/zoom)*(0.65-0.30*on/{last_frame})"
             y_expr = "ih/2-(ih/zoom/2)"
+            zoom_expr = f"min(zoom+{zoom_step:.6f},{ken_burns_max_scale})"
+        elif motion_profile == "practical_pull_back":
+            x_expr = "iw/2-(iw/zoom/2)"
+            y_expr = "ih/2-(ih/zoom/2)"
+            zoom_expr = f"max({ken_burns_max_scale}-{zoom_step:.6f}*on,1.0)"
+        elif motion_profile == "practical_stable_hold":
+            x_expr = "iw/2-(iw/zoom/2)"
+            y_expr = "ih/2-(ih/zoom/2)"
+            zoom_expr = "1.005"
         else:
             x_expr = "iw/2-(iw/zoom/2)"
             y_expr = "ih/2-(ih/zoom/2)"
+            zoom_expr = f"min(zoom+{zoom_step:.6f},{ken_burns_max_scale})"
+        if image_translation_y_ratio:
+            minimum_zoom = 1.0 + abs(image_translation_y_ratio) + 0.01
+            zoom_expr = f"max(({zoom_expr}),{minimum_zoom:.4f})"
+            y_expr = (
+                f"clip(({y_expr})+({image_translation_y_ratio:.4f})*ih,"
+                "0,ih-ih/zoom)"
+            )
         chains.append(
-            f"zoompan=z='min(zoom+{zoom_step:.6f},{ken_burns_max_scale})':"
+            f"zoompan=z='{zoom_expr}':"
             f"x='{x_expr}':y='{y_expr}':"
             f"d={total_frames}:s={canvas_w}x{canvas_h}:fps={OUTPUT_FPS}"
         )
@@ -252,6 +306,60 @@ def _prepare_image_asset_for_render(
     return out_path, source_hash, True
 
 
+def _practical_motion_profile(scene) -> str:
+    if scene.scene_role == "hook":
+        return "practical_zoom_in"
+    if scene.scene_role in {"context", "context_part_one", "context_part_two"}:
+        return "practical_pan_left_to_right"
+    if scene.scene_role == "practical_step":
+        return {
+            1: "practical_pan_left_to_right",
+            2: "practical_pan_right_to_left",
+            3: "practical_zoom_in",
+        }.get(scene.step_number, "practical_zoom_in")
+    if scene.scene_role == "common_mistake":
+        return "practical_pull_back"
+    if scene.scene_role in {"today_action", "closing"}:
+        return "practical_stable_hold"
+    return "practical_zoom_in"
+
+
+def _select_scene_motion_profile(
+    plan: TellaScenePlan,
+    scene,
+    *,
+    default_profile: str,
+    ken_burns_max_scale: float,
+    override_profile: str | None,
+) -> tuple[str, float]:
+    if override_profile is not None:
+        return override_profile, ken_burns_max_scale
+    if plan.theme == "life_insight_symbolic" and scene.scene_role == "conclusion":
+        return "controlled_slow_hold", min(1.012, ken_burns_max_scale)
+    if plan.theme == "practical_life_steps":
+        profile = _practical_motion_profile(scene)
+        scale = (
+            min(1.012, ken_burns_max_scale)
+            if profile == "practical_stable_hold"
+            else ken_burns_max_scale
+        )
+        return profile, scale
+    return default_profile, ken_burns_max_scale
+
+
+def _render_progress_message(
+    original_scene_index: int,
+    execution_order: int,
+    current_total: int,
+    duration: float,
+) -> str:
+    return (
+        f"rendered scene original_scene={original_scene_index:02d} "
+        f"execution={execution_order}/{current_total} "
+        f"({duration:.2f}s, video-only)"
+    )
+
+
 async def _render_scene(
     *,
     asset_path: Path,
@@ -274,6 +382,8 @@ async def _render_scene(
     highlight_words: list[str] | None = None,
     channel_name: str | None = None,
     channel_avatar: str | None = None,
+    step_number: int = 0,
+    subtitle_layout: dict[str, object] | None = None,
 ) -> Path:
     """Render one VIDEO-ONLY scene MP4. Audio is mixed in once at final-mux."""
     is_video = _is_video_asset(asset_path)
@@ -282,7 +392,7 @@ async def _render_scene(
     # sidesteps ffmpeg's drawtext filter which isn't compiled into
     # ffmpeg-static on production VPS.
     overlay_png: Path | None = None
-    if title_text or caption_text or channel_name:
+    if title_text or caption_text or channel_name or step_number:
         overlay_png = render_overlay_png(
             title=title_text,
             caption=caption_text,
@@ -298,6 +408,8 @@ async def _render_scene(
             highlight_words=highlight_words or [],
             channel_name=channel_name,
             channel_avatar=channel_avatar,
+            step_number=step_number,
+            subtitle_layout=subtitle_layout,
         )
 
     bg_filter = _build_bg_filter(
@@ -308,6 +420,9 @@ async def _render_scene(
         ken_burns_max_scale=ken_burns_max_scale,
         motion_profile=motion_profile,
         scene_index=scene_index,
+        image_translation_y_ratio=float(
+            (subtitle_layout or {}).get("image_translation_y_ratio", 0.0)
+        ),
     )
 
     cmd: list[str] = ["ffmpeg", "-y", "-loglevel", "error"]
@@ -406,27 +521,19 @@ async def _concat_scenes_xfade(
         shutil.copyfile(scene_mp4s[0], out_path)
         return out_path
 
-    min_scene_duration = (
-        min(scene_durations) if scene_durations else transition_duration
-    )
-    xfade_duration = min(transition_duration, max(0.1, min_scene_duration / 3.0))
+    xfade_duration = transition_duration
+    if xfade_duration <= 0:
+        raise ValueError("xfade transition duration must be positive")
 
     cmd = ["ffmpeg", "-y", "-loglevel", "error"]
     for p in scene_mp4s:
         cmd += ["-i", str(p)]
 
-    padded_durations = list(scene_durations)
-    for i in range(len(padded_durations) - 1):
-        padded_durations[i] += xfade_duration
-
     filters: list[str] = []
     for i in range(len(scene_mp4s)):
-        chain = f"[{i}:v]setpts=PTS-STARTPTS"
-        if i < len(scene_mp4s) - 1:
-            chain += f",tpad=stop_mode=clone:stop_duration={xfade_duration:.3f}"
-        filters.append(f"{chain}[v{i}]")
+        filters.append(f"[{i}:v]setpts=PTS-STARTPTS[v{i}]")
 
-    cumulative_duration = padded_durations[0]
+    cumulative_duration = scene_durations[0]
     previous_label = "v0"
     for i in range(1, len(scene_mp4s)):
         offset = max(0.0, cumulative_duration - xfade_duration)
@@ -436,7 +543,7 @@ async def _concat_scenes_xfade(
             f"xfade=transition=fade:duration={xfade_duration:.3f}:offset={offset:.3f}"
             f"[{out_label}]"
         )
-        cumulative_duration = cumulative_duration + padded_durations[i] - xfade_duration
+        cumulative_duration = cumulative_duration + scene_durations[i] - xfade_duration
         previous_label = out_label
 
     cmd += [
@@ -464,7 +571,7 @@ async def _concat_scenes_xfade(
 
 
 async def _mux_audio(
-    silent_video: Path, audio: Path, out_path: Path,
+    silent_video: Path, audio: Path, out_path: Path, *, copy_audio: bool = False,
 ) -> Path:
     """Mix the continuous narration onto the concatenated silent video.
 
@@ -473,6 +580,9 @@ async def _mux_audio(
     without a trailing silent frame. Audio is encoded to AAC 96k mono —
     Edge/Google TTS output is mono speech.
     """
+    audio_codec_args = ["-c:a", "copy"] if copy_audio else [
+        "-c:a", "aac", "-b:a", "96k", "-ar", "44100", "-ac", "1",
+    ]
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
         "-i", str(silent_video),
@@ -480,10 +590,7 @@ async def _mux_audio(
         "-map", "0:v",
         "-map", "1:a",
         "-c:v", "copy",
-        "-c:a", "aac",
-        "-b:a", "96k",
-        "-ar", "44100",
-        "-ac", "1",
+        *audio_codec_args,
         "-shortest",
         "-movflags", "+faststart",
         str(out_path),
@@ -500,7 +607,13 @@ async def _mux_audio(
     return out_path
 
 
-async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
+async def render(
+    plan: TellaScenePlan,
+    job_dir: Path,
+    *,
+    preserve_timing: bool = False,
+    existing_mixed_audio: Path | None = None,
+) -> Path:
     """Render the final video MP4. Returns the path to ``<job_dir>/video.mp4``.
 
     Pre-requirements (in order):
@@ -519,8 +632,6 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
     canvas_w, canvas_h = render_dims_for(plan.aspect_ratio)
     sz = safe_zone_for(plan.aspect_ratio)
     font_file = _resolve_font_file()
-
-    compose_timing(plan)
 
     # Pre-compute the caption/title char budget once.
     title_cpl = chars_per_line(sz.width, TITLE_FONT_SIZE)
@@ -565,10 +676,35 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
             0.25,
         )
     use_crossfade = theme_spec.transition.strip().lower() == "crossfade"
+    if not preserve_timing or not plan.render_timing_contract:
+        compose_timing(
+            plan,
+            transition_duration=xfade_duration if use_crossfade else 0.0,
+        )
+    else:
+        # Resume uses the persisted contract even if environment overrides
+        # changed since the original render.
+        xfade_duration = float(
+            plan.render_timing_contract.get(
+                "effective_transition_duration_seconds", 0.0
+            )
+        )
+        use_crossfade = xfade_duration > 0
+    if use_crossfade:
+        # ``compose_timing`` may cap the configured transition for short
+        # narration-weighted scene slots.  The concat stage must consume the
+        # same effective overlap used to compensate encoded clip durations.
+        xfade_duration = float(
+            plan.render_timing_contract.get(
+                "effective_transition_duration_seconds", xfade_duration
+            )
+        )
+        use_crossfade = xfade_duration > 0
     transition_profile = plan.transition_profile_id or (
         "subtle_crossfade" if use_crossfade else "cut"
     )
     motion_profile = plan.motion_profile_id or "slow_ken_burns"
+    motion_profile_override = _render_motion_profile_override()
     logger.info(
         "render routing theme=%s subtitle=%s transition=%s motion=%s",
         plan.theme,
@@ -597,7 +733,7 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
             "plan.narration_audio_filename empty — did synthesize_all run?"
         )
 
-    for scene in body_scenes:
+    for execution_order, scene in enumerate(body_scenes, start=1):
         if not scene.image_filenames:
             raise RuntimeError(
                 f"scene {scene.scene_index}: no image_filenames "
@@ -615,22 +751,35 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
         scene.image_grade_applied = grade_applied
         scene.image_grade_source_asset_hash = source_hash
         if grade_applied:
-            logger.info(
-                "symbolic image grade scene=%02d brightness=%.2f contrast=%.2f "
-                "saturation=%.2f overlay=%s opacity=%.2f",
-                scene.scene_index,
-                theme_spec.image_grade.brightness,
-                theme_spec.image_grade.contrast,
-                theme_spec.image_grade.saturation,
-                theme_spec.image_grade.overlay_color,
-                theme_spec.image_grade.overlay_opacity,
-            )
+            if plan.theme == "practical_life_steps":
+                logger.info(
+                    "practical image grade scene=%02d brightness=%.2f contrast=%.2f "
+                    "saturation=%.2f overlay=%s opacity=%.2f",
+                    scene.scene_index,
+                    theme_spec.image_grade.brightness,
+                    theme_spec.image_grade.contrast,
+                    theme_spec.image_grade.saturation,
+                    theme_spec.image_grade.overlay_color,
+                    theme_spec.image_grade.overlay_opacity,
+                )
+            else:
+                logger.info(
+                    "symbolic image grade scene=%02d brightness=%.2f contrast=%.2f "
+                    "saturation=%.2f overlay=%s opacity=%.2f",
+                    scene.scene_index,
+                    theme_spec.image_grade.brightness,
+                    theme_spec.image_grade.contrast,
+                    theme_spec.image_grade.saturation,
+                    theme_spec.image_grade.overlay_color,
+                    theme_spec.image_grade.overlay_opacity,
+                )
         out_mp4 = work_dir / f"scene_{scene.scene_index:02d}.mp4"
 
         title_lines = [] if plan.theme in {
             "minimalist_emotional",
             "minimalist_symbolic_reel",
             "life_insight_symbolic",
+            "practical_life_steps",
         } else wrap(
             scene.title, title_cpl, max_lines=TITLE_MAX_LINES
         )
@@ -647,23 +796,79 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
         caption_lines = wrap(
             caption_result.text,
             caption_cpl,
-            max_lines=2 if plan.subtitle_style == "insight_reel" else CAPTION_MAX_LINES,
+            max_lines=(
+                2
+                if plan.subtitle_style in {"insight_reel", "practical_steps_reel"}
+                else CAPTION_MAX_LINES
+            ),
         )
         title_text = "\n".join(title_lines) if title_lines else None
         caption_text = "\n".join(caption_lines) if caption_lines else None
 
-        scene_motion_profile = motion_profile
-        scene_zoom_scale = ken_burns_max_scale
+        scene_motion_profile, scene_zoom_scale = _select_scene_motion_profile(
+            plan,
+            scene,
+            default_profile=motion_profile,
+            ken_burns_max_scale=ken_burns_max_scale,
+            override_profile=motion_profile_override,
+        )
+        scene.render_motion_profile = scene_motion_profile
+        badge_layout = practical_step_badge_layout(
+            subtitle_style=plan.subtitle_style,
+            step_number=(
+                scene.step_number if scene.scene_role == "practical_step" else 0
+            ),
+            canvas_w=canvas_w,
+            safe_top=sz.top,
+            safe_left=sz.left,
+            font_file=font_file,
+        )
+        if badge_layout is not None:
+            scene.step_badge_rendered = True
+            scene.step_badge_text = str(badge_layout["text"])
+            scene.step_badge_x = int(badge_layout["x"])
+            scene.step_badge_y = int(badge_layout["y"])
+            scene.step_badge_width = int(badge_layout["width"])
+            scene.step_badge_height = int(badge_layout["height"])
+            logger.info(
+                "practical step badge scene=%02d text=%s x=%d y=%d width=%d height=%d",
+                scene.scene_index,
+                scene.step_badge_text,
+                scene.step_badge_x,
+                scene.step_badge_y,
+                scene.step_badge_width,
+                scene.step_badge_height,
+            )
+        else:
+            scene.step_badge_rendered = False
+            scene.step_badge_text = ""
+        subtitle_layout: dict[str, object] = {}
         if (
-            plan.theme == "life_insight_symbolic"
-            and scene.scene_role == "conclusion"
+            plan.theme == "practical_life_steps"
+            and plan.subtitle_layout_policy_id == PRACTICAL_DYNAMIC_SUBTITLE_POLICY
         ):
-            scene_motion_profile = "controlled_slow_hold"
-            scene_zoom_scale = min(1.012, ken_burns_max_scale)
+            layout_decision = resolve_practical_subtitle_layout(
+                scene.subtitle_protected_regions,
+                busy_regions=scene.subtitle_busy_regions,
+                translation_safe=scene.subtitle_translation_safe,
+            )
+            subtitle_layout = layout_decision.metadata()
+            scene.subtitle_layout_decision = subtitle_layout
+            if layout_decision.status != "passed":
+                raise RuntimeError(
+                    f"scene {scene.scene_index} subtitle layout failed closed: "
+                    f"{layout_decision.reason}"
+                )
+        logger.info(
+            "scene motion scene=%02d role=%s profile=%s",
+            scene.scene_index,
+            scene.scene_role,
+            scene_motion_profile,
+        )
         await _render_scene(
             asset_path=asset_path,
             out_path=out_mp4,
-            duration=scene.duration,
+            duration=scene.render_clip_duration or scene.duration,
             canvas_w=canvas_w,
             canvas_h=canvas_h,
             safe_top=sz.top,
@@ -684,11 +889,19 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
             ),
             channel_name=brand_name or None,
             channel_avatar=brand_avatar or None,
+            step_number=(
+                scene.step_number if scene.scene_role == "practical_step" else 0
+            ),
+            subtitle_layout=subtitle_layout,
         )
         scene_mp4s.append(out_mp4)
         logger.info(
-            "rendered scene %d/%d (%.2fs, video-only)",
-            scene.scene_index, len(body_scenes), scene.duration,
+            _render_progress_message(
+                scene.scene_index,
+                execution_order,
+                len(body_scenes),
+                scene.render_clip_duration or scene.duration,
+            )
         )
 
     # Stage 2: concat the video-only scenes → silent_video.mp4
@@ -696,7 +909,10 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
     if use_crossfade and len(scene_mp4s) > 1:
         await _concat_scenes_xfade(
             scene_mp4s,
-            [max(0.1, s.duration) for s in body_scenes],
+            [
+                max(0.1, scene.render_clip_duration or scene.duration)
+                for scene in body_scenes
+            ],
             silent_video,
             transition_duration=xfade_duration,
         )
@@ -708,9 +924,103 @@ async def render(plan: TellaScenePlan, job_dir: Path) -> Path:
     # Stage 3: mux the single continuous narration onto the silent video.
     final_path = job_dir / "video.mp4"
     narration_path = job_dir / plan.narration_audio_filename
-    await _mux_audio(silent_video, narration_path, final_path)
-    logger.info("render done → %s (%.2fs, continuous narration mixed)",
-                final_path, plan.total_duration)
+    if not narration_path.is_file():
+        raise RuntimeError(f"missing narration audio: {narration_path}")
+    from tella.music.audio import (
+        mix_music_and_narration,
+        prepare_music,
+        probe_duration,
+        run_audio_qc,
+    )
+    from tella.music.service import record_music_usage, write_music_metadata
+
+    prepared_music = None
+    loop_status = "not_applicable"
+    if existing_mixed_audio is not None:
+        accepted_audio = Path(existing_mixed_audio)
+        if not accepted_audio.is_file():
+            raise RuntimeError(f"missing accepted mixed audio: {accepted_audio}")
+        await _mux_audio(silent_video, accepted_audio, final_path, copy_audio=True)
+    elif plan.music_enabled:
+        prepared_music, processing = await prepare_music(
+            plan,
+            job_dir,
+            duration=plan.total_duration,
+        )
+        plan.music_metadata = {
+            **(plan.music_metadata or {}),
+            "processing": processing,
+        }
+        write_music_metadata(plan, job_dir)
+        loop_status = str(processing["loop_discontinuity_status"])
+        await mix_music_and_narration(
+            plan,
+            silent_video,
+            narration_path,
+            prepared_music,
+            final_path,
+        )
+    else:
+        await _mux_audio(silent_video, narration_path, final_path)
+        plan.music_metadata = {
+            **(plan.music_metadata or {}),
+            "status": (plan.music_metadata or {}).get("status", "disabled"),
+            "selected_track": "",
+            "output_duration": plan.total_duration,
+        }
+        write_music_metadata(plan, job_dir)
+
+    actual_duration = await probe_duration(final_path)
+    plan.render_timing_contract = validate_actual_render_duration(
+        plan.render_timing_contract,
+        actual_duration,
+    )
+    plan.actual_final_video_duration_seconds = round(actual_duration, 3)
+    plan.actual_duration_validation_status = str(
+        plan.render_timing_contract["actual_duration_status"]
+    )
+    plan.actual_duration_failure_reason = str(
+        plan.render_timing_contract["actual_duration_failure_reason"]
+    )
+    atomic_write_json(
+        job_dir / "render_timing.json",
+        plan.render_timing_contract,
+    )
+    if plan.actual_duration_validation_status == "failed":
+        raise RuntimeError(plan.actual_duration_failure_reason)
+
+    await run_audio_qc(
+        plan,
+        job_dir,
+        narration=narration_path,
+        prepared_music=prepared_music,
+        final_video=final_path,
+        expected_duration=plan.total_duration,
+        loop_discontinuity_status=loop_status,
+    )
+    if plan.music_enabled and existing_mixed_audio is None:
+        plan.music_metadata = {
+            **plan.music_metadata,
+            "output_duration": plan.audio_qc.get("output_duration"),
+            "loudness_statistics": {
+                "music_loudness_lufs": plan.audio_qc.get("music_loudness_lufs"),
+                "final_integrated_loudness_lufs": plan.audio_qc.get(
+                    "final_integrated_loudness_lufs"
+                ),
+                "true_peak_dbtp": plan.audio_qc.get("true_peak_dbtp"),
+            },
+            "qc_result": plan.audio_qc.get("status"),
+        }
+        write_music_metadata(plan, job_dir)
+        record_music_usage(plan, job_dir)
+    logger.info(
+        "render done: %s (%.2fs, narration=%s music=%s audio_qc=%s)",
+        final_path,
+        plan.total_duration,
+        plan.tts_provider or "continuous",
+        plan.selected_music_track_id or "none",
+        plan.audio_qc.get("status", "unknown"),
+    )
     return final_path
 
 

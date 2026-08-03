@@ -36,6 +36,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 
 import httpx
+from tella.atomic_write import atomic_write_bytes
 
 logger = logging.getLogger("tella.media.ai_image")
 
@@ -60,6 +61,17 @@ _last_request_at = 0.0
 _before_request_hook: contextvars.ContextVar[
     Callable[[], Awaitable[None]] | None
 ] = contextvars.ContextVar("cloudflare_before_request_hook", default=None)
+
+
+def _positive_env_int(name: str, default: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning("invalid %s=%r; using %d", name, raw, default)
+        return default
 
 
 class CloudflareAIError(RuntimeError):
@@ -126,6 +138,10 @@ def classify_cloudflare_error(status_code: int, body: str) -> tuple[str, bool]:
         return "rate_limited", False
     if status_code in {401, 403}:
         return "auth_error", False
+    if status_code in {400, 404, 405, 422}:
+        return "invalid_request", False
+    if status_code in {502, 503, 504}:
+        return "provider_unavailable", False
     if status_code in {402, 4020} or "payment" in text or "billing" in text:
         return "payment_required", False
     return "provider_http_error", True
@@ -182,6 +198,8 @@ async def generate_image(
     width: int = DEFAULT_WIDTH,
     height: int = DEFAULT_HEIGHT,
     seed: int | None = None,
+    max_accounts: int | None = None,
+    max_attempts_per_account: int | None = None,
 ) -> Path:
     """Generate one image and save to ``out_path``. Returns ``out_path`` on success.
 
@@ -197,6 +215,19 @@ async def generate_image(
         raise RuntimeError(
             "CF AI: no credentials (set CF_ACCOUNTS or CF_ACCOUNT_ID + CF_AI_TOKEN)"
         )
+    account_limit = (
+        max(1, int(max_accounts)) if max_accounts is not None
+        else _positive_env_int("TELLA_CF_MAX_ACCOUNTS", len(creds))
+    )
+    creds = creds[:account_limit]
+    attempt_limit = (
+        max(1, int(max_attempts_per_account))
+        if max_attempts_per_account is not None
+        else _positive_env_int(
+            "TELLA_CF_MAX_RETRIES_PER_ACCOUNT",
+            MAX_RETRIES_PER_ACCOUNT,
+        )
+    )
 
     payload: dict = {
         "prompt": (prompt or "").strip(),
@@ -212,7 +243,7 @@ async def generate_image(
         url = f"https://api.cloudflare.com/client/v4/accounts/{aid}/ai/run/{model}"
         headers = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
         quota_exhausted = False
-        for attempt in range(1, MAX_RETRIES_PER_ACCOUNT + 1):
+        for attempt in range(1, attempt_limit + 1):
             try:
                 await _throttle()
                 async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
@@ -233,9 +264,9 @@ async def generate_image(
                                 f"CF AI 200 JSON missing image: keys={list(result)}"
                             )
                         img_bytes = base64.b64decode(b64)
-                        out_path.write_bytes(img_bytes)
+                        atomic_write_bytes(out_path, img_bytes)
                     elif resp.content:
-                        out_path.write_bytes(resp.content)
+                        atomic_write_bytes(out_path, resp.content)
                     else:
                         raise RuntimeError("CF AI 200 with empty body")
 
@@ -272,10 +303,21 @@ async def generate_image(
                     break
                 if resp.status_code in (401, 403):
                     break  # bad creds, try next account
-            except (httpx.HTTPError, httpx.ReadTimeout) as exc:
-                last_err = exc
+            except httpx.TimeoutException:
+                last_err = CloudflareAIError(
+                    "CF AI request timed out",
+                    error_type="timeout",
+                    recoverable=False,
+                )
+                logger.warning("cf-ai timeout attempt %d", attempt)
+            except httpx.HTTPError as exc:
+                last_err = CloudflareAIError(
+                    "CF AI transport unavailable",
+                    error_type="provider_unavailable",
+                    recoverable=False,
+                )
                 logger.warning("cf-ai network err attempt %d: %s", attempt, exc)
-            if attempt < MAX_RETRIES_PER_ACCOUNT:
+            if attempt < attempt_limit:
                 await asyncio.sleep(RETRY_BACKOFF_SECONDS * attempt)
         if quota_exhausted:
             logger.info("cf-ai account %d quota exhausted, rotating", cred_idx)

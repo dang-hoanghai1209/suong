@@ -1,0 +1,54 @@
+﻿Track ID: practical_calm_01
+Title: Lofi Study - Calm Peaceful Chill Hop
+Creator: FASSounds
+Owner/Rights holder: FASSounds
+
+Source: Pixabay Music
+Track page: https://pixabay.com/music/beats-lofi-study-calm-peaceful-chill-hop-112191/
+Downloaded date: 2026-07-12
+Published date shown by source: 2022-05-31
+
+License type: Pixabay Content License
+License summary: https://pixabay.com/service/license-summary/
+
+Commercial use on Facebook/Fanpage:
+Allowed when incorporated into a larger creative work, subject to the Pixabay Content License and any applicable third-party rights.
+
+Editing and trimming:
+Allowed as modification/adaptation under the Pixabay Content License.
+
+Mixing with voice and video:
+Allowed as modification/adaptation under the Pixabay Content License.
+
+Volume adjustment and sidechain ducking:
+Allowed as modification/adaptation under the Pixabay Content License.
+
+Looping:
+Permitted as an adaptation under the Pixabay Content License, but looping is not required for the current 32.475-second prototype because the source track is approximately 2 minutes 27 seconds.
+
+Standalone redistribution:
+Not allowed. The original track must not be redistributed or sold by itself.
+
+Attribution required:
+No.
+
+Optional attribution:
+Music by FASSounds from Pixabay.
+
+Content ID status:
+Content ID Registered.
+
+Content ID note:
+Keep the original download, this provenance record, the track page, and any certificate or screenshot supplied by Pixabay. Automated platform claims may still occur even when use is licensed.
+
+Local source file:
+C:\Users\dangh\Downloads\fassounds-lofi-study-calm-peaceful-chill-hop-112191.mp3
+
+Project file:
+music/tracks/practical_calm_01.mp3
+
+SHA256:
+7E1C5715443C6FB2E4AF66AF3316ADCE4638F2F8C53680D70665AEED41D74CF5
+
+Proof of provenance:
+Downloaded directly from the Pixabay track page. Save the Pixabay download certificate or a screenshot/PDF of the track page when available.

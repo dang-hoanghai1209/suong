@@ -32,6 +32,7 @@ from pathlib import Path
 
 from tella.media import ai_image, sprite_composer, stock_photo, stock_video
 from tella.media.image_provider import get_image_provider
+from tella.atomic_write import atomic_write_bytes, atomic_write_json
 from tella.media.reference_pipeline import (
     generate_character_references,
     selected_reference_paths,
@@ -49,10 +50,26 @@ from tella.media.visual_qc import (
 )
 from tella.planner.models import SceneQCResult, StyleBible, TellaScenePlan, VisualBible
 from tella.planner.life_insight_visuals import build_life_insight_provider_prompt
+from tella.planner.practical_life_steps_visuals import build_practical_provider_prompt
 from tella.planner.visual_bible import build_visual_bible, save_visual_bible
 from tella.planner.visual_prompts import build_scene_visual_plan, repair_prompt
+from tella.topic_production.strategy import SceneDataSensitivity
+from tella.web_image_fallback import (
+    generate_web_pollinations_fallback,
+    pollinations_failover_eligible,
+    pollinations_web_readiness,
+    validate_web_scene_sensitivity_authorities,
+)
 
 logger = logging.getLogger("tella.media.fetch")
+
+
+def _asset_library_mode_enabled(plan: TellaScenePlan | None) -> bool:
+    raw = (os.environ.get("TELLA_ASSET_LIBRARY_V2") or "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    return False
+
 
 # Keep concurrency modest: bursting many simultaneous requests at one CF
 # account triggers rate-limit 429s. 3 in flight + the global throttle in
@@ -88,12 +105,104 @@ def _provider_prompt_hash(prompt: str) -> str:
     return hashlib.sha256((prompt or "").encode("utf-8")).hexdigest()[:24]
 
 
+async def _fetch_asset_library_scenes(
+    plan: TellaScenePlan,
+    body_scenes: list,
+    job_dir: Path,
+) -> None:
+    from tella.asset_library.semantic_resolver import (
+        build_production_scene_request,
+        compose_asset_library_scene,
+        select_semantic_asset,
+    )
+
+    asset_library_root_value = (os.environ.get("TELLA_ASSET_LIBRARY_ROOT") or "").strip()
+    semantics_path_value = (os.environ.get("TELLA_ASSET_LIBRARY_SEMANTICS_PATH") or "").strip()
+    asset_library_root = (
+        Path(asset_library_root_value).expanduser().resolve()
+        if asset_library_root_value
+        else None
+    )
+    semantics_path = (
+        Path(semantics_path_value).expanduser().resolve() if semantics_path_value else None
+    )
+    metadata_path = job_dir / "asset_library_scene_metadata.json"
+    scene_metadata: list[dict] = []
+    selected_semantic_ids: list[str] = []
+    selected_source_ids: list[str] = []
+    for scene in body_scenes:
+        request = build_production_scene_request(scene)
+        resolution = select_semantic_asset(semantics_path, asset_library_root, request)
+        out_path = job_dir / "assets" / f"scene_{scene.scene_index:02d}_asset_library.png"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        scene_payload = compose_asset_library_scene(scene, out_path, asset_library_root, semantics_path)
+        scene.image_filenames = [f"assets/{out_path.name}"]
+        scene.asset_status = "asset_library"
+        scene.asset_error = ""
+        scene.asset_path = scene.image_filenames[0]
+        scene.asset_library_request = request.to_dict()
+        scene.asset_library_result = {
+            "selected_semantic_id": resolution.selected_semantic_id,
+            "selected_source_asset_id": resolution.selected_source_asset_id,
+            "selection_score": resolution.selection_score,
+            "selection_reasons": resolution.selection_reasons,
+            "score_breakdown": resolution.score_breakdown,
+            "selected_tier": resolution.selected_tier,
+            "enabled": resolution.enabled_flag,
+            "canonical": resolution.canonical_flag,
+            "production_eligible": resolution.production_eligible,
+            "quality_status": resolution.quality_status,
+            "fallback_reason": resolution.fallback_reason,
+            "background_path": resolution.background_path,
+            "object_paths": resolution.object_paths,
+            "character_processed_path": resolution.character_processed_path,
+            "deterministic_seed": resolution.deterministic_seed,
+            "object_warnings": resolution.object_warnings,
+            "object_dimensions": [
+                {
+                    "object_id": item["asset_id"],
+                    "width": item["placement"]["width"],
+                    "height": item["placement"]["height"],
+                    "rotation_degrees": item["placement"]["rotation_degrees"],
+                }
+                for item in scene_payload.get("objects", [])
+            ],
+            "background_mode": scene_payload.get("background", {}).get("mode", "scenic_asset"),
+            "layout_template": scene_payload.get("layout_template", ""),
+            "harmonization": scene_payload.get("harmonization", {}),
+        }
+        selected_semantic_ids.append(resolution.selected_semantic_id)
+        selected_source_ids.append(resolution.selected_source_asset_id)
+        if (
+            len(selected_source_ids) >= 2
+            and selected_source_ids[-1] == selected_source_ids[-2]
+        ):
+            scene_payload["character"]["repeat_fallback_reason"] = "consecutive_pose_reuse_retained_for_semantic_correctness"
+            scene.asset_library_result["repeat_fallback_reason"] = scene_payload["character"]["repeat_fallback_reason"]
+        scene_metadata.append(scene_payload)
+        logger.info(
+            "asset_library scene=%02d semantic=%s score=%d seed=%d",
+            scene.scene_index,
+            resolution.selected_semantic_id,
+            resolution.selection_score,
+            resolution.deterministic_seed,
+        )
+    metadata_path.write_text(json.dumps(scene_metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 class _CloudflareRequestBudget:
-    def __init__(self, plan: TellaScenePlan, scenes: list, maximum: int | None) -> None:
+    def __init__(
+        self,
+        plan: TellaScenePlan,
+        scenes: list,
+        maximum: int | None,
+        job_dir: Path | None = None,
+    ) -> None:
         self.plan = plan
         self.scenes = scenes
         self.maximum = maximum
         self.used = 0
+        self.plan_path = Path(job_dir) / "plan.json" if job_dir is not None else None
         self._lock = asyncio.Lock()
         budget_max = maximum or 0
         plan.image_request_budget_max = budget_max
@@ -122,6 +231,12 @@ class _CloudflareRequestBudget:
                 )
             elif scene.content_policy_attempt_count == 0:
                 scene.content_policy_attempt_count = 1
+            # Persist acquisition before the transport starts. A hard failure
+            # after provider submission must not erase the request history.
+            if self.plan_path is not None:
+                atomic_write_json(
+                    self.plan_path, self.plan.model_dump(mode="json")
+                )
             denominator = str(self.maximum) if self.maximum is not None else "unlimited"
             logger.info(
                 "cloudflare image request %d/%s scene=%02d stage=%s "
@@ -614,6 +729,28 @@ def _reuse_assets_mode() -> str:
     return "strict"
 
 
+def _required_reuse_scene_indices() -> set[int]:
+    raw = (os.environ.get("TELLA_REQUIRE_REUSED_SCENE_INDICES") or "").strip()
+    if not raw:
+        return set()
+    indices: set[int] = set()
+    for piece in raw.split(","):
+        try:
+            index = int(piece.strip())
+        except ValueError as exc:
+            raise RuntimeError(
+                "TELLA_REQUIRE_REUSED_SCENE_INDICES must be comma-separated "
+                f"positive integers; received {raw!r}"
+            ) from exc
+        if index <= 0:
+            raise RuntimeError(
+                "TELLA_REQUIRE_REUSED_SCENE_INDICES must contain only "
+                f"positive integers; received {raw!r}"
+            )
+        indices.add(index)
+    return indices
+
+
 def _skip_image_generation() -> bool:
     return _env_bool("TELLA_SKIP_IMAGE_GENERATION")
 
@@ -701,6 +838,12 @@ def _load_reuse_index(job_dir: Path) -> dict[tuple[int, str], dict]:
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning("reuse-assets could not read %s: %s", plan_path, exc)
         return {}
+    source_recipe_id = str(data.get("recipe_id") or "")
+    source_recipe_version = int(data.get("recipe_version") or 0)
+    source_aspect_ratio = str(data.get("aspect_ratio") or "")
+    source_visual_theme = str(
+        data.get("visual_theme_id") or data.get("theme") or ""
+    )
     index: dict[tuple[int, str], dict] = {}
     for item in data.get("scenes", []):
         if not isinstance(item, dict) or item.get("kind") != "scene":
@@ -720,18 +863,99 @@ def _load_reuse_index(job_dir: Path) -> dict[tuple[int, str], dict]:
         src = source_dir / asset_path
         if not src.is_file():
             continue
+        source_asset_hash = str(item.get("asset_hash") or "")
         index[(int(item.get("scene_index") or 0), prompt_hash)] = {
             "source_path": src,
             "source_asset_path": asset_path,
             "source_prompt_hash": prompt_hash,
+            "source_provider_prompt_hash": str(
+                item.get("provider_prompt_initial_hash") or ""
+            ),
+            "source_asset_hash": source_asset_hash,
+            "actual_asset_hash": _sha256_short(src),
             "source_job_id": source_dir.name,
             "source_scene_index": int(item.get("scene_index") or 0),
+            "source_recipe_id": source_recipe_id,
+            "source_recipe_version": source_recipe_version,
+            "source_aspect_ratio": source_aspect_ratio,
+            "source_visual_theme": source_visual_theme,
+            "source_scene_role": str(item.get("scene_role") or ""),
+            "source_step_number": int(item.get("step_number") or 0),
+            "source_visual_action": str(item.get("visual_action") or ""),
             "image_source": item.get("image_source") or "ai_image_provider",
             "image_provider": item.get("image_provider") or "cloudflare",
             "asset_status": item.get("asset_status") or "done",
         }
     logger.info("reuse-assets index loaded: %d reusable scene assets", len(index))
     return index
+
+
+def _practical_reuse_mismatch_reasons(
+    plan: TellaScenePlan,
+    scene,
+    cached: dict,
+    *,
+    asset_prompt_hash: str,
+    provider_prompt_hash: str,
+) -> list[str]:
+    """Return fail-closed reasons for Practical Life Steps asset reuse."""
+    checks = (
+        (
+            str(cached.get("source_recipe_id") or "")
+            == str(plan.recipe_id or ""),
+            "recipe ID does not match",
+        ),
+        (
+            int(cached.get("source_recipe_version") or 0)
+            == int(plan.recipe_version or 0),
+            "recipe version does not match",
+        ),
+        (
+            str(cached.get("source_scene_role") or "")
+            == str(scene.scene_role or ""),
+            "scene role does not match",
+        ),
+        (
+            int(cached.get("source_step_number") or 0)
+            == int(scene.step_number or 0),
+            "step number does not match",
+        ),
+        (
+            str(cached.get("source_provider_prompt_hash") or "")
+            == provider_prompt_hash,
+            "provider prompt hash does not match",
+        ),
+        (
+            str(cached.get("source_prompt_hash") or "")
+            == asset_prompt_hash,
+            "asset prompt hash does not match",
+        ),
+        (
+            str(cached.get("source_aspect_ratio") or "")
+            == str(plan.aspect_ratio or ""),
+            "aspect ratio does not match",
+        ),
+        (
+            str(cached.get("source_visual_theme") or "")
+            == str(plan.visual_theme_id or plan.theme or ""),
+            "visual theme does not match",
+        ),
+        (
+            str(cached.get("source_visual_action") or "").strip()
+            == str(scene.visual_action or "").strip(),
+            "visual action does not match",
+        ),
+        (
+            bool(cached.get("source_asset_hash")),
+            "source asset hash is missing",
+        ),
+        (
+            str(cached.get("source_asset_hash") or "")
+            == str(cached.get("actual_asset_hash") or ""),
+            "source asset content hash does not match its plan metadata",
+        ),
+    )
+    return [reason for matched, reason in checks if not matched]
 
 
 def _load_loose_reuse_index(job_dir: Path) -> dict[int, dict]:
@@ -1733,7 +1957,7 @@ async def _fetch_minimalist_reference_assets(
         if best_qc:
             save_qc_result(best_qc, job_dir, final=True)
         if best_out != final_out:
-            final_out.write_bytes(best_out.read_bytes())
+            atomic_write_bytes(final_out, best_out.read_bytes())
 
         final_hash = image_hash(final_out)
         previous_hashes.append(final_hash)
@@ -1810,6 +2034,23 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
     body_scenes = [s for s in plan.scenes if s.kind == "scene"]
     if not body_scenes:
         return
+    required_sensitivity_policy = (
+        os.environ.get("TELLA_WEB_SENSITIVITY_POLICY") or ""
+    ).strip() or None
+    web_sensitivity = validate_web_scene_sensitivity_authorities(
+        plan,
+        required_policy_id=required_sensitivity_policy,
+    )
+
+    if _asset_library_mode_enabled(plan):
+        from tella.asset_library.background_renderer import resolve_background_mode
+
+        logger.info(
+            "asset-library v2 mode enabled (background_mode=%s)",
+            resolve_background_mode(),
+        )
+        await _fetch_asset_library_scenes(plan, body_scenes, job_dir)
+        return
 
     width, height = _GEN_DIMS.get(plan.aspect_ratio, _GEN_DIMS["9:16"])
     local_fallback_allowed = _local_image_fallback_allowed()
@@ -1828,12 +2069,24 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
     max_ai_images = _env_int_optional("TELLA_MAX_AI_IMAGES")
     reuse_index = _load_reuse_index(job_dir)
     loose_reuse_index = _load_loose_reuse_index(job_dir) if plan.reuse_mode == "loose_debug" else {}
-    request_budget = _CloudflareRequestBudget(plan, body_scenes, max_ai_images)
+    request_budget = _CloudflareRequestBudget(
+        plan, body_scenes, max_ai_images, job_dir
+    )
+    required_reuse_indices = _required_reuse_scene_indices()
+    reuse_source_job_id = (
+        _source_job_id(job_dir) if _reuse_assets_enabled() else ""
+    )
 
     for scene in body_scenes:
         scene.local_fallback_allowed = local_fallback_allowed
         scene.reuse_mode = plan.reuse_mode
         scene.skip_image_generation = skip_image_generation
+        scene.reuse_source_job_id = reuse_source_job_id
+        scene.reuse_eligible = False
+        scene.reuse_match_reason = ""
+        scene.reuse_mismatch_reason = (
+            "" if reuse_source_job_id else "reuse source not configured"
+        )
 
     if plan.reuse_mode == "loose_debug":
         logger.warning(
@@ -1922,18 +2175,77 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         stage: str = "initial",
     ) -> None:
         _assert_provider_submission_allowed()
+        sensitivity = web_sensitivity.get(scene.scene_index)
+        if sensitivity is SceneDataSensitivity.LOCAL_ONLY:
+            raise RuntimeError("LOCAL_ONLY scene prohibits external image providers")
+        if sensitivity is not None:
+            scene.primary_image_provider_attempted = "cloudflare"
 
         async def _before_request() -> None:
             await request_budget.acquire(scene, prompt, stage)
 
-        with ai_image.cloudflare_request_hook(_before_request):
-            await ai_image.generate_image(
-                prompt,
-                out,
-                width=width,
-                height=height,
-                seed=seed,
+        try:
+            with ai_image.cloudflare_request_hook(_before_request):
+                await ai_image.generate_image(
+                    prompt,
+                    out,
+                    width=width,
+                    height=height,
+                    seed=seed,
+                )
+        except Exception as exc:
+            if sensitivity is None:
+                raise
+            readiness = pollinations_web_readiness(width=width, height=height)
+            eligible, classification = pollinations_failover_eligible(
+                sensitivity=sensitivity,
+                cloudflare_error=exc,
+                readiness=readiness,
             )
+            scene.image_failure_classification = classification
+            scene.image_fallback_eligible = eligible
+            if not eligible:
+                raise
+            if scene.pollinations_fallback_attempted:
+                raise RuntimeError(
+                    "Pollinations fallback was already attempted for this scene"
+                ) from exc
+            scene.pollinations_fallback_attempted = True
+            plan.pollinations_fallback_attempt_count += 1
+            try:
+                metadata = await generate_web_pollinations_fallback(
+                    plan=plan,
+                    scene=scene,
+                    sensitivity=sensitivity,
+                    output_path=out,
+                    width=width,
+                    height=height,
+                    seed=seed if seed is not None else _VIDEO_SEED,
+                )
+            except Exception:
+                scene.resolved_image_provider = ""
+                raise
+            scene.image_fallback_used = True
+            scene.resolved_image_provider = "pollinations"
+            scene.pollinations_request_sha256 = str(metadata["request_sha256"])
+            scene.generated_image_width = int(metadata["width"])
+            scene.generated_image_height = int(metadata["height"])
+            scene.generated_image_bytes = int(metadata["bytes"])
+            scene.generated_image_sha256 = str(metadata["sha256"])
+            plan.pollinations_fallback_used = True
+            if "pollinations" not in plan.resolved_image_providers:
+                plan.resolved_image_providers.append("pollinations")
+        else:
+            if sensitivity is not None:
+                scene.image_fallback_eligible = False
+                scene.image_fallback_used = False
+                scene.resolved_image_provider = "cloudflare"
+                scene.generated_image_width = width
+                scene.generated_image_height = height
+                scene.generated_image_bytes = out.stat().st_size
+                scene.generated_image_sha256 = hashlib.sha256(out.read_bytes()).hexdigest()
+                if "cloudflare" not in plan.resolved_image_providers:
+                    plan.resolved_image_providers.append("cloudflare")
         plan.ai_images_generated += 1
         scene.ai_images_generated += 1
 
@@ -2087,7 +2399,7 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         if selected_qc is not None:
             save_qc_result(selected_qc, job_dir, final=True)
         if selected_out is not None and selected_out != final_out:
-            final_out.write_bytes(selected_out.read_bytes())
+            atomic_write_bytes(final_out, selected_out.read_bytes())
         if selected_qc is not None and selected_out is not None:
             try:
                 selected_attempt_path = str(selected_out.relative_to(job_dir))
@@ -2144,6 +2456,14 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         scene.reused_from_job = scene.reused_from_job_id
         scene.reused_from_scene = int(cached.get("source_scene_index") or 0)
         scene.reused_asset_path = str(cached.get("source_asset_path") or src)
+        scene.reuse_source_job_id = str(cached.get("source_job_id") or "")
+        scene.reuse_eligible = True
+        scene.reuse_match_reason = (
+            "strict practical metadata matched"
+            if plan.theme == "practical_life_steps"
+            else "strict asset prompt hash matched"
+        )
+        scene.reuse_mismatch_reason = ""
         scene.reused_asset_prompt_hash_mismatch = bool(prompt_hash_mismatch)
         scene.reuse_mode = reuse_mode
         scene.reuse_assets_mode = (
@@ -2175,23 +2495,70 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
             used_local_fallback=False,
         )
         _record_asset(scene, out)
+        scene.reused_asset_hash = scene.asset_hash
         logger.info(
             "scene %02d reused asset from job=%s source_scene=%02d mode=%s "
-            "prompt_match=%s provider_requests=0 source=%s",
+            "prompt_match=%s provider_requests=0 source=%s asset_hash=%s",
             scene.scene_index,
             scene.reused_from_job_id,
             scene.reused_from_scene,
             scene.reuse_assets_mode,
             str(scene.reuse_prompt_match).lower(),
             src,
+            scene.reused_asset_hash,
         )
         return True
 
     def _try_reuse_asset(scene, prompt_hash: str, out: Path) -> bool:
+        def _reject_required_reuse() -> None:
+            if scene.scene_index in required_reuse_indices:
+                raise RuntimeError(
+                    "required strict reuse failed before provider submission "
+                    f"for scene {scene.scene_index:02d}: "
+                    f"{scene.reuse_mismatch_reason or 'unknown mismatch'}"
+                )
+
         if not reuse_index:
+            if reuse_source_job_id:
+                scene.reuse_mismatch_reason = (
+                    "source plan has no eligible reusable assets"
+                )
+            _reject_required_reuse()
             return False
-        cached = reuse_index.get((scene.scene_index, prompt_hash))
-        if not cached:
+        candidates = [
+            cached
+            for (source_scene_index, _), cached in reuse_index.items()
+            if source_scene_index == scene.scene_index
+        ]
+        if not candidates:
+            scene.reuse_mismatch_reason = (
+                "source plan has no candidate for this scene index"
+            )
+            _reject_required_reuse()
+            return False
+        cached = reuse_index.get((scene.scene_index, prompt_hash)) or candidates[0]
+        if plan.theme == "practical_life_steps":
+            mismatch_reasons = _practical_reuse_mismatch_reasons(
+                plan,
+                scene,
+                cached,
+                asset_prompt_hash=prompt_hash,
+                provider_prompt_hash=scene.provider_prompt_initial_hash,
+            )
+            if mismatch_reasons:
+                scene.reuse_mismatch_reason = "; ".join(mismatch_reasons)
+                logger.info(
+                    "scene %02d strict practical reuse rejected source_job=%s "
+                    "reasons=%s",
+                    scene.scene_index,
+                    reuse_source_job_id,
+                    scene.reuse_mismatch_reason,
+                )
+                _reject_required_reuse()
+                return False
+        elif str(cached.get("source_prompt_hash") or "") != prompt_hash:
+            scene.reuse_mismatch_reason = "asset prompt hash does not match"
+            _reject_required_reuse()
             return False
         return _apply_reused_asset(
             scene,
@@ -2318,6 +2685,11 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                         scene.provider_prompt_variant
                         or build_life_insight_provider_prompt(scene)
                     )
+                elif plan.theme == "practical_life_steps":
+                    prompt_for_cf = (
+                        scene.provider_prompt_variant
+                        or build_practical_provider_prompt(scene)
+                    )
                 prompt_hash = _asset_prompt_hash(
                     prompt_for_cf,
                     width=width,
@@ -2325,7 +2697,11 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                     seed=_seed_for_scene(plan, scene) if plan.theme == "minimalist_emotional" else _VIDEO_SEED,
                 )
                 scene.asset_prompt_hash = prompt_hash
-                if plan.theme in {"minimalist_symbolic_reel", "life_insight_symbolic"}:
+                if plan.theme in {
+                    "minimalist_symbolic_reel",
+                    "life_insight_symbolic",
+                    "practical_life_steps",
+                }:
                     scene.provider_prompt_initial = prompt_for_cf
                     scene.provider_prompt_initial_hash = _provider_prompt_hash(
                         prompt_for_cf
@@ -2357,6 +2733,16 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                         logger.info(
                             "life insight provider prompt scene=%02d summary=%s",
                             scene.scene_index,
+                            json.dumps(scene.sanitized_prompt_summary, ensure_ascii=False),
+                        )
+                    elif plan.theme == "practical_life_steps":
+                        logger.info(
+                            "practical steps provider prompt scene=%02d role=%s "
+                            "variant=%s composition=%s summary=%s",
+                            scene.scene_index,
+                            scene.scene_role,
+                            scene.visual_variant_id,
+                            scene.composition_pattern,
                             json.dumps(scene.sanitized_prompt_summary, ensure_ascii=False),
                         )
                 if plan.theme == "minimalist_emotional":
@@ -2454,6 +2840,21 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                         _finalize_minimalist_scene_metadata(
                             scene,
                             visual_mode="life_insight_symbolic",
+                            provider="cloudflare",
+                        )
+                        _set_image_source_metadata(
+                            scene,
+                            image_source="ai_image_provider",
+                            image_provider="cloudflare",
+                            asset_path=out,
+                            job_dir=job_dir,
+                            used_local_fallback=False,
+                        )
+                        scene.prompt_used = prompt_for_cf
+                    elif plan.theme == "practical_life_steps":
+                        _finalize_minimalist_scene_metadata(
+                            scene,
+                            visual_mode="practical_life_steps",
                             provider="cloudflare",
                         )
                         _set_image_source_metadata(
@@ -2637,15 +3038,22 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                         _record_asset(scene, fallback_out)
                         return
 
-                    # Either daily neuron quota burned across every CF
-                    # account, or the safety filter false-positived a
-                    # specific scene's prompt. Either way, Pexels Photo
-                    # always works — fall through so the user still gets
-                    # a complete video instead of "all 5 accounts failed".
-                    logger.warning(
-                        "scene %d: AI image failed (%s) → fallback to Pexels",
-                        scene.scene_index, str(exc)[:120],
-                    )
+                    if web_sensitivity:
+                        raise
+
+                    # Preserve the legacy Pexels fallback only when the
+                    # caller's environment has not disabled it.
+                    if _stock_fallback_disabled():
+                        logger.warning(
+                            "scene %d: AI image generation failed; stock fallback is disabled",
+                            scene.scene_index,
+                        )
+                    else:
+                        logger.warning(
+                            "scene %d: AI image failed (%s) → fallback to Pexels",
+                            scene.scene_index,
+                            str(exc)[:120],
+                        )
                     await _fallback_to_stock_photo(scene, base)
             elif plan.media_source == "stock_photo":
                 _assert_provider_submission_allowed()
@@ -2691,7 +3099,12 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         len(body_scenes), plan.media_source, width, height,
     )
     try:
-        await asyncio.gather(*[_one(i, s) for i, s in enumerate(body_scenes)])
+        if _env_bool("TELLA_AI_IMAGE_SEQUENTIAL"):
+            logger.info("AI image execution mode=sequential fail-fast")
+            for i, scene in enumerate(body_scenes):
+                await _one(i, scene)
+        else:
+            await asyncio.gather(*[_one(i, s) for i, s in enumerate(body_scenes)])
     finally:
         request_budget.sync_finish_metadata()
     logger.info("fetch_assets: all %d scenes done", len(body_scenes))

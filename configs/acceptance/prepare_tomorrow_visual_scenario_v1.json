@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "profile_id": "prepare_tomorrow_visual_scenario_v1",
+  "identity_mode": "approximate_character_continuity",
+  "identity_continuity_strategy": "text_fingerprint_plus_seed_and_strict_qc",
+  "identity_acceptance_standard": "same recognizable designed character; exact pixel-level identity is not claimed",
+  "character_fingerprint": "1790e6ac5f61c12bda73494dc3166b08213e4656ec80e85bd05c309378874ddf",
+  "canonical_character_spec": {
+    "spec_version": 1,
+    "presentation": "one young adult male",
+    "hair": "short dark hair with a fixed rounded side-swept silhouette",
+    "face": "simple softly angular face with small dark eyes and a short straight nose",
+    "skin_tone": "fixed warm medium-light skin tone",
+    "top": "teal long-sleeve top with a small round collar and narrow fixed cuffs",
+    "trousers": "dark charcoal trousers",
+    "shoulder_to_head_ratio": "approximately 2.4 shoulder widths per head width",
+    "body_build": "slim average adult build",
+    "line_style": "uniform clean charcoal line, approximately 3 px at 768x1344",
+    "palette": "teal, dark charcoal, warm medium-light skin, warm orange accents"
+  },
+  "character_identity_prompt": "CFP 1790e6ac5f61c12bda73494dc3166b08213e4656ec80e85bd05c309378874ddf; fixed young adult male: short dark rounded side-swept hair; softly angular face; warm medium-light skin; teal round-collar narrow-cuff long-sleeve top; charcoal trousers; slim build; shoulders/head 2.4; uniform 3px charcoal lines; teal/orange palette.",
+  "identity_invariants": [
+    "young adult male presentation and age group",
+    "short dark rounded side-swept hair silhouette",
+    "softly angular simple face shape",
+    "warm medium-light skin tone",
+    "teal long-sleeve top with round collar and narrow cuffs",
+    "dark charcoal trousers",
+    "slim average build and approximate 2.4:1 shoulder-to-head ratio",
+    "uniform clean charcoal line and fixed teal/orange palette"
+  ],
+  "forbidden_identity_changes": [
+    "different gender presentation or age group",
+    "different hair color or major hair silhouette",
+    "different top color, collar, or cuff design",
+    "clearly different body build",
+    "missing head or duplicated person"
+  ],
+  "cast_archetype": "consistent_young_adult_male",
+  "style_instruction": "Minimalist wordless hand-drawn flat illustration, light background.",
+  "global_hard_negatives": [
+    "No extra person, cropped head, malformed hands, text, digits, watermark, duplicates, tiling, or broken lines."
+  ],
+  "subtitle_layout_policy_id": "practical_dynamic_v1",
+  "scenes": [
+    {
+      "scene_index": 1,
+      "scene_role": "hook",
+      "setting": "morning bedroom with a doorway",
+      "primary_action": "moving hurriedly toward a partly open bag while one key and one notebook are misplaced",
+      "primary_prop": "partly open travel bag",
+      "secondary_props": ["one key", "one notebook"],
+      "body_pose": "standing three-quarter stepping pose with both hands visible",
+      "character_placement": "character left of center, open bag on the right",
+      "camera_framing": "medium-wide room view",
+      "composition_family": "medium room view",
+      "emotional_state": "concerned and hurried"
+    },
+    {
+      "scene_index": 2,
+      "scene_role": "context",
+      "setting": "small entryway shelf and side table",
+      "primary_action": "searching the shelf and open bag for one missing key",
+      "primary_prop": "single missing-key space on a key tray",
+      "secondary_props": ["open bag", "small shelf"],
+      "body_pose": "bent side-profile searching pose with one hand checking the shelf",
+      "character_placement": "character on the right facing left toward the shelf",
+      "camera_framing": "side-profile medium action view",
+      "composition_family": "side-profile action",
+      "emotional_state": "mildly frustrated"
+    },
+    {
+      "scene_index": 3,
+      "scene_role": "practical_step",
+      "setting": "evening desk, moon window, warm lamp",
+      "primary_action": "writing a checklist with empty checkboxes on blank paper beside a symbol-only grid",
+      "primary_prop": "blank grid with empty boxes and three colored circles only",
+      "secondary_props": ["pen", "warm lamp", "moon window"],
+      "body_pose": "seated upright writing pose with plausible hands",
+      "character_placement": "character centered-right, blank planning board on wall left",
+      "camera_framing": "close medium evening action shot",
+      "composition_family": "close medium action shot",
+      "emotional_state": "calm and attentive",
+      "semantic_hard_negatives": [
+        "No letters, numbers, labels, readable text, pseudo-writing, or phone."
+      ],
+      "symbolic_qc_expectations": [
+        "symbol-only planning grid with empty boxes and two or three colored circles",
+        "generated text, pseudo-text, labels, and digits are hard failures"
+      ],
+      "planning_overlay_strategy": "generic_symbol_only_geometric_overlay_if_character_candidate_passes"
+    },
+    {
+      "scene_index": 4,
+      "scene_role": "practical_step",
+      "setting": "wardrobe corner with chair and clothes rail",
+      "primary_action": "standing while neatly arranging one prepared outfit on a chair",
+      "primary_prop": "one neatly prepared outfit",
+      "secondary_props": ["wardrobe", "single chair", "hanger"],
+      "body_pose": "full standing pose holding one folded teal-compatible outfit",
+      "character_placement": "character center-left, chair and outfit center-right",
+      "camera_framing": "standing full-body view",
+      "composition_family": "standing full-body view",
+      "emotional_state": "organized and satisfied"
+    },
+    {
+      "scene_index": 5,
+      "scene_role": "practical_step",
+      "setting": "clean packing area",
+      "primary_action": "placing a water bottle into an open bag; one book, folder, and key ring beside it",
+      "primary_prop": "open orange bag",
+      "secondary_props": ["one folder", "one key ring", "one water bottle"],
+      "body_pose": "kneeling packing pose with plausible hands",
+      "character_placement": "character upper-left, bag and objects centered",
+      "camera_framing": "high-angle preparation view",
+      "composition_family": "angled object-preparation view",
+      "emotional_state": "focused and methodical"
+    },
+    {
+      "scene_index": 6,
+      "scene_role": "common_mistake",
+      "setting": "simple study corner",
+      "primary_action": "pausing beside one overfilled open bag with three recognizable unneeded items protruding",
+      "primary_prop": "one visibly overfilled open bag",
+      "secondary_props": ["one extra book", "one spare bottle", "one pencil case"],
+      "body_pose": "mildly overwhelmed standing or kneeling pose with plausible hands",
+      "character_placement": "character and bag clearly separated in a readable upper-to-middle composition",
+      "camera_framing": "wide upper-frame view",
+      "composition_family": "wide cautionary scene",
+      "emotional_state": "mildly overwhelmed but calm",
+      "semantic_hard_negatives": ["No chaotic pile or random background clutter."],
+      "symbolic_qc_expectations": [
+        "one overfilled open bag with three recognizable protruding objects",
+        "subtitle placement is resolved by practical_dynamic_v1 during rendering"
+      ]
+    },
+    {
+      "scene_index": 7,
+      "scene_role": "today_action",
+      "setting": "bright morning doorway with soft sunlight",
+      "primary_action": "calmly departing through the doorway while holding the prepared closed bag",
+      "primary_prop": "prepared closed bag",
+      "secondary_props": ["doorway", "morning sunlight"],
+      "body_pose": "relaxed three-quarter walking pose with bag in one hand",
+      "character_placement": "character centered in doorway moving outward",
+      "camera_framing": "full-body doorway departure view",
+      "composition_family": "doorway departure scene",
+      "emotional_state": "relaxed, successful, and encouraged"
+    }
+  ]
+}

@@ -21,10 +21,15 @@ service-account*.json
 
 # ─── Render output ───
 out/
+/output/
 *.mp4
 *.mp3
+*.log
 .tts_cache/
 channels/*/jobs/
+music/tracks/*
+!music/tracks/.gitkeep
+music/usage_history.jsonl
 
 # ─── Per-channel state (auto-ideate history, like .env, never published) ───
 channels/*/history.jsonl
@@ -43,6 +48,7 @@ desktop.ini
 # ─── Tella local artifacts ───
 scratch/
 debug/
+object_library_data/
 
 # ─── Private build notes (kept local, never published) ───
 CLAUDE_CONTEXT.md
@@ -56,3 +62,6 @@ script_*.txt
 !script_life_insight_generalization_test.txt
 !script_practical_life_steps_test.txt
 !script_practical_life_steps_generalization_test.txt
+
+# Local timestamped backups
+*.backup_*

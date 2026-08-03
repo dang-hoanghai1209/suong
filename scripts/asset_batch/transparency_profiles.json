@@ -1,0 +1,84 @@
+{
+  "schema_version": 2,
+  "profiles": {
+    "character": {
+      "background_inner_distance": 42,
+      "background_outer_distance": 74,
+      "trim_padding": 12,
+      "component_alpha_threshold": 24,
+      "component_min_area_ratio": 0.00012,
+      "main_bbox_expand_ratio": 0.16,
+      "keep_multiple_large_components": false,
+      "maximum_component_distance_ratio": 0.18,
+      "defringe_strength": 0.48
+    },
+    "crowd": {
+      "background_inner_distance": 12,
+      "background_outer_distance": 42,
+      "trim_padding": 14,
+      "component_alpha_threshold": 20,
+      "component_min_area_ratio": 0.00005,
+      "main_bbox_expand_ratio": 0.35,
+      "keep_multiple_large_components": true,
+      "keep_small_near_components": false,
+      "maximum_component_distance_ratio": 0.65,
+      "defringe_strength": 0.48
+    },
+    "object": {
+      "background_inner_distance": 18,
+      "background_outer_distance": 52,
+      "trim_padding": 12,
+      "component_alpha_threshold": 20,
+      "component_min_area_ratio": 0.00008,
+      "main_bbox_expand_ratio": 0.2,
+      "keep_multiple_large_components": true,
+      "maximum_component_distance_ratio": 0.22,
+      "defringe_strength": 0.5
+    },
+    "bright_pale_object": {
+      "background_inner_distance": 10,
+      "background_outer_distance": 34,
+      "trim_padding": 14,
+      "component_alpha_threshold": 16,
+      "component_min_area_ratio": 0.00004,
+      "main_bbox_expand_ratio": 0.3,
+      "keep_multiple_large_components": true,
+      "maximum_component_distance_ratio": 0.3,
+      "defringe_strength": 0.38
+    }
+  },
+  "asset_overrides": {
+    "pillow": {"profile": "bright_pale_object"},
+    "paper_letter": {"profile": "bright_pale_object"},
+    "empty_cup": {"profile": "bright_pale_object"},
+    "curtain_simple": {"profile": "bright_pale_object"},
+    "floor_lamp": {"profile": "bright_pale_object"},
+    "photo_frame": {"profile": "bright_pale_object"},
+    "flower_single": {
+      "component_min_area_ratio": 0.00001,
+      "maximum_component_distance_ratio": 0.42,
+      "keep_multiple_large_components": true
+    },
+    "female_01:sit_hug_knees": {
+      "explicit_remove_regions": [[0.0, 0.0, 1.0, 0.17]],
+      "maximum_component_distance_ratio": 0.12
+    },
+    "female_01:stand_hands_clasped": {
+      "explicit_remove_regions": [[0.0, 0.0, 1.0, 0.16]]
+    },
+    "female_01:walk_left_backup": {
+      "explicit_remove_regions": [[0.0, 0.0, 1.0, 0.16]]
+    },
+    "female_01:walk_right_backup": {
+      "explicit_remove_regions": [[0.0, 0.0, 1.0, 0.16]]
+    },
+    "female_01:stand_back_view": {
+      "explicit_remove_regions": [[0.0, 0.0, 1.0, 0.16]]
+    },
+    "crowd_group_cheering_01": {
+      "profile": "crowd",
+      "keep_multiple_large_components": true,
+      "maximum_component_distance_ratio": 1.0
+    }
+  }
+}

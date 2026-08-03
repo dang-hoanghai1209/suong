@@ -19,7 +19,9 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from tella._voice_pace import normalize_voice_rate
 
 # ─── Vocabulary ────────────────────────────────────────────────────────
 
@@ -324,6 +326,18 @@ class Scene(BaseModel):
     main_character_or_object: str = Field("", max_length=160)
     subtitle_highlight_words: list[str] = Field(default_factory=list)
     visual_identity_id: str = Field("", max_length=80)
+    character_fingerprint: str = Field("", max_length=64)
+    character_required_view: str = Field("", max_length=120)
+    permitted_pose_variation: str = Field("", max_length=200)
+    identity_invariants: list[str] = Field(default_factory=list)
+    forbidden_identity_changes: list[str] = Field(default_factory=list)
+    subtitle_safe_lower_fraction: float = Field(0.0, ge=0.0, le=1.0)
+    planning_overlay_strategy: str = Field("", max_length=120)
+    subtitle_layout_policy_id: str = Field("", max_length=80)
+    subtitle_protected_regions: list[dict[str, object]] = Field(default_factory=list)
+    subtitle_busy_regions: list[str] = Field(default_factory=list)
+    subtitle_translation_safe: bool = False
+    subtitle_layout_decision: dict[str, object] = Field(default_factory=dict)
     cast_archetype: str = Field("", max_length=80)
     age_policy: str = Field("", max_length=120)
     palette_id: str = Field("", max_length=80)
@@ -345,9 +359,16 @@ class Scene(BaseModel):
     environment: str = Field("", max_length=80)
     composition_pattern: str = Field("", max_length=80)
     framing: str = Field("", max_length=80)
+    body_pose: str = Field("", max_length=120)
+    camera_framing: str = Field("", max_length=120)
+    character_placement: str = Field("", max_length=120)
+    primary_prop: str = Field("", max_length=120)
+    secondary_props: list[str] = Field(default_factory=list)
+    emotional_state: str = Field("", max_length=120)
+    composition_family: str = Field("", max_length=120)
     diversity_repair_applied: bool = False
     repeated_attribute_avoided: list[str] = Field(default_factory=list)
-    provider_prompt_variant: str = Field("", max_length=900)
+    provider_prompt_variant: str = Field("", max_length=1850)
     semantic_strength: Literal["strong", "acceptable", "weak"] = "acceptable"
     semantic_strength_score: float = 0.0
     semantic_anchor_fields: list[str] = Field(default_factory=list)
@@ -462,6 +483,16 @@ class Scene(BaseModel):
     visual_action_provider_safe: bool = False
     visual_metadata_status: str = Field("not_evaluated", max_length=40)
     visual_metadata_failure_reasons: list[str] = Field(default_factory=list)
+    step_badge_rendered: bool = False
+    step_badge_text: str = Field("", max_length=20)
+    step_badge_x: int = 0
+    step_badge_y: int = 0
+    step_badge_width: int = 0
+    step_badge_height: int = 0
+    render_motion_profile: str = Field("", max_length=80)
+    data_sensitivity: Literal["", "local_only", "private", "public_safe"] = ""
+    data_sensitivity_source_sha256: str = Field("", max_length=64)
+    data_sensitivity_authority_sha256: str = Field("", max_length=64)
 
     # 1-3 assets per scene. 1 = static Ken Burns; 2-3 = mini-montage with
     # crossfades inside the scene window.
@@ -507,6 +538,17 @@ class Scene(BaseModel):
     asset_hash: str = Field("", max_length=80)
     image_source: str = Field("", max_length=80)
     image_provider: str = Field("", max_length=80)
+    primary_image_provider_attempted: str = Field("", max_length=80)
+    image_fallback_eligible: bool = False
+    image_fallback_used: bool = False
+    image_failure_classification: str = Field("", max_length=80)
+    resolved_image_provider: str = Field("", max_length=80)
+    pollinations_fallback_attempted: bool = False
+    pollinations_request_sha256: str = Field("", max_length=64)
+    generated_image_width: int = Field(0, ge=0)
+    generated_image_height: int = Field(0, ge=0)
+    generated_image_bytes: int = Field(0, ge=0)
+    generated_image_sha256: str = Field("", max_length=64)
     used_local_fallback: bool = False
     asset_path: str = Field("", max_length=300)
     ai_provider_error_type: str = Field("", max_length=80)
@@ -518,7 +560,12 @@ class Scene(BaseModel):
     reused_from_job: str = Field("", max_length=300)
     reused_from_scene: int = 0
     reused_asset_path: str = Field("", max_length=300)
+    reused_asset_hash: str = Field("", max_length=80)
     reused_asset_prompt_hash_mismatch: bool = False
+    reuse_source_job_id: str = Field("", max_length=160)
+    reuse_eligible: bool = False
+    reuse_match_reason: str = Field("", max_length=500)
+    reuse_mismatch_reason: str = Field("", max_length=500)
     reuse_mode: str = Field("", max_length=40)
     reuse_assets_mode: str = Field("", max_length=40)
     reuse_prompt_match: bool = False
@@ -618,6 +665,9 @@ class Scene(BaseModel):
     image_filenames: list[str] = Field(default_factory=list)
     """Relative paths to fetched assets. len == asset_count after media step."""
 
+    asset_library_request: dict[str, Any] = Field(default_factory=dict)
+    asset_library_result: dict[str, Any] = Field(default_factory=dict)
+
     # Stock-video frame-sequence sidecar (mirrors VCM pattern).
     frames_dirs: list[str] = Field(default_factory=list)
     frames_counts: list[int] = Field(default_factory=list)
@@ -626,6 +676,9 @@ class Scene(BaseModel):
     audio_filename: str = ""
     audio_duration: float = 0.0
     duration: float = 0.0
+    # Encoded source-clip duration.  With a crossfade this includes the
+    # outgoing overlap while ``duration`` remains the scene's timeline slot.
+    render_clip_duration: float = 0.0
     start: float = 0.0
 
 
@@ -654,6 +707,13 @@ class TellaScenePlan(BaseModel):
     recipe_duration_range: list[float] = Field(default_factory=list)
     recipe_validation_status: str = Field("not_selected", max_length=40)
     recipe_validation_errors: list[str] = Field(default_factory=list)
+    acceptance_suite_id: str = Field("", max_length=120)
+    acceptance_suite_path: str = Field("", max_length=300)
+    acceptance_case_id: str = Field("", max_length=120)
+    source_script_version: int = 0
+    source_script_path: str = Field("", max_length=300)
+    source_script_scene_count: int = 0
+    canonical_script_sha256: str = Field("", max_length=64)
     recipe_overlap_score: float = 0.0
     recipe_overlap_detected: bool = False
     overlap_repair_applied: bool = False
@@ -670,6 +730,9 @@ class TellaScenePlan(BaseModel):
     duration_reduction_seconds: float = 0.0
     duration_reduction_ratio: float = 0.0
     duration_target_seconds: float = 35.0
+    # Explicit render-planning target.  Unlike duration_target_seconds (a
+    # legacy planner field with a 35s default), zero means "not specified".
+    requested_production_duration_seconds: float = Field(default=0.0, ge=0.0)
     narration_fit_status: str = Field("not_evaluated", max_length=40)
     narration_fit_failure_reason: str = Field("", max_length=300)
     seven_scene_fallback_considered: bool = False
@@ -701,12 +764,20 @@ class TellaScenePlan(BaseModel):
     overlap_failure_reasons: list[str] = Field(default_factory=list)
     practical_validation_status: str = Field("not_evaluated", max_length=40)
     practical_validation_errors: list[str] = Field(default_factory=list)
+    web_sensitivity_policy_id: str = Field("", max_length=80)
+    web_sensitivity_source_sha256: str = Field("", max_length=64)
+    web_sensitivity_authority_sha256: str = Field("", max_length=64)
+    primary_image_provider: str = Field("", max_length=80)
+    fallback_image_provider: str = Field("", max_length=80)
+    pollinations_fallback_used: bool = False
+    pollinations_fallback_attempt_count: int = Field(0, ge=0)
+    resolved_image_providers: list[str] = Field(default_factory=list)
 
     # Voice settings (resolved by CLI from theme + user overrides before
     # the planner runs — planner just receives these as inputs and echoes
     # them back on the plan so the composer + TTS know what to do).
     voice_pace_name: VoicePaceName = "medium"
-    voice_edge_rate: str = Field("0%", pattern=r"^[+-]?\d{1,3}%$")
+    voice_edge_rate: str = Field("+0%", pattern=r"^[+-]\d{1,3}%$")
     voice_google_rate: float = Field(1.00, ge=0.25, le=4.0)
     voice_gender: VoiceGender = "male"
     voice_name: str = ""
@@ -714,6 +785,9 @@ class TellaScenePlan(BaseModel):
     resolved_voice_profile_id: str = Field("", max_length=80)
     voice_resolution_source: str = Field("legacy_defaults", max_length=40)
     resolved_tts_provider: str = Field("", max_length=40)
+    resolved_tts_model: str = Field("", max_length=120)
+    resolved_tts_style: str = Field("", max_length=80)
+    resolved_tts_language: str = Field("", max_length=20)
     resolved_voice: str = Field("", max_length=120)
     resolved_voice_rate: str = Field("", max_length=20)
     recipe_voice_override_applied: bool = False
@@ -734,6 +808,12 @@ class TellaScenePlan(BaseModel):
     # Symbolic reels share a visual family without requiring one recurring
     # story character. Scene-level fields mirror this profile for inspection.
     visual_identity_id: str = Field("", max_length=80)
+    character_fingerprint: str = Field("", max_length=64)
+    canonical_character_spec: dict[str, object] = Field(default_factory=dict)
+    identity_continuity_strategy: str = Field("", max_length=80)
+    identity_acceptance_standard: str = Field("", max_length=200)
+    identity_mode: str = Field("", max_length=80)
+    subtitle_layout_policy_id: str = Field("", max_length=80)
     cast_archetype_set: list[str] = Field(default_factory=list)
     age_policy: str = Field("", max_length=120)
     palette_id: str = Field("", max_length=80)
@@ -780,6 +860,23 @@ class TellaScenePlan(BaseModel):
     silence_postprocess_applied: bool = False
     original_narration_duration: float = 0.0
     processed_narration_duration: float = 0.0
+    planner_estimated_duration_seconds: float = 0.0
+    original_narration_duration_seconds: float = 0.0
+    fitted_narration_duration_seconds: float = 0.0
+    duration_fit_required: bool = False
+    duration_fit_applied: bool = False
+    duration_fit_reason: str = Field("", max_length=300)
+    duration_fit_target_seconds: float = 0.0
+    duration_fit_tempo: float = 1.0
+    duration_fit_scale: float = 1.0
+    duration_fit_safe_range_min: float = 0.85
+    duration_fit_safe_range_max: float = 1.15
+    duration_fit_within_safe_range: bool = True
+    source_narration_path: str = Field("", max_length=500)
+    fitted_narration_path: str = Field("", max_length=500)
+    actual_final_video_duration_seconds: float = 0.0
+    actual_duration_validation_status: str = Field("not_evaluated", max_length=40)
+    actual_duration_failure_reason: str = Field("", max_length=500)
     longest_silence_before: float = 0.0
     longest_silence_after: float = 0.0
     tts_provider: str = Field("", max_length=80)
@@ -792,6 +889,7 @@ class TellaScenePlan(BaseModel):
     tts_fallback_reason: str = Field("", max_length=500)
     tts_metadata: dict[str, Any] = Field(default_factory=dict)
     scene_timing_map: list[dict[str, float | int]] = Field(default_factory=list)
+    render_timing_contract: dict[str, Any] = Field(default_factory=dict)
     subtitle_style: str = Field("", max_length=80)
     subtitle_segments: list[dict[str, Any]] = Field(default_factory=list)
     total_vision_qc_calls: int = 0
@@ -819,7 +917,30 @@ class TellaScenePlan(BaseModel):
     ai_images_generated: int = 0
     ai_images_reused: int = 0
 
+    # Optional local licensed music and final audio QC.
+    music_enabled: bool = False
+    music_no_music: bool = False
+    requested_music_track_id: str = Field("", max_length=80)
+    requested_music_profile_id: str = Field("", max_length=80)
+    selected_music_track_id: str = Field("", max_length=80)
+    selected_music_profile_id: str = Field("", max_length=80)
+    selected_music_path: str = Field("", max_length=500)
+    music_selection_reason: str = Field("", max_length=500)
+    music_history_path: str = Field("", max_length=500)
+    music_metadata: dict[str, Any] = Field(default_factory=dict)
+    audio_qc: dict[str, Any] = Field(default_factory=dict)
+
     total_duration: float = 0.0
+
+    @field_validator("voice_edge_rate")
+    @classmethod
+    def _normalize_voice_edge_rate(cls, value: str) -> str:
+        return normalize_voice_rate(value)
+
+    @field_validator("resolved_voice_rate")
+    @classmethod
+    def _normalize_resolved_voice_rate(cls, value: str) -> str:
+        return normalize_voice_rate(value) if value else value
 
     @model_validator(mode="after")
     def _validate_symbolic_reel_contract(self) -> "TellaScenePlan":
