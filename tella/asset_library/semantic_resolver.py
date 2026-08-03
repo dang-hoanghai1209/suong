@@ -13,7 +13,6 @@ from PIL import Image, ImageDraw, ImageFilter
 from tella.asset_library.background_renderer import resolve_background_mode
 
 
-DEFAULT_ASSET_LIBRARY_ROOT = Path(r"D:\tella-assets-staging\mvp_v1_processed_v2")
 SEMANTICS_DEFAULT_PATH = (
     Path(__file__).resolve().parents[1]
     / ".."
@@ -224,7 +223,9 @@ def _resolve_registry_root(asset_library_root: str | Path | None = None) -> Path
     env = (os.environ.get("TELLA_ASSET_LIBRARY_ROOT") or "").strip()
     if env:
         return Path(env).expanduser().resolve()
-    return DEFAULT_ASSET_LIBRARY_ROOT
+    raise FileNotFoundError(
+        "Asset registry not found: set TELLA_ASSET_LIBRARY_ROOT to the processed asset root"
+    )
 
 
 def _resolve_semantics_path(semantics_path: str | Path | None = None) -> Path:

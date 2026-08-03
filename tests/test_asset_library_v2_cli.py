@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,8 +12,18 @@ from tella.asset_library.production_mvp import BASE_SEED, build_seven_scene_plan
 from tella.media.fetch import fetch_assets
 from tella.planner.models import TellaScenePlan
 
-ROOT = Path(r"D:\tella-assets-staging\mvp_v1_processed_v2")
-SEMANTICS = Path(r"D:\tella-production-resolver\scripts\asset_batch\asset_semantics_patch.json")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(
+    os.environ.get(
+        "TELLA_TEST_ASSET_LIBRARY_ROOT",
+        REPO_ROOT / ".external-assets" / "mvp_v1_processed_v2",
+    )
+)
+SEMANTICS = REPO_ROOT / "scripts" / "asset_batch" / "asset_semantics_patch.json"
+requires_asset_library = pytest.mark.skipif(
+    not (ROOT / "processed_asset_index.json").is_file(),
+    reason="set TELLA_TEST_ASSET_LIBRARY_ROOT to run external asset-library tests",
+)
 
 
 def _pipeline_kwargs(tmp_path: Path) -> dict:
@@ -97,6 +108,7 @@ def test_disabled_cli_job_preserves_legacy_planner_path(monkeypatch, tmp_path):
     assert calls == ["translate", "planner"]
 
 
+@requires_asset_library
 def test_v2_fetch_never_calls_external_ai_image_provider(monkeypatch, tmp_path):
     monkeypatch.setenv("TELLA_ASSET_LIBRARY_V2", "1")
     monkeypatch.setenv("TELLA_ASSET_LIBRARY_ROOT", str(ROOT))
@@ -125,4 +137,13 @@ def test_v2_missing_dependencies_fail_clearly(monkeypatch, tmp_path, variable, v
     monkeypatch.setenv("TELLA_ASSET_LIBRARY_SEMANTICS_PATH", str(SEMANTICS))
     monkeypatch.setenv(variable, str(tmp_path / value))
     with pytest.raises(FileNotFoundError, match=message):
+        asyncio.run(fetch_assets(build_seven_scene_plan(enabled=True), tmp_path / "job"))
+
+
+def test_v2_requires_explicit_portable_registry_configuration(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELLA_ASSET_LIBRARY_V2", "1")
+    monkeypatch.delenv("TELLA_ASSET_LIBRARY_ROOT", raising=False)
+    monkeypatch.delenv("TELLA_ASSET_LIBRARY_SEMANTICS_PATH", raising=False)
+
+    with pytest.raises(FileNotFoundError, match="set TELLA_ASSET_LIBRARY_ROOT"):
         asyncio.run(fetch_assets(build_seven_scene_plan(enabled=True), tmp_path / "job"))

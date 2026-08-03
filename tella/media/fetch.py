@@ -109,8 +109,16 @@ async def _fetch_asset_library_scenes(
         select_semantic_asset,
     )
 
-    asset_library_root = Path((os.environ.get("TELLA_ASSET_LIBRARY_ROOT") or "").strip() or r"D:\tella-assets-staging\mvp_v1_processed_v2").expanduser().resolve()
-    semantics_path = Path((os.environ.get("TELLA_ASSET_LIBRARY_SEMANTICS_PATH") or "").strip() or r"D:\tella-production-resolver\scripts\asset_batch\asset_semantics_patch.json").expanduser().resolve()
+    asset_library_root_value = (os.environ.get("TELLA_ASSET_LIBRARY_ROOT") or "").strip()
+    semantics_path_value = (os.environ.get("TELLA_ASSET_LIBRARY_SEMANTICS_PATH") or "").strip()
+    asset_library_root = (
+        Path(asset_library_root_value).expanduser().resolve()
+        if asset_library_root_value
+        else None
+    )
+    semantics_path = (
+        Path(semantics_path_value).expanduser().resolve() if semantics_path_value else None
+    )
     metadata_path = job_dir / "asset_library_scene_metadata.json"
     scene_metadata: list[dict] = []
     selected_semantic_ids: list[str] = []

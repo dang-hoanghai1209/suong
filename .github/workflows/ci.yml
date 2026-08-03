@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - "feat/**"
       - "feature/**"
       - "backup/**"
       - "release/**"
@@ -31,6 +32,7 @@ env:
   XAI_API_KEY: ""
   PEXELS_API_KEY: ""
   PEXELS_API_KEYS: ""
+  UV_PYTHON: "3.12"
 
 jobs:
   windows-full:
@@ -98,7 +100,9 @@ jobs:
         with:
           enable-cache: true
       - name: Install FFmpeg
-        run: sudo apt-get update && sudo apt-get install --yes ffmpeg
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install --yes ffmpeg libcairo2-dev pkg-config
       - name: Install locked development dependencies
         run: uv sync --locked --extra dev
       - name: Assert clean-checkout music safety

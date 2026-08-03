@@ -620,7 +620,12 @@ def test_quality_mode_rejects_volume_coordinator_without_transport(tmp_path):
 
 @pytest.mark.asyncio
 async def test_real_local_compositor_canary_is_zero_ai(tmp_path):
-    asset_root = Path(r"D:\tella-assets-staging\mvp_v1_processed_v2")
+    configured_assets = os.environ.get("TELLA_TEST_ASSET_LIBRARY_ROOT")
+    asset_root = (
+        Path(configured_assets).expanduser().resolve()
+        if configured_assets
+        else tmp_path / "external-assets-not-configured"
+    )
     semantics = Path("scripts/asset_batch/asset_semantics_patch.json").resolve()
     if not (asset_root / "processed_asset_index.json").is_file():
         pytest.skip("known-safe local asset fixture is unavailable")

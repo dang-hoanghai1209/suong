@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -18,8 +19,18 @@ from tella.asset_library.semantic_resolver import AssetLibraryRequest, select_se
 from tella.asset_library.semantic_resolver import build_production_scene_request
 from tella.media.fetch import fetch_assets
 
-V2_ROOT = Path(r"D:\tella-assets-staging\mvp_v1_processed_v2")
-SEMANTICS_PATH = Path(r"D:\tella-production-resolver\scripts\asset_batch\asset_semantics_patch.json")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+V2_ROOT = Path(
+    os.environ.get(
+        "TELLA_TEST_ASSET_LIBRARY_ROOT",
+        REPO_ROOT / ".external-assets" / "mvp_v1_processed_v2",
+    )
+)
+SEMANTICS_PATH = REPO_ROOT / "scripts" / "asset_batch" / "asset_semantics_patch.json"
+requires_asset_library = pytest.mark.skipif(
+    not (V2_ROOT / "processed_asset_index.json").is_file(),
+    reason="set TELLA_TEST_ASSET_LIBRARY_ROOT to run external asset-library tests",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -41,6 +52,7 @@ def test_seven_scene_plan_is_real_planner_plan_and_flag_scoped():
     assert all(scene.asset_library_request["base_seed"] == BASE_SEED for scene in enabled.scenes)
 
 
+@requires_asset_library
 def test_seven_scene_requests_resolve_real_backgrounds_objects_and_eligible_characters():
     plan = build_seven_scene_plan(base_seed=BASE_SEED, enabled=True)
     for scene in plan.scenes:
@@ -58,6 +70,7 @@ def test_seven_scene_requests_resolve_real_backgrounds_objects_and_eligible_char
         }
 
 
+@requires_asset_library
 def test_asset_library_fetch_renders_exactly_seven_images_without_ai_provider(monkeypatch, tmp_path):
     monkeypatch.setenv("TELLA_ASSET_LIBRARY_V2", "1")
     monkeypatch.setenv("TELLA_ASSET_LIBRARY_ROOT", str(V2_ROOT))
@@ -90,6 +103,7 @@ def test_asset_library_fetch_renders_exactly_seven_images_without_ai_provider(mo
     )
 
 
+@requires_asset_library
 def test_same_seven_scene_plan_is_byte_deterministic(tmp_path, monkeypatch):
     monkeypatch.setenv("TELLA_ASSET_LIBRARY_V2", "1")
     monkeypatch.setenv("TELLA_ASSET_LIBRARY_ROOT", str(V2_ROOT))
@@ -111,6 +125,7 @@ def test_same_seven_scene_plan_is_byte_deterministic(tmp_path, monkeypatch):
     assert first_metadata == second_metadata
 
 
+@requires_asset_library
 def test_optional_object_failure_is_a_structured_warning():
     request = AssetLibraryRequest(
         character_id="female_01",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -14,8 +15,18 @@ from tella.asset_library.semantic_resolver import (
 from tella.media.fetch import fetch_assets
 from tella.planner.models import Scene, TellaScenePlan
 
-V2_ROOT = Path(r"D:\tella-assets-staging\mvp_v1_processed_v2")
-SEMANTICS_PATH = Path(r"D:\tella-production-resolver\scripts\asset_batch\asset_semantics_patch.json")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+V2_ROOT = Path(
+    os.environ.get(
+        "TELLA_TEST_ASSET_LIBRARY_ROOT",
+        REPO_ROOT / ".external-assets" / "mvp_v1_processed_v2",
+    )
+)
+SEMANTICS_PATH = REPO_ROOT / "scripts" / "asset_batch" / "asset_semantics_patch.json"
+requires_asset_library = pytest.mark.skipif(
+    not (V2_ROOT / "processed_asset_index.json").is_file(),
+    reason="set TELLA_TEST_ASSET_LIBRARY_ROOT to run external asset-library tests",
+)
 SOURCE_TRUNCATED_ASSETS = (
     ("stand_front_backup", "front"),
     ("stand_wave", "front"),
@@ -25,6 +36,7 @@ SOURCE_TRUNCATED_ASSETS = (
 )
 
 
+@requires_asset_library
 def test_production_resolver_loads_registry_and_semantics():
     request = AssetLibraryRequest(
         character_id="female_01",
@@ -57,6 +69,7 @@ def test_production_resolver_loads_registry_and_semantics():
     assert selected.quality_status == "approved"
 
 
+@requires_asset_library
 @pytest.mark.parametrize(("asset_id", "direction"), SOURCE_TRUNCATED_ASSETS)
 def test_production_resolver_excludes_ineligible_candidate_before_fallback_ranking(
     asset_id, direction
@@ -88,6 +101,7 @@ def test_production_resolver_excludes_ineligible_candidate_before_fallback_ranki
     assert selected.fallback_reason == "no_production_eligible_exact_action"
 
 
+@requires_asset_library
 def test_background_and_objects_resolve_to_processed_v2_paths():
     request = AssetLibraryRequest(
         character_id="female_01",
@@ -107,6 +121,7 @@ def test_background_and_objects_resolve_to_processed_v2_paths():
     assert selected.character_processed_path.endswith("sit_hug_knees_backup.png")
 
 
+@requires_asset_library
 def test_asset_library_mode_writes_scene_metadata_and_png(tmp_path, monkeypatch):
     monkeypatch.setenv("TELLA_ASSET_LIBRARY_V2", "1")
     monkeypatch.setenv("TELLA_ASSET_LIBRARY_ROOT", str(V2_ROOT))

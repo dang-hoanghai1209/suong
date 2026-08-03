@@ -15,7 +15,6 @@ dependencies = [
   "python-dotenv>=1.0",
   "pillow>=10.3",
   "cairosvg>=2.7",
-  "pycairo>=1.29",
   "edge-tts>=7.0",
   "rich>=13.7",
   "pycairo>=1.29.0",

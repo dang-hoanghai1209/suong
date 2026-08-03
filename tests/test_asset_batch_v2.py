@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -10,9 +11,21 @@ from PIL import Image
 from scripts.asset_batch.render_test_scene_v2 import select_semantic_asset
 
 
-SOURCE_ROOT = Path(r"D:\tella-assets-staging\mvp_v1")
-V2_ROOT = Path(r"D:\tella-assets-staging\mvp_v1_processed_v2")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = Path(
+    os.environ.get("TELLA_TEST_ASSET_SOURCE_ROOT", REPO_ROOT / ".external-assets" / "mvp_v1")
+)
+V2_ROOT = Path(
+    os.environ.get(
+        "TELLA_TEST_ASSET_LIBRARY_ROOT",
+        REPO_ROOT / ".external-assets" / "mvp_v1_processed_v2",
+    )
+)
 SCRIPT_ROOT = Path(__file__).resolve().parents[1] / "scripts" / "asset_batch"
+requires_source_assets = pytest.mark.skipif(
+    not (SOURCE_ROOT / "asset_manifest.json").is_file(),
+    reason="set TELLA_TEST_ASSET_SOURCE_ROOT to run external source-asset tests",
+)
 
 
 def load_json(path: Path):
@@ -181,6 +194,7 @@ def test_all_processed_pngs_are_rgba_and_transparent(qc_report):
             assert image.getchannel("A").getextrema()[0] == 0, asset["processed_path"]
 
 
+@requires_source_assets
 def test_source_assets_still_match_manifests():
     manifest = load_json(SOURCE_ROOT / "asset_manifest.json")
     object_manifest = load_json(SOURCE_ROOT / "objects" / "object_manifest.json")

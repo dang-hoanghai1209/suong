@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
@@ -14,8 +15,18 @@ from tella.asset_library.semantic_resolver import (
     select_semantic_asset,
 )
 
-ROOT = Path(r"D:\tella-assets-staging\mvp_v1_processed_v2")
-SEMANTICS = Path(r"D:\tella-production-resolver\scripts\asset_batch\asset_semantics_patch.json")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(
+    os.environ.get(
+        "TELLA_TEST_ASSET_LIBRARY_ROOT",
+        REPO_ROOT / ".external-assets" / "mvp_v1_processed_v2",
+    )
+)
+SEMANTICS = REPO_ROOT / "scripts" / "asset_batch" / "asset_semantics_patch.json"
+requires_asset_library = pytest.mark.skipif(
+    not (ROOT / "processed_asset_index.json").is_file(),
+    reason="set TELLA_TEST_ASSET_LIBRARY_ROOT to run external asset-library tests",
+)
 TRUNCATED = {
     "stand_front_backup",
     "stand_wave",
@@ -33,6 +44,7 @@ def _resolution(request):
     return select_semantic_asset(SEMANTICS, ROOT, request)
 
 
+@requires_asset_library
 def test_procedural_mode_does_not_load_scenic_background(monkeypatch):
     monkeypatch.setenv("TELLA_ASSET_BACKGROUND_MODE", "procedural_minimal")
     import tella.asset_library.semantic_resolver as resolver
@@ -65,12 +77,14 @@ def test_background_mode_defaults_to_scenic_and_rejects_unknown(monkeypatch):
         resolve_background_mode("not-a-mode")
 
 
+@requires_asset_library
 def test_scenic_mode_still_resolves_existing_background(monkeypatch):
     monkeypatch.setenv("TELLA_ASSET_BACKGROUND_MODE", "scenic_asset")
     resolution = _resolution(_first_request())
     assert Path(resolution.background_path).is_file()
 
 
+@requires_asset_library
 def test_procedural_composition_has_grounding_metadata_and_valid_layers(monkeypatch, tmp_path):
     monkeypatch.setenv("TELLA_ASSET_BACKGROUND_MODE", "procedural_minimal")
     metadata = compose_asset_library_scene(
@@ -94,6 +108,7 @@ def test_procedural_composition_has_grounding_metadata_and_valid_layers(monkeypa
     assert Path(tmp_path / "scene.png").is_file()
 
 
+@requires_asset_library
 def test_floor_phone_is_flattened_and_shadowed(monkeypatch, tmp_path):
     monkeypatch.setenv("TELLA_ASSET_BACKGROUND_MODE", "procedural_minimal")
     plan = build_seven_scene_plan(enabled=True)
@@ -106,6 +121,7 @@ def test_floor_phone_is_flattened_and_shadowed(monkeypatch, tmp_path):
     assert phone["shadow"]["width"] > 0
 
 
+@requires_asset_library
 def test_same_scene_composition_hash_is_deterministic(monkeypatch, tmp_path):
     monkeypatch.setenv("TELLA_ASSET_BACKGROUND_MODE", "procedural_minimal")
     plan = build_seven_scene_plan(enabled=True)
@@ -116,6 +132,7 @@ def test_same_scene_composition_hash_is_deterministic(monkeypatch, tmp_path):
     assert hashlib.sha256(first.read_bytes()).hexdigest() == hashlib.sha256(second.read_bytes()).hexdigest()
 
 
+@requires_asset_library
 def test_all_benchmark_selections_remain_eligible_and_truncated_assets_excluded(monkeypatch):
     monkeypatch.setenv("TELLA_ASSET_BACKGROUND_MODE", "procedural_minimal")
     plan = build_seven_scene_plan(enabled=True)
@@ -124,6 +141,7 @@ def test_all_benchmark_selections_remain_eligible_and_truncated_assets_excluded(
     assert not any(item.selected_source_asset_id in TRUNCATED for item in selected)
 
 
+@requires_asset_library
 def test_minimal_scene_png_is_1080x1920(monkeypatch, tmp_path):
     monkeypatch.setenv("TELLA_ASSET_BACKGROUND_MODE", "procedural_minimal")
     output = tmp_path / "scene.png"

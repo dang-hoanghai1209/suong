@@ -11,7 +11,9 @@ from typing import Any
 from tella.planner.models import Scene, TellaScenePlan
 
 BASE_SEED = 12345
-OUTPUT_DIR = Path(r"D:\tella-production-resolver\out\asset_library_v2_7_scene_acceptance")
+OUTPUT_DIR = (
+    Path(__file__).resolve().parents[2] / "out" / "asset_library_v2_7_scene_acceptance"
+)
 NARRATION_TEXT = (
     "Đã có những đêm, mình chỉ ngồi yên và chờ một tin nhắn. "
     "Cứ nghĩ rằng, chỉ cần đợi thêm một chút thôi... thì người ấy sẽ nhớ đến mình "
