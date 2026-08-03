@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 import json
 import logging
 import math
@@ -302,6 +303,14 @@ def _path_bytes_no_follow(path: Path) -> int:
     return max(0, metadata.st_size) if stat.S_ISREG(metadata.st_mode) else 0
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _assert_tree_has_no_links(root: Path) -> None:
     pending = [root]
     while pending:
@@ -345,6 +354,30 @@ def _canonical_artifact_relative_path(value: object) -> str:
     if candidate.suffix.lower() != ".mp4":
         raise ValueError("invalid artifact path")
     return value
+
+
+def _validated_probe(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ValueError("invalid artifact probe")
+    duration = value.get("duration_seconds")
+    video_streams = value.get("video_streams")
+    audio_streams = value.get("audio_streams")
+    if (
+        type(duration) not in {int, float}
+        or isinstance(duration, bool)
+        or not math.isfinite(float(duration))
+        or float(duration) <= 0
+        or type(video_streams) is not int
+        or video_streams < 1
+        or type(audio_streams) is not int
+        or audio_streams < 1
+    ):
+        raise ValueError("invalid artifact probe")
+    return {
+        "duration_seconds": float(duration),
+        "video_streams": video_streams,
+        "audio_streams": audio_streams,
+    }
 
 
 def _child_environment() -> dict[str, str]:
@@ -790,7 +823,7 @@ class JobManager:
         *,
         job_id: str,
         job_dir: Path,
-    ) -> tuple[dict[str, Any], WebJobStatus]:
+    ) -> tuple[dict[str, Any], WebJobStatus, bool]:
         if type(payload.get("schema_version")) is not int or payload["schema_version"] != 1:
             raise ValueError("invalid job schema")
         if payload.get("job_id") != job_id:
@@ -861,9 +894,12 @@ class JobManager:
                 "recovered_at",
             }:
                 raise ValueError("invalid recovery metadata")
-            if recovery["previous_status"] not in {"queued", "running"}:
-                raise ValueError("invalid recovery metadata")
-            if recovery["reason"] != "server_restart_interrupted":
+            recovery_identity = (recovery["previous_status"], recovery["reason"])
+            if recovery_identity not in {
+                ("queued", "server_restart_interrupted"),
+                ("running", "server_restart_interrupted"),
+                ("succeeded", "persisted_artifact_invalid"),
+            }:
                 raise ValueError("invalid recovery metadata")
             _validated_timestamp(recovery["recovered_at"])
 
@@ -886,6 +922,7 @@ class JobManager:
             "error": error,
             "output_path": None,
             "output_bytes": None,
+            "output_sha256": None,
             "probe": None,
             "plan_metadata": self._safe_loaded_plan_metadata(payload.get("plan_metadata")),
             "tts_metadata": self._safe_loaded_tts_metadata(payload.get("tts_metadata")),
@@ -895,40 +932,35 @@ class JobManager:
             "recovery": recovery,
             "retry_job_id": retry_job_id,
         }
+        publication_valid = True
         if status is WebJobStatus.SUCCEEDED:
-            if progress != 100 or error is not None:
-                raise ValueError("invalid succeeded job authority")
-            output_path = _canonical_artifact_relative_path(payload.get("output_path"))
-            output_bytes = payload.get("output_bytes")
-            probe = payload.get("probe")
-            if type(output_bytes) is not int or output_bytes <= 0 or not isinstance(probe, dict):
-                raise ValueError("invalid succeeded job authority")
-            duration = probe.get("duration_seconds")
-            video_streams = probe.get("video_streams")
-            audio_streams = probe.get("audio_streams")
-            if (
-                type(duration) not in {int, float}
-                or isinstance(duration, bool)
-                or not math.isfinite(float(duration))
-                or float(duration) <= 0
-                or type(video_streams) is not int
-                or video_streams < 1
-                or type(audio_streams) is not int
-                or audio_streams < 1
-            ):
-                raise ValueError("invalid succeeded job authority")
-            normalized.update(
-                output_path=output_path,
-                output_bytes=output_bytes,
-                probe={
-                    "duration_seconds": float(duration),
-                    "video_streams": video_streams,
-                    "audio_streams": audio_streams,
-                },
-            )
+            try:
+                if progress != 100 or error is not None:
+                    raise ValueError("invalid succeeded job authority")
+                output_path = _canonical_artifact_relative_path(payload.get("output_path"))
+                output_bytes = payload.get("output_bytes")
+                output_sha256 = payload.get("output_sha256")
+                if type(output_bytes) is not int or output_bytes <= 0:
+                    raise ValueError("invalid succeeded job authority")
+                if not isinstance(output_sha256, str) or not re.fullmatch(
+                    r"[0-9a-f]{64}", output_sha256
+                ):
+                    raise ValueError("invalid succeeded job authority")
+                probe = _validated_probe(payload.get("probe"))
+                if normalized["plan_metadata"] is None or normalized["tts_metadata"] is None:
+                    raise ValueError("invalid succeeded job authority")
+            except ValueError:
+                publication_valid = False
+            else:
+                normalized.update(
+                    output_path=output_path,
+                    output_bytes=output_bytes,
+                    output_sha256=output_sha256,
+                    probe=probe,
+                )
         elif progress == 100:
             raise ValueError("terminal job cannot retain succeeded progress")
-        return normalized, status
+        return normalized, status, publication_valid
 
     def _recover_interrupted(self, job_id: str, previous_status: WebJobStatus) -> None:
         payload = self._jobs[job_id]
@@ -940,6 +972,7 @@ class JobManager:
             finished_at=recovered_at,
             output_path=None,
             output_bytes=None,
+            output_sha256=None,
             probe=None,
             plan_metadata=None,
             tts_metadata=None,
@@ -956,13 +989,39 @@ class JobManager:
         )
         self._persist(job_id)
 
+    def _invalidate_persisted_success(self, job_id: str) -> None:
+        payload = self._jobs[job_id]
+        recovered_at = utc_now()
+        payload.update(
+            status=WebJobStatus.FAILED.value,
+            phase="failed",
+            progress=min(int(payload["progress"]), 99),
+            output_path=None,
+            output_bytes=None,
+            output_sha256=None,
+            probe=None,
+            plan_metadata=None,
+            tts_metadata=None,
+            ownership=None,
+            recovery={
+                "previous_status": "succeeded",
+                "reason": "persisted_artifact_invalid",
+                "recovered_at": recovered_at,
+            },
+            error={
+                "code": "PERSISTED_ARTIFACT_INVALID",
+                "message": "The persisted video artifact is missing or invalid.",
+            },
+        )
+        self._persist(job_id)
+
     def _load(self) -> None:
         for metadata_path in sorted(self.output_root.glob("web-*/job.json")):
             job_id = metadata_path.parent.name
             try:
                 job_dir = self._storage_job_dir(job_id)
                 payload = _read_json(metadata_path, max_bytes=_MAX_JOB_METADATA_BYTES)
-                normalized, status = self._normalize_loaded_job(
+                normalized, status, publication_valid = self._normalize_loaded_job(
                     payload,
                     job_id=job_id,
                     job_dir=job_dir,
@@ -979,27 +1038,17 @@ class JobManager:
                 self._recover_interrupted(job_id, status)
             elif status is WebJobStatus.SUCCEEDED:
                 try:
+                    if not publication_valid:
+                        raise ValueError("invalid succeeded publication")
                     artifact = self.artifact_path(job_id)
-                    self._media_probe(artifact)
-                    payload["output_bytes"] = artifact.stat().st_size
-                except (KeyError, OSError, RuntimeError):
-                    payload.update(
-                        status=WebJobStatus.FAILED.value,
-                        phase="artifact-invalid",
-                        progress=min(int(payload.get("progress", 0)), 99),
-                        finished_at=utc_now(),
-                        output_path=None,
-                        output_bytes=None,
-                        probe=None,
-                        plan_metadata=None,
-                        tts_metadata=None,
-                        ownership=None,
-                        error={
-                            "code": "PERSISTED_ARTIFACT_INVALID",
-                            "message": "The persisted video artifact is missing or invalid.",
-                        },
-                    )
-                    self._persist(job_id)
+                    if artifact.stat().st_size != normalized["output_bytes"]:
+                        raise ValueError("persisted artifact byte count mismatch")
+                    if _sha256_file(artifact) != normalized["output_sha256"]:
+                        raise ValueError("persisted artifact SHA-256 mismatch")
+                    if _validated_probe(self._media_probe(artifact)) != normalized["probe"]:
+                        raise ValueError("persisted artifact probe mismatch")
+                except (KeyError, OSError, RuntimeError, ValueError):
+                    self._invalidate_persisted_success(job_id)
             elif normalized.get("ownership") is not None:
                 normalized["ownership"] = None
                 self._persist(job_id)
@@ -1043,6 +1092,7 @@ class JobManager:
             "error": None,
             "output_path": None,
             "output_bytes": None,
+            "output_sha256": None,
             "probe": None,
             "plan_metadata": None,
             "tts_metadata": None,
@@ -1529,6 +1579,7 @@ class JobManager:
                 finished_at=utc_now(),
                 output_path=relative,
                 output_bytes=resolved.stat().st_size,
+                output_sha256=_sha256_file(resolved),
                 probe=probe,
                 plan_metadata=plan_metadata,
                 tts_metadata=tts_metadata,
@@ -1550,6 +1601,7 @@ class JobManager:
                 finished_at=utc_now(),
                 output_path=None,
                 output_bytes=None,
+                output_sha256=None,
                 probe=None,
                 plan_metadata=None,
                 tts_metadata=None,
@@ -1645,6 +1697,7 @@ class JobManager:
                     finished_at=utc_now(),
                     output_path=relative,
                     output_bytes=resolved.stat().st_size,
+                    output_sha256=_sha256_file(resolved),
                     probe=probe,
                     plan_metadata=plan_metadata,
                     tts_metadata=tts_metadata,
@@ -1661,6 +1714,7 @@ class JobManager:
                     finished_at=utc_now(),
                     output_path=None,
                     output_bytes=None,
+                    output_sha256=None,
                     probe=None,
                     error={
                         "code": self._error_code(exc),

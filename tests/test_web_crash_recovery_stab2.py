@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from http.client import HTTPConnection
 import json
 import os
@@ -24,6 +25,13 @@ _FIXTURE = Path(__file__).with_name("web_process_worker_fixture.py")
 _JOB_ID = "web-0123456789abcdef01234567"
 _MP4 = b"partial-or-validated-video"
 _CREATE_CONNECTION = socket.create_connection
+_TTS_PROJECTION = {
+    "provider": "gemini",
+    "narrator_profile": "gemini_callirrhoe_vi_gentle_emotional",
+    "language": "en",
+    "fallback_used": False,
+    "continuous_narration": True,
+}
 
 
 def _request() -> WebRenderRequest:
@@ -49,7 +57,13 @@ def _payload(*, status: str = "running", phase: str = "planning", progress: int 
         "error": None,
         "output_path": None,
         "output_bytes": None,
+        "output_sha256": None,
         "probe": None,
+        "plan_metadata": None,
+        "tts_metadata": None,
+        "storage": None,
+        "recovery": None,
+        "retry_job_id": None,
         "request": _request().model_dump(mode="json"),
         "ownership": {
             "server_instance": "a" * 32,
@@ -58,6 +72,21 @@ def _payload(*, status: str = "running", phase: str = "planning", progress: int 
             "started_at": "2026-08-01T00:00:01Z",
         },
     }
+
+
+def _succeeded_payload() -> dict:
+    payload = _payload(status="succeeded", phase="complete", progress=100)
+    payload.update(
+        finished_at="2026-08-01T00:00:03Z",
+        ownership=None,
+        output_path="video.mp4",
+        output_bytes=len(_MP4),
+        output_sha256=hashlib.sha256(_MP4).hexdigest(),
+        probe={"duration_seconds": 1.5, "video_streams": 1, "audio_streams": 1},
+        plan_metadata={},
+        tts_metadata=dict(_TTS_PROJECTION),
+    )
+    return payload
 
 
 def _write_job(root: Path, payload: dict, *, raw: bytes | None = None) -> Path:
@@ -189,21 +218,159 @@ def test_existing_terminal_failure_states_remain_terminal(tmp_path: Path, status
 
 
 def test_existing_validated_success_remains_published(tmp_path: Path) -> None:
-    payload = _payload(status="succeeded", phase="complete", progress=100)
-    payload.update(
-        finished_at="2026-08-01T00:00:03Z",
-        ownership=None,
-        output_path="video.mp4",
-        output_bytes=len(_MP4),
-        probe={"duration_seconds": 1.5, "video_streams": 1, "audio_streams": 1},
-    )
+    payload = _succeeded_payload()
     metadata = _write_job(tmp_path, payload)
     (metadata.parent / "video.mp4").write_bytes(_MP4)
+    before = metadata.read_bytes()
     manager = _manager(tmp_path)
     result = manager.get(_JOB_ID)
     assert result.status is WebJobStatus.SUCCEEDED
     assert result.output_available is True
     assert manager.artifact_path(_JOB_ID).read_bytes() == _MP4
+    assert metadata.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "missing-mp4",
+        "empty-mp4",
+        "byte-count-mismatch",
+        "sha-mismatch",
+        "non-positive-duration",
+        "missing-video-stream",
+        "missing-audio-stream",
+        "probe-failure",
+        "missing-plan-metadata",
+        "missing-tts-metadata",
+    ],
+)
+def test_invalid_persisted_success_fails_authoritatively_and_idempotently(
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    payload = _succeeded_payload()
+    metadata = _write_job(tmp_path, payload)
+    artifact = metadata.parent / "video.mp4"
+    artifact.write_bytes(_MP4)
+    media_probe = _probe
+    if damage == "missing-mp4":
+        artifact.unlink()
+    elif damage == "empty-mp4":
+        artifact.write_bytes(b"")
+    elif damage == "byte-count-mismatch":
+        payload["output_bytes"] += 1
+    elif damage == "sha-mismatch":
+        payload["output_sha256"] = "0" * 64
+    elif damage == "non-positive-duration":
+        payload["probe"]["duration_seconds"] = 0
+    elif damage == "missing-video-stream":
+        payload["probe"]["video_streams"] = 0
+    elif damage == "missing-audio-stream":
+        payload["probe"]["audio_streams"] = 0
+    elif damage == "probe-failure":
+
+        def failed_probe(_path: Path) -> dict[str, object]:
+            raise RuntimeError("MP4_VALIDATION_FAILED")
+
+        media_probe = failed_probe
+    elif damage == "missing-plan-metadata":
+        payload["plan_metadata"] = None
+    elif damage == "missing-tts-metadata":
+        payload["tts_metadata"] = None
+    metadata.write_text(json.dumps(payload), encoding="utf-8")
+    original_artifact = artifact.read_bytes() if artifact.exists() else None
+
+    manager = JobManager(
+        tmp_path,
+        media_probe=media_probe,
+        autostart=False,
+        minimum_free_bytes=0,
+        max_workers=1,
+    )
+    failed = manager.get(_JOB_ID)
+    persisted = json.loads(metadata.read_text(encoding="utf-8"))
+    assert failed.status is WebJobStatus.FAILED
+    assert failed.phase == "failed"
+    assert failed.progress == 99
+    assert failed.output_available is False
+    assert failed.preview_url is failed.download_url is None
+    assert failed.error is not None
+    assert failed.error.code == "PERSISTED_ARTIFACT_INVALID"
+    assert persisted["status"] == "failed"
+    assert persisted["phase"] == "failed"
+    assert persisted["progress"] == 99
+    assert persisted["created_at"] == payload["created_at"]
+    assert persisted["started_at"] == payload["started_at"]
+    assert persisted["finished_at"] == payload["finished_at"]
+    assert persisted["logs"] == payload["logs"]
+    assert persisted["request"] == payload["request"]
+    assert persisted["recovery"]["previous_status"] == "succeeded"
+    assert persisted["recovery"]["reason"] == "persisted_artifact_invalid"
+    assert persisted["recovery"]["recovered_at"]
+    for field in (
+        "output_path",
+        "output_bytes",
+        "output_sha256",
+        "probe",
+        "plan_metadata",
+        "tts_metadata",
+        "ownership",
+    ):
+        assert persisted[field] is None
+    if original_artifact is not None:
+        assert artifact.read_bytes() == original_artifact
+
+    first_restart = metadata.read_bytes()
+    restarted = _manager(tmp_path)
+    assert restarted.get(_JOB_ID) == failed
+    assert metadata.read_bytes() == first_restart
+
+
+def test_invalid_persisted_success_rejects_artifact_routes_and_retries_once(
+    tmp_path: Path,
+) -> None:
+    payload = _succeeded_payload()
+    payload["output_sha256"] = "0" * 64
+    metadata = _write_job(tmp_path, payload)
+    artifact = metadata.parent / "video.mp4"
+    artifact.write_bytes(_MP4)
+    manager = _manager(tmp_path)
+    before_retry = manager.get(_JOB_ID)
+    server = ProductionWebServer(("127.0.0.1", 0), manager)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    retry = None
+    duplicate = None
+    try:
+        for action in ("preview", "download"):
+            for headers in ({}, {"Range": "bytes=0-3"}):
+                connection = HTTPConnection(*server.server_address, timeout=5)
+                connection._create_connection = _CREATE_CONNECTION
+                try:
+                    connection.request(
+                        "GET",
+                        f"/api/jobs/{_JOB_ID}/{action}",
+                        headers=headers,
+                    )
+                    response = connection.getresponse()
+                    assert response.status == 404
+                    response.read()
+                finally:
+                    connection.close()
+        retry = manager.retry(_JOB_ID)
+        duplicate = manager.retry(_JOB_ID)
+        assert manager.get(_JOB_ID) == before_retry
+        assert artifact.read_bytes() == _MP4
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert retry is not None
+    assert duplicate is not None
+    assert retry.job_id != _JOB_ID
+    assert duplicate.job_id == retry.job_id
 
 
 @pytest.mark.parametrize(
@@ -256,25 +423,21 @@ def test_structurally_invalid_metadata_is_quarantined(
     assert len(tuple(metadata.parent.glob("job.corrupt-*.json"))) == 1
 
 
-@pytest.mark.parametrize(
-    "output_path",
-    ["../video.mp4", "/tmp/video.mp4", "C:\\video.mp4", "C:/video.mp4"],
-)
-def test_invalid_succeeded_artifact_paths_are_quarantined(
-    tmp_path: Path,
-    output_path: str,
+@pytest.mark.parametrize("output_path", ["../video.mp4", "/tmp/video.mp4", "C:\\video.mp4"])
+def test_invalid_succeeded_artifact_paths_fail_without_touching_outside_files(
+    tmp_path: Path, output_path: str
 ) -> None:
-    payload = _payload(status="succeeded", phase="complete", progress=100)
-    payload.update(
-        finished_at="2026-08-01T00:00:03Z",
-        ownership=None,
-        output_path=output_path,
-        output_bytes=10,
-        probe={"duration_seconds": 1.0, "video_streams": 1, "audio_streams": 1},
-    )
+    payload = _succeeded_payload()
+    payload["output_path"] = output_path
     metadata = _write_job(tmp_path, payload)
-    assert _manager(tmp_path).list() == ()
-    assert not metadata.exists()
+    outside = tmp_path / "video.mp4"
+    outside.write_bytes(_MP4)
+    failed = _manager(tmp_path).get(_JOB_ID)
+    assert failed.status is WebJobStatus.FAILED
+    assert failed.output_available is False
+    assert outside.read_bytes() == _MP4
+    persisted = json.loads(metadata.read_text(encoding="utf-8"))
+    assert persisted["error"]["code"] == "PERSISTED_ARTIFACT_INVALID"
 
 
 def test_stale_or_malformed_pid_metadata_never_kills_a_process(
