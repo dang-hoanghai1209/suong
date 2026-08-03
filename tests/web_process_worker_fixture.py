@@ -7,8 +7,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import time
+
+from tella.web_process_control import prepare_worker_process_guard, start_parent_control_watcher
 
 
 def _emit(event: dict[str, object]) -> None:
@@ -56,8 +59,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--output-root", required=True)
+    parser.add_argument("--server-instance", required=True)
+    parser.add_argument("--child-id", required=True)
     args = parser.parse_args()
-    request = json.loads(sys.stdin.buffer.read())
+    request = json.loads(sys.stdin.buffer.readline())
+    process_guard = prepare_worker_process_guard()
+    if process_guard is None:
+        return 2
+    start_parent_control_watcher(sys.stdin.buffer, terminate=process_guard)
     content = str(request["content"])
     root = Path(args.output_root)
     started = root / f"{args.job_id}.started"
@@ -68,6 +77,14 @@ def main() -> int:
         os._exit(17)
     if content == "malformed-ipc":
         print("not-json", flush=True)
+        return 0
+    if content == "oversized-ipc":
+        print("x" * 9_000, flush=True)
+        return 0
+    if content == "eof":
+        return 0
+    if content == "invalid-terminal":
+        _emit({"type": "success", "output_path": None})
         return 0
     if content == "failure":
         _emit({"type": "failure", "code": "PIPELINE_FAILED"})
@@ -105,6 +122,18 @@ def main() -> int:
                 _emit({"type": "failure", "code": "PIPELINE_FAILED"})
                 return 1
             time.sleep(0.02)
+
+    if content == "owned-subprocess":
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            shell=False,
+        )
+        (root / f"{args.job_id}.owned-child").write_text(str(child.pid), encoding="ascii")
+        while True:
+            time.sleep(0.05)
 
     artifact = _write_success_artifacts(root, args.job_id)
     _emit({"type": "success", "output_path": str(artifact.resolve())})

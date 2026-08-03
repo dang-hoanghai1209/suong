@@ -116,6 +116,14 @@ test("retry copies only the safe request into a new submission payload", () => {
   assert.equal(retryRequest(job({status: "running"})), null);
 });
 
+test("retry UI delegates idempotency and policy revalidation to the job endpoint", () => {
+  const html = readFileSync(new URL("../tella/web_static/index.html", import.meta.url), "utf8");
+  const app = readFileSync(new URL("../tella/web_static/app.js", import.meta.url), "utf8");
+  assert.match(html, /Retry as a new production/);
+  assert.match(app, /\/api\/jobs\/\$\{selectedJob\.job_id\}\/retry/);
+  assert.doesNotMatch(app, /submitPayload\(retryRequest/);
+});
+
 test("terminal and cancellation status policies are exact", () => {
   for (const status of ["failed", "cancelled", "succeeded"])
     assert.equal(isTerminalStatus(status), true);

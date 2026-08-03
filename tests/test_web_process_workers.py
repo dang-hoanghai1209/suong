@@ -105,7 +105,13 @@ def test_child_environments_are_isolated_and_hostile_parent_is_neutralized(
 
 @pytest.mark.parametrize(
     ("content", "code"),
-    [("crash", "WORKER_PROCESS_EXITED"), ("malformed-ipc", "WORKER_IPC_INVALID")],
+    [
+        ("crash", "WORKER_PROCESS_EXITED"),
+        ("malformed-ipc", "WORKER_IPC_INVALID"),
+        ("oversized-ipc", "WORKER_IPC_INVALID"),
+        ("invalid-terminal", "WORKER_IPC_INVALID"),
+        ("eof", "WORKER_IPC_EOF"),
+    ],
 )
 def test_child_crash_and_malformed_ipc_fail_closed(
     content: str,
@@ -136,6 +142,40 @@ def test_duplicate_polling_does_not_duplicate_process_work(tmp_path: Path) -> No
         assert len(list(tmp_path.glob(f"{job.job_id}.started"))) == 1
         (tmp_path / "release").write_text("go", encoding="ascii")
         _wait_for(lambda: manager.get(job.job_id).status is WebJobStatus.SUCCEEDED)
+    finally:
+        assert manager.close(timeout=5)
+
+
+def test_server_instance_and_child_ownership_are_never_public(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, max_workers=1)
+    job = manager.create(_request("gate"))
+    try:
+        _wait_for(lambda: manager.get(job.job_id).status is WebJobStatus.RUNNING)
+        persisted = json.loads((tmp_path / job.job_id / "job.json").read_text(encoding="utf-8"))
+        public = json.dumps(manager.get(job.job_id).model_dump(mode="json"))
+        assert persisted["ownership"]["server_instance"] == manager._server_instance
+        assert persisted["ownership"]["child_id"]
+        assert persisted["ownership"]["server_instance"] not in public
+        assert persisted["ownership"]["child_id"] not in public
+        (tmp_path / "release").write_text("go", encoding="ascii")
+        _wait_for(lambda: manager.get(job.job_id).status is WebJobStatus.SUCCEEDED)
+    finally:
+        assert manager.close(timeout=5)
+
+
+def test_conflicting_in_memory_ownership_revokes_control_without_pid_targeting(
+    tmp_path: Path,
+) -> None:
+    manager = _manager(tmp_path, max_workers=1)
+    job = manager.create(_request("hang"))
+    _wait_for(lambda: manager.get(job.job_id).status is WebJobStatus.RUNNING)
+    manager._jobs[job.job_id]["ownership"]["child_id"] = "0" * 32
+    try:
+        _wait_for(lambda: manager.get(job.job_id).status is WebJobStatus.FAILED)
+        failed = manager.get(job.job_id)
+        assert failed.error is not None
+        assert failed.error.code == "WORKER_OWNERSHIP_INVALID"
+        assert failed.output_available is False
     finally:
         assert manager.close(timeout=5)
 

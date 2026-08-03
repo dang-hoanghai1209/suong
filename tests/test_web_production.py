@@ -615,7 +615,7 @@ def test_restart_marks_inflight_job_failed(tmp_path: Path) -> None:
     recovered = manager.get(job_id)
     assert recovered.status is WebJobStatus.FAILED
     assert recovered.error is not None
-    assert recovered.error.code == "SERVER_RESTART_INTERRUPTED_JOB"
+    assert recovered.error.code == "SERVER_RESTART_INTERRUPTED"
 
 
 def test_restart_sanitizes_untrusted_persisted_logs_and_error(
@@ -810,10 +810,22 @@ def test_api_history_cancel_and_retry_create_distinct_jobs(
         assert isinstance(cancelled, dict)
         assert cancelled["status"] == "cancelled"
 
-        status, retried, _ = _http(base, "/api/jobs", method="POST", payload=payload)
+        status, retried, _ = _http(
+            base,
+            f"/api/jobs/{first_id}/retry",
+            method="POST",
+        )
         assert status == HTTPStatus.ACCEPTED
         assert isinstance(retried, dict)
         assert retried["job_id"] != first_id
+        status, duplicate, _ = _http(
+            base,
+            f"/api/jobs/{first_id}/retry",
+            method="POST",
+        )
+        assert status == HTTPStatus.ACCEPTED
+        assert isinstance(duplicate, dict)
+        assert duplicate["job_id"] == retried["job_id"]
         assert manager.get(first_id).status is WebJobStatus.CANCELLED
         assert manager.get(str(retried["job_id"])).status is WebJobStatus.QUEUED
     finally:

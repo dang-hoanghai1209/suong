@@ -443,13 +443,25 @@ form.addEventListener("submit", (event) => {
   if (payload) submitPayload(payload);
 });
 
-$("#retry-job").addEventListener("click", () => {
-  const payload = retryRequest(selectedJob);
-  if (!payload) {
+$("#retry-job").addEventListener("click", async () => {
+  if (!retryRequest(selectedJob) || submitting) {
     showError("Only failed or cancelled jobs with safe request metadata can be retried.");
     return;
   }
-  submitPayload(payload);
+  clearError();
+  submitting = true;
+  updateSubmitState();
+  try {
+    const created = await api(`/api/jobs/${selectedJob.job_id}/retry`, {method: "POST"});
+    replaceHistoryJob(created);
+    selectJob(created);
+    $("#job-panel").scrollIntoView({behavior: "smooth", block: "start"});
+  } catch (error) {
+    showError(`Retry was not created: ${error.message}`);
+  } finally {
+    submitting = false;
+    updateSubmitState();
+  }
 });
 
 $("#cancel-job").addEventListener("click", async () => {

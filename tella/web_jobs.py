@@ -6,13 +6,16 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
+import hashlib
 import json
 import logging
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import queue
 import re
+import secrets
 import signal
 import shutil
 import stat
@@ -60,6 +63,7 @@ _MAX_LOG_CHARS = 500
 _MAX_SANITIZER_INPUT_CHARS = 4_000
 _MAX_IPC_LINE_BYTES = 8_192
 _MAX_IPC_EVENTS = 512
+_MAX_JOB_METADATA_BYTES = 256 * 1024
 _MAX_WEB_WORKERS_ENV = "TELLA_WEB_MAX_WORKERS"
 _MIN_FREE_BYTES_ENV = "TELLA_WEB_MIN_FREE_BYTES"
 _DEFAULT_MIN_FREE_BYTES = 2 * 1024**3
@@ -85,9 +89,11 @@ _PUBLIC_ERROR_CODES = {
     "PERSISTED_ARTIFACT_INVALID",
     "PIPELINE_FAILED",
     "WORKER_IPC_INVALID",
+    "WORKER_IPC_EOF",
+    "WORKER_OWNERSHIP_INVALID",
     "WORKER_PROCESS_EXITED",
     "WORKER_SHUTDOWN_TERMINATED",
-    "SERVER_RESTART_INTERRUPTED_JOB",
+    "SERVER_RESTART_INTERRUPTED",
     "SERVER_SHUTDOWN_CANCELLED_JOB",
     "WEB_TTS_AUTHORITY_INVALID",
 }
@@ -297,6 +303,14 @@ def _path_bytes_no_follow(path: Path) -> int:
     return max(0, metadata.st_size) if stat.S_ISREG(metadata.st_mode) else 0
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _assert_tree_has_no_links(root: Path) -> None:
     pending = [root]
     while pending:
@@ -310,6 +324,60 @@ def _assert_tree_has_no_links(root: Path) -> None:
                 raise ValueError("STORAGE_PATH_UNSAFE")
             if stat.S_ISDIR(child_metadata.st_mode):
                 pending.append(Path(entry.path))
+
+
+def _validated_timestamp(value: object, *, nullable: bool = False) -> str | None:
+    if value is None and nullable:
+        return None
+    if not isinstance(value, str) or not _UTC_TIMESTAMP.fullmatch(value):
+        raise ValueError("invalid job timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.removesuffix("Z") + "+00:00")
+    except ValueError as exc:
+        raise ValueError("invalid job timestamp") from exc
+    if parsed.utcoffset() is None:
+        raise ValueError("invalid job timestamp")
+    return value
+
+
+def _canonical_artifact_relative_path(value: object) -> str:
+    if not isinstance(value, str) or not value or "\\" in value:
+        raise ValueError("invalid artifact path")
+    windows_path = PureWindowsPath(value)
+    if windows_path.drive or windows_path.root:
+        raise ValueError("invalid artifact path")
+    candidate = PurePosixPath(value)
+    if candidate.is_absolute() or candidate.as_posix() != value:
+        raise ValueError("invalid artifact path")
+    if any(part in {"", ".", ".."} for part in candidate.parts):
+        raise ValueError("invalid artifact path")
+    if candidate.suffix.lower() != ".mp4":
+        raise ValueError("invalid artifact path")
+    return value
+
+
+def _validated_probe(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ValueError("invalid artifact probe")
+    duration = value.get("duration_seconds")
+    video_streams = value.get("video_streams")
+    audio_streams = value.get("audio_streams")
+    if (
+        type(duration) not in {int, float}
+        or isinstance(duration, bool)
+        or not math.isfinite(float(duration))
+        or float(duration) <= 0
+        or type(video_streams) is not int
+        or video_streams < 1
+        or type(audio_streams) is not int
+        or audio_streams < 1
+    ):
+        raise ValueError("invalid artifact probe")
+    return {
+        "duration_seconds": float(duration),
+        "video_streams": video_streams,
+        "audio_streams": audio_streams,
+    }
 
 
 def _child_environment() -> dict[str, str]:
@@ -329,6 +397,8 @@ def _child_environment() -> dict[str, str]:
 @dataclass
 class _ActiveChild:
     job_id: str
+    server_instance: str
+    child_id: str
     process: subprocess.Popen[bytes]
     events: queue.Queue[dict[str, object]]
     reader: threading.Thread
@@ -430,8 +500,17 @@ def sanitize_public_text(value: object, *, private_paths: tuple[Path, ...] = ())
     return result.replace("\r", " ").replace("\n", " ")[:_MAX_LOG_CHARS]
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
+def _read_json(path: Path, *, max_bytes: int | None = None) -> dict[str, Any]:
+    metadata = path.stat(follow_symlinks=False)
+    if _is_link_or_reparse(metadata) or not stat.S_ISREG(metadata.st_mode):
+        raise ValueError("unsafe JSON metadata path")
+    if metadata.st_size <= 0 or (max_bytes is not None and metadata.st_size > max_bytes):
+        raise ValueError("JSON metadata size is invalid")
+    with path.open("rb") as handle:
+        raw = handle.read() if max_bytes is None else handle.read(max_bytes + 1)
+    if max_bytes is not None and len(raw) > max_bytes:
+        raise ValueError("JSON metadata is oversized")
+    value = json.loads(raw.decode("utf-8"))
     if not isinstance(value, dict):
         raise ValueError("expected JSON object")
     return value
@@ -490,7 +569,7 @@ def _safe_metadata(path: Path, keys: tuple[str, ...]) -> dict[str, object] | Non
         return None
     try:
         source = _read_json(path)
-    except (OSError, ValueError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
         return None
     result: dict[str, object] = {}
     for key in keys:
@@ -510,7 +589,7 @@ def _validated_web_tts_metadata(path: Path) -> dict[str, object]:
     """Validate the persisted TTS authority and return its public projection."""
     try:
         source = _read_json(path)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
         raise RuntimeError("WEB_TTS_AUTHORITY_INVALID") from exc
     expected = {
         "requested_provider": "gemini",
@@ -592,6 +671,7 @@ class JobManager:
         self.minimum_free_bytes = configured_minimum
         self._disk_usage = disk_usage
         self._worker_module = worker_module
+        self._server_instance = secrets.token_hex(16)
         self._jobs: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
         self._queue: queue.Queue[str | None] = queue.Queue()
@@ -727,102 +807,329 @@ class JobManager:
     def _persist(self, job_id: str) -> None:
         atomic_write_json(self._job_dir(job_id) / "job.json", self._jobs[job_id])
 
+    def _quarantine_corrupt_metadata(self, job_dir: Path, metadata_path: Path) -> None:
+        try:
+            metadata = metadata_path.stat(follow_symlinks=False)
+            if _is_link_or_reparse(metadata) or not stat.S_ISREG(metadata.st_mode):
+                return
+            destination = job_dir / f"job.corrupt-{secrets.token_hex(8)}.json"
+            os.replace(metadata_path, destination)
+        except OSError:
+            return
+
+    def _normalize_loaded_job(
+        self,
+        payload: dict[str, Any],
+        *,
+        job_id: str,
+        job_dir: Path,
+    ) -> tuple[dict[str, Any], WebJobStatus, bool]:
+        if type(payload.get("schema_version")) is not int or payload["schema_version"] != 1:
+            raise ValueError("invalid job schema")
+        if payload.get("job_id") != job_id:
+            raise ValueError("job identity mismatch")
+        request = WebRenderRequest.model_validate(payload.get("request"), strict=True)
+        status = WebJobStatus(payload.get("status"))
+        progress = payload.get("progress")
+        if type(progress) is not int or not 0 <= progress <= 100:
+            raise ValueError("invalid job progress")
+        phase = payload.get("phase")
+        if not isinstance(phase, str) or not phase or len(phase) > 100:
+            raise ValueError("invalid job phase")
+        created_at = _validated_timestamp(payload.get("created_at"))
+        started_at = _validated_timestamp(payload.get("started_at"), nullable=True)
+        finished_at = _validated_timestamp(payload.get("finished_at"), nullable=True)
+        raw_logs = payload.get("logs", [])
+        if not isinstance(raw_logs, list) or any(not isinstance(item, str) for item in raw_logs):
+            raise ValueError("invalid job logs")
+        logs = [
+            sanitize_public_text(
+                item,
+                private_paths=(self.output_root, job_dir),
+            )
+            for item in raw_logs[-_MAX_LOGS:]
+        ]
+
+        error = None
+        raw_error = payload.get("error")
+        if raw_error is not None:
+            if not isinstance(raw_error, dict):
+                raise ValueError("invalid job error")
+            loaded_code = raw_error.get("code")
+            if loaded_code == "SERVER_RESTART_INTERRUPTED_JOB":
+                loaded_code = "SERVER_RESTART_INTERRUPTED"
+            code = loaded_code if loaded_code in _PUBLIC_ERROR_CODES else "PIPELINE_FAILED"
+            error = {
+                "code": code,
+                "message": sanitize_public_text(
+                    raw_error.get("message") or "Production pipeline failed.",
+                    private_paths=(self.output_root, job_dir),
+                ),
+            }
+
+        ownership = payload.get("ownership")
+        if ownership is not None:
+            if not isinstance(ownership, dict) or set(ownership) != {
+                "server_instance",
+                "child_id",
+                "job_id",
+                "started_at",
+            }:
+                raise ValueError("invalid worker ownership")
+            if (
+                not isinstance(ownership["server_instance"], str)
+                or not re.fullmatch(r"[0-9a-f]{32}", ownership["server_instance"])
+                or not isinstance(ownership["child_id"], str)
+                or not re.fullmatch(r"[0-9a-f]{32}", ownership["child_id"])
+                or ownership["job_id"] != job_id
+            ):
+                raise ValueError("invalid worker ownership")
+            _validated_timestamp(ownership["started_at"])
+
+        recovery = payload.get("recovery")
+        if recovery is not None:
+            if not isinstance(recovery, dict) or set(recovery) != {
+                "previous_status",
+                "reason",
+                "recovered_at",
+            }:
+                raise ValueError("invalid recovery metadata")
+            recovery_identity = (recovery["previous_status"], recovery["reason"])
+            if recovery_identity not in {
+                ("queued", "server_restart_interrupted"),
+                ("running", "server_restart_interrupted"),
+                ("succeeded", "persisted_artifact_invalid"),
+            }:
+                raise ValueError("invalid recovery metadata")
+            _validated_timestamp(recovery["recovered_at"])
+
+        retry_job_id = payload.get("retry_job_id")
+        if retry_job_id is not None and (
+            not isinstance(retry_job_id, str) or not _JOB_ID.fullmatch(retry_job_id)
+        ):
+            raise ValueError("invalid retry identity")
+
+        normalized: dict[str, Any] = {
+            "schema_version": 1,
+            "job_id": job_id,
+            "status": status.value,
+            "phase": sanitize_public_text(phase),
+            "progress": progress,
+            "created_at": created_at,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "logs": logs,
+            "error": error,
+            "output_path": None,
+            "output_bytes": None,
+            "output_sha256": None,
+            "probe": None,
+            "plan_metadata": self._safe_loaded_plan_metadata(payload.get("plan_metadata")),
+            "tts_metadata": self._safe_loaded_tts_metadata(payload.get("tts_metadata")),
+            "storage": self._safe_loaded_storage(payload.get("storage")),
+            "request": request.model_dump(mode="json"),
+            "ownership": ownership,
+            "recovery": recovery,
+            "retry_job_id": retry_job_id,
+        }
+        publication_valid = True
+        if status is WebJobStatus.SUCCEEDED:
+            try:
+                if progress != 100 or error is not None:
+                    raise ValueError("invalid succeeded job authority")
+                output_path = _canonical_artifact_relative_path(payload.get("output_path"))
+                output_bytes = payload.get("output_bytes")
+                output_sha256 = payload.get("output_sha256")
+                if type(output_bytes) is not int or output_bytes <= 0:
+                    raise ValueError("invalid succeeded job authority")
+                if not isinstance(output_sha256, str) or not re.fullmatch(
+                    r"[0-9a-f]{64}", output_sha256
+                ):
+                    raise ValueError("invalid succeeded job authority")
+                probe = _validated_probe(payload.get("probe"))
+                if normalized["plan_metadata"] is None or normalized["tts_metadata"] is None:
+                    raise ValueError("invalid succeeded job authority")
+            except ValueError:
+                publication_valid = False
+            else:
+                normalized.update(
+                    output_path=output_path,
+                    output_bytes=output_bytes,
+                    output_sha256=output_sha256,
+                    probe=probe,
+                )
+        elif progress == 100:
+            raise ValueError("terminal job cannot retain succeeded progress")
+        return normalized, status, publication_valid
+
+    def _recover_interrupted(self, job_id: str, previous_status: WebJobStatus) -> None:
+        payload = self._jobs[job_id]
+        recovered_at = utc_now()
+        payload.update(
+            status=WebJobStatus.FAILED.value,
+            phase=payload["phase"],
+            progress=min(int(payload["progress"]), 99),
+            finished_at=recovered_at,
+            output_path=None,
+            output_bytes=None,
+            output_sha256=None,
+            probe=None,
+            plan_metadata=None,
+            tts_metadata=None,
+            ownership=None,
+            recovery={
+                "previous_status": previous_status.value,
+                "reason": "server_restart_interrupted",
+                "recovered_at": recovered_at,
+            },
+            error={
+                "code": "SERVER_RESTART_INTERRUPTED",
+                "message": "The server restarted before this job completed.",
+            },
+        )
+        self._persist(job_id)
+
+    def _invalidate_persisted_success(self, job_id: str) -> None:
+        payload = self._jobs[job_id]
+        recovered_at = utc_now()
+        payload.update(
+            status=WebJobStatus.FAILED.value,
+            phase="failed",
+            progress=min(int(payload["progress"]), 99),
+            output_path=None,
+            output_bytes=None,
+            output_sha256=None,
+            probe=None,
+            plan_metadata=None,
+            tts_metadata=None,
+            ownership=None,
+            recovery={
+                "previous_status": "succeeded",
+                "reason": "persisted_artifact_invalid",
+                "recovered_at": recovered_at,
+            },
+            error={
+                "code": "PERSISTED_ARTIFACT_INVALID",
+                "message": "The persisted video artifact is missing or invalid.",
+            },
+        )
+        self._persist(job_id)
+
     def _load(self) -> None:
         for metadata_path in sorted(self.output_root.glob("web-*/job.json")):
+            job_id = metadata_path.parent.name
             try:
-                payload = _read_json(metadata_path)
-                job_id = str(payload["job_id"])
-                self._job_dir(job_id)
-                WebRenderRequest.model_validate(payload["request"])
-                status = WebJobStatus(str(payload["status"]))
-            except (KeyError, OSError, ValueError, json.JSONDecodeError):
+                job_dir = self._storage_job_dir(job_id)
+                payload = _read_json(metadata_path, max_bytes=_MAX_JOB_METADATA_BYTES)
+                normalized, status, publication_valid = self._normalize_loaded_job(
+                    payload,
+                    job_id=job_id,
+                    job_dir=job_dir,
+                )
+            except (KeyError, OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+                try:
+                    job_dir = self._storage_job_dir(job_id)
+                except (KeyError, OSError, ValueError):
+                    continue
+                self._quarantine_corrupt_metadata(job_dir, metadata_path)
                 continue
-            payload["logs"] = [
-                sanitize_public_text(
-                    value,
-                    private_paths=(self.output_root, metadata_path.parent),
-                )
-                for value in payload.get("logs", [])
-            ][-_MAX_LOGS:]
-            if isinstance(payload.get("error"), dict):
-                loaded_code = str(payload["error"].get("code") or "")
-                payload["error"] = {
-                    "code": (
-                        loaded_code if loaded_code in _PUBLIC_ERROR_CODES else "PIPELINE_FAILED"
-                    ),
-                    "message": sanitize_public_text(
-                        payload["error"].get("message") or "Production pipeline failed.",
-                        private_paths=(self.output_root, metadata_path.parent),
-                    ),
-                }
-            payload["plan_metadata"] = self._safe_loaded_plan_metadata(payload.get("plan_metadata"))
-            payload["tts_metadata"] = self._safe_loaded_tts_metadata(payload.get("tts_metadata"))
-            payload["storage"] = self._safe_loaded_storage(payload.get("storage"))
-            self._jobs[job_id] = payload
+            self._jobs[job_id] = normalized
             if status in {WebJobStatus.QUEUED, WebJobStatus.RUNNING}:
-                payload.update(
-                    status=WebJobStatus.FAILED.value,
-                    phase="interrupted",
-                    finished_at=utc_now(),
-                    error={
-                        "code": "SERVER_RESTART_INTERRUPTED_JOB",
-                        "message": "The server restarted before this job completed.",
-                    },
-                )
-                self._persist(job_id)
+                self._recover_interrupted(job_id, status)
             elif status is WebJobStatus.SUCCEEDED:
                 try:
+                    if not publication_valid:
+                        raise ValueError("invalid succeeded publication")
                     artifact = self.artifact_path(job_id)
-                    self._media_probe(artifact)
-                    payload["output_bytes"] = artifact.stat().st_size
-                except (KeyError, OSError, RuntimeError):
-                    payload.update(
-                        status=WebJobStatus.FAILED.value,
-                        phase="artifact-invalid",
-                        progress=min(int(payload.get("progress", 0)), 99),
-                        finished_at=utc_now(),
-                        output_path=None,
-                        output_bytes=None,
-                        probe=None,
-                        error={
-                            "code": "PERSISTED_ARTIFACT_INVALID",
-                            "message": "The persisted video artifact is missing or invalid.",
-                        },
-                    )
-                    self._persist(job_id)
+                    if artifact.stat().st_size != normalized["output_bytes"]:
+                        raise ValueError("persisted artifact byte count mismatch")
+                    if _sha256_file(artifact) != normalized["output_sha256"]:
+                        raise ValueError("persisted artifact SHA-256 mismatch")
+                    if _validated_probe(self._media_probe(artifact)) != normalized["probe"]:
+                        raise ValueError("persisted artifact probe mismatch")
+                except (KeyError, OSError, RuntimeError, ValueError):
+                    self._invalidate_persisted_success(job_id)
+            elif normalized.get("ownership") is not None:
+                normalized["ownership"] = None
+                self._persist(job_id)
 
     def create(self, request: WebRenderRequest) -> WebJobView:
         with self._lock:
-            if self._closing or self._closed:
-                raise RuntimeError("JOB_MANAGER_CLOSING")
-            if not self._worker_config_valid:
-                raise RuntimeError("TELLA_WEB_MAX_WORKERS_INVALID")
-            if not self._storage_config_valid:
-                raise RuntimeError("TELLA_WEB_MIN_FREE_BYTES_INVALID")
-            if self._free_disk_bytes() < self.minimum_free_bytes:
-                raise RuntimeError("INSUFFICIENT_DISK_SPACE")
-            job_id = f"web-{uuid.uuid4().hex[:24]}"
-            self._job_dir(job_id).mkdir(parents=True, exist_ok=False)
-            self._jobs[job_id] = {
-                "schema_version": 1,
-                "job_id": job_id,
-                "status": WebJobStatus.QUEUED.value,
-                "phase": "queued",
-                "progress": 0,
-                "created_at": utc_now(),
-                "started_at": None,
-                "finished_at": None,
-                "logs": [],
-                "error": None,
-                "output_path": None,
-                "output_bytes": None,
-                "probe": None,
-                "request": request.model_dump(mode="json"),
-            }
-            self._persist(job_id)
-            self._queue.put(job_id)
-            self._wake.set()
-            return self.get(job_id)
+            validated = WebRenderRequest.model_validate(request, strict=True)
+            return self._create_locked(validated)
+
+    def _create_locked(
+        self,
+        request: WebRenderRequest,
+        *,
+        job_id: str | None = None,
+    ) -> WebJobView:
+        if self._closing or self._closed:
+            raise RuntimeError("JOB_MANAGER_CLOSING")
+        if not self._worker_config_valid:
+            raise RuntimeError("TELLA_WEB_MAX_WORKERS_INVALID")
+        if not self._storage_config_valid:
+            raise RuntimeError("TELLA_WEB_MIN_FREE_BYTES_INVALID")
+        if self._free_disk_bytes() < self.minimum_free_bytes:
+            raise RuntimeError("INSUFFICIENT_DISK_SPACE")
+        selected_job_id = job_id or f"web-{uuid.uuid4().hex[:24]}"
+        if not _JOB_ID.fullmatch(selected_job_id) or selected_job_id in self._jobs:
+            raise RuntimeError("JOB_ID_CONFLICT")
+        job_dir = self._job_dir(selected_job_id)
+        if job_dir.exists():
+            raise RuntimeError("JOB_ID_CONFLICT")
+        job_dir.mkdir(parents=True, exist_ok=False)
+        self._jobs[selected_job_id] = {
+            "schema_version": 1,
+            "job_id": selected_job_id,
+            "status": WebJobStatus.QUEUED.value,
+            "phase": "queued",
+            "progress": 0,
+            "created_at": utc_now(),
+            "started_at": None,
+            "finished_at": None,
+            "logs": [],
+            "error": None,
+            "output_path": None,
+            "output_bytes": None,
+            "output_sha256": None,
+            "probe": None,
+            "plan_metadata": None,
+            "tts_metadata": None,
+            "storage": None,
+            "ownership": None,
+            "recovery": None,
+            "retry_job_id": None,
+            "request": request.model_dump(mode="json"),
+        }
+        self._persist(selected_job_id)
+        self._queue.put(selected_job_id)
+        self._wake.set()
+        return self.get(selected_job_id)
+
+    def retry(self, job_id: str) -> WebJobView:
+        """Create one idempotent successor from the original persisted safe request."""
+        with self._lock:
+            payload = self._jobs.get(job_id)
+            if payload is None:
+                raise KeyError(job_id)
+            if payload["status"] not in {
+                WebJobStatus.FAILED.value,
+                WebJobStatus.CANCELLED.value,
+            }:
+                raise ValueError("JOB_NOT_RETRYABLE")
+            request = WebRenderRequest.model_validate(payload["request"], strict=True)
+            retry_job_id = payload.get("retry_job_id")
+            if retry_job_id is None:
+                retry_job_id = f"web-{uuid.uuid4().hex[:24]}"
+                payload["retry_job_id"] = retry_job_id
+                self._persist(job_id)
+            if not isinstance(retry_job_id, str) or not _JOB_ID.fullmatch(retry_job_id):
+                raise ValueError("RETRY_IDENTITY_INVALID")
+            existing = self._jobs.get(retry_job_id)
+            if existing is not None:
+                return self.get(retry_job_id)
+            return self._create_locked(request, job_id=retry_job_id)
 
     def compact(self, job_id: str) -> WebCompactionResult:
         with self._lock:
@@ -1056,16 +1363,24 @@ class JobManager:
             self._wake.clear()
 
     def _start_child(self, job_id: str) -> None:
+        child_id = secrets.token_hex(16)
+        ownership_started_at = utc_now()
         with self._lock:
             payload = self._jobs[job_id]
-            request = WebRenderRequest.model_validate(payload["request"])
+            request = WebRenderRequest.model_validate(payload["request"], strict=True)
             payload.update(
                 status=WebJobStatus.RUNNING.value,
                 phase="starting",
                 progress=1,
-                started_at=utc_now(),
+                started_at=ownership_started_at,
                 finished_at=None,
                 error=None,
+                ownership={
+                    "server_instance": self._server_instance,
+                    "child_id": child_id,
+                    "job_id": job_id,
+                    "started_at": ownership_started_at,
+                },
             )
             self._persist(job_id)
         worker_entrypoint = (
@@ -1080,6 +1395,10 @@ class JobManager:
             job_id,
             "--output-root",
             str(self.output_root),
+            "--server-instance",
+            self._server_instance,
+            "--child-id",
+            child_id,
         ]
         process_kwargs: dict[str, object] = {}
         if os.name == "nt":
@@ -1098,8 +1417,8 @@ class JobManager:
         )
         try:
             assert process.stdin is not None
-            process.stdin.write(request.model_dump_json().encode("utf-8"))
-            process.stdin.close()
+            process.stdin.write(request.model_dump_json().encode("utf-8") + b"\n")
+            process.stdin.flush()
         except Exception:
             _terminate_process_tree(process)
             raise
@@ -1113,6 +1432,8 @@ class JobManager:
         )
         child = _ActiveChild(
             job_id=job_id,
+            server_instance=self._server_instance,
+            child_id=child_id,
             process=process,
             events=events,
             reader=reader,
@@ -1121,8 +1442,29 @@ class JobManager:
             self._active_children[job_id] = child
         reader.start()
 
+    def _owns_child(self, child: _ActiveChild) -> bool:
+        with self._lock:
+            payload = self._jobs.get(child.job_id)
+            ownership = payload.get("ownership") if payload is not None else None
+            return bool(
+                self._active_children.get(child.job_id) is child
+                and child.server_instance == self._server_instance
+                and isinstance(ownership, dict)
+                and ownership.get("server_instance") == child.server_instance
+                and ownership.get("child_id") == child.child_id
+                and ownership.get("job_id") == child.job_id
+            )
+
     def _monitor_child(self, job_id: str) -> None:
         child = self._active_children[job_id]
+        if child.job_id != job_id or not self._owns_child(child):
+            self._fail_job(job_id, "WORKER_OWNERSHIP_INVALID")
+            if child.process.stdin is not None:
+                child.process.stdin.close()
+            with self._lock:
+                self._active_children.pop(job_id, None)
+            self._queue.task_done()
+            return
         self._drain_child_events(child)
         return_code = child.process.poll()
         if child.invalid_ipc:
@@ -1135,7 +1477,10 @@ class JobManager:
         if child.invalid_ipc:
             self._fail_job(job_id, "WORKER_IPC_INVALID")
         elif child.terminal is None:
-            self._fail_job(job_id, "WORKER_PROCESS_EXITED")
+            self._fail_job(
+                job_id,
+                "WORKER_IPC_EOF" if return_code == 0 else "WORKER_PROCESS_EXITED",
+            )
         elif child.terminal["type"] == "failure":
             self._fail_job(job_id, str(child.terminal["code"]))
         elif return_code != 0:
@@ -1146,6 +1491,7 @@ class JobManager:
             except Exception as exc:
                 self._fail_job(job_id, self._error_code(exc))
         child.process.stdout.close() if child.process.stdout is not None else None
+        child.process.stdin.close() if child.process.stdin is not None else None
         with self._lock:
             self._active_children.pop(job_id, None)
         self._queue.task_done()
@@ -1190,6 +1536,8 @@ class JobManager:
         with self._lock:
             children = tuple(self._active_children.values())
         for child in children:
+            if not self._owns_child(child):
+                continue
             self._fail_job(child.job_id, "WORKER_SHUTDOWN_TERMINATED")
             _terminate_process_tree(child.process)
 
@@ -1231,9 +1579,11 @@ class JobManager:
                 finished_at=utc_now(),
                 output_path=relative,
                 output_bytes=resolved.stat().st_size,
+                output_sha256=_sha256_file(resolved),
                 probe=probe,
                 plan_metadata=plan_metadata,
                 tts_metadata=tts_metadata,
+                ownership=None,
                 error=None,
             )
             self._persist(job_id)
@@ -1251,7 +1601,11 @@ class JobManager:
                 finished_at=utc_now(),
                 output_path=None,
                 output_bytes=None,
+                output_sha256=None,
                 probe=None,
+                plan_metadata=None,
+                tts_metadata=None,
+                ownership=None,
                 error={
                     "code": safe_code,
                     "message": self._public_error_message(job_id, RuntimeError(safe_code)),
@@ -1343,6 +1697,7 @@ class JobManager:
                     finished_at=utc_now(),
                     output_path=relative,
                     output_bytes=resolved.stat().st_size,
+                    output_sha256=_sha256_file(resolved),
                     probe=probe,
                     plan_metadata=plan_metadata,
                     tts_metadata=tts_metadata,
@@ -1359,6 +1714,7 @@ class JobManager:
                     finished_at=utc_now(),
                     output_path=None,
                     output_bytes=None,
+                    output_sha256=None,
                     probe=None,
                     error={
                         "code": self._error_code(exc),
@@ -1387,6 +1743,8 @@ class JobManager:
             "MP4_STREAMS_REQUIRED": "The rendered MP4 must contain audio and video.",
             "MP4_ARTIFACT_INVALID": "The rendered MP4 artifact is invalid.",
             "WORKER_IPC_INVALID": "The render worker returned an invalid status message.",
+            "WORKER_IPC_EOF": "The render worker closed its control stream without a result.",
+            "WORKER_OWNERSHIP_INVALID": "The render worker ownership record was invalid.",
             "WORKER_PROCESS_EXITED": "The render worker exited before publishing a result.",
             "WORKER_SHUTDOWN_TERMINATED": (
                 "The server stopped this running render before it completed."
@@ -1482,6 +1840,8 @@ class JobManager:
             "MP4_ARTIFACT_INVALID",
             "WEB_TTS_AUTHORITY_INVALID",
             "WORKER_IPC_INVALID",
+            "WORKER_IPC_EOF",
+            "WORKER_OWNERSHIP_INVALID",
             "WORKER_PROCESS_EXITED",
             "WORKER_SHUTDOWN_TERMINATED",
         ):

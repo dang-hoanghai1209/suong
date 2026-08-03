@@ -13,8 +13,10 @@ import threading
 
 from tella.cli import run_pipeline
 from tella.web_contract import MAX_WEB_REQUEST_BYTES, WebInputMode, WebRenderRequest
+from tella.web_process_control import prepare_worker_process_guard, start_parent_control_watcher
 
 _JOB_ID = re.compile(r"^web-[0-9a-f]{24}$")
+_INSTANCE_ID = re.compile(r"^[0-9a-f]{32}$")
 _MAX_EVENT_CHARS = 4_000
 _PROTOCOL_LOCK = threading.Lock()
 
@@ -84,17 +86,27 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--output-root", required=True)
+    parser.add_argument("--server-instance", required=True)
+    parser.add_argument("--child-id", required=True)
     args = parser.parse_args(argv)
-    if not _JOB_ID.fullmatch(args.job_id):
+    if (
+        not _JOB_ID.fullmatch(args.job_id)
+        or not _INSTANCE_ID.fullmatch(args.server_instance)
+        or not _INSTANCE_ID.fullmatch(args.child_id)
+    ):
         return 2
     output_root = Path(args.output_root).resolve()
-    raw_request = sys.stdin.buffer.read(MAX_WEB_REQUEST_BYTES + 1)
-    if len(raw_request) > MAX_WEB_REQUEST_BYTES:
+    raw_request = sys.stdin.buffer.readline(MAX_WEB_REQUEST_BYTES + 2)
+    if not raw_request.endswith(b"\n") or len(raw_request) > MAX_WEB_REQUEST_BYTES + 1:
         return 2
     try:
-        request = WebRenderRequest.model_validate_json(raw_request)
+        request = WebRenderRequest.model_validate_json(raw_request[:-1], strict=True)
     except ValueError:
         return 2
+    process_guard = prepare_worker_process_guard()
+    if process_guard is None:
+        return 2
+    start_parent_control_watcher(sys.stdin.buffer, terminate=process_guard)
 
     root_logger = logging.getLogger()
     previous_level = root_logger.level
