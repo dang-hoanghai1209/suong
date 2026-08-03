@@ -27,6 +27,10 @@ from tella.web_contract import MAX_WEB_REQUEST_BYTES, WebJobStatus, WebRenderReq
 from tella import web_jobs as web_jobs_module
 from tella.web_jobs import JobManager, sanitize_public_text, web_readiness
 from tella.voice_profiles import get_voice_profile
+from tella.web_image_fallback import (
+    WEB_SENSITIVITY_POLICY_ID,
+    apply_web_scene_sensitivity_authority,
+)
 
 _ORIGINAL_CREATE_CONNECTION = socket.create_connection
 _WEB_PROFILE = get_voice_profile("gemini_callirrhoe_vi_gentle_emotional")
@@ -218,7 +222,7 @@ def test_web_model_authority_overrides_and_restores_hostile_3_1(
 
 
 def _classic_web_image_plan() -> TellaScenePlan:
-    return TellaScenePlan(
+    plan = TellaScenePlan(
         title="Cloudflare-only web route",
         language="en",
         aspect_ratio="9:16",
@@ -237,6 +241,12 @@ def _classic_web_image_plan() -> TellaScenePlan:
             for index in range(1, 4)
         ],
     )
+    apply_web_scene_sensitivity_authority(
+        plan,
+        source_text="A patient gardener",
+        policy_id=WEB_SENSITIVITY_POLICY_ID,
+    )
+    return plan
 
 
 def test_web_cloudflare_failure_is_terminal_without_fallback_provider(
@@ -285,7 +295,6 @@ def test_web_cloudflare_failure_is_terminal_without_fallback_provider(
     assert observed_plan.used_local_fallback is False
     assert observed_plan.reused_asset is False
     assert all(not scene.image_filenames for scene in observed_plan.scenes)
-    assert "stock fallback is disabled" in caplog.text
     assert "fallback to Pexels" not in caplog.text
     assert result.error.message == "Production pipeline failed. Review the sanitized job logs."
 
@@ -813,18 +822,22 @@ def test_health_is_truthful_and_contains_no_secret_values(
     monkeypatch.delenv("GOOGLE_TTS_VOICE", raising=False)
     monkeypatch.setenv("CF_ACCOUNT_ID", "secret-cloudflare-account")
     monkeypatch.setenv("CF_AI_TOKEN", "secret-cloudflare-token")
+    monkeypatch.setenv("POLLINATIONS_API_KEY", "secret-pollinations-token")
     monkeypatch.setattr(web_jobs_module.shutil, "which", lambda name: f"tool-{name}")
     result = web_readiness(tmp_path)
     serialized = json.dumps(result)
     assert result["checks"]["gemini_planning"]["ready"] is True
     assert result["checks"]["gemini_narration"]["ready"] is True
     assert result["checks"]["image_route"]["ready"] is True
+    assert result["checks"]["pollinations_fallback"]["ready"] is True
+    assert result["checks"]["pollinations_fallback"]["required"] is False
     assert "google_tts" not in result["checks"]
     assert "google_voice" not in result["checks"]
     assert result["tts_provider"] == "gemini"
     assert result["narrator_profile"] == "gemini_callirrhoe_vi_gentle_emotional"
     assert "secret-gemini-value" not in serialized
     assert "secret-cloudflare" not in serialized
+    assert "secret-pollinations" not in serialized
 
     monkeypatch.delenv("GEMINI_API_KEY")
     missing = web_readiness(tmp_path)
@@ -858,6 +871,44 @@ def test_image_only_readiness_uses_cloudflare_route(
     assert ai_result["media_source"] == "ai_image"
     with pytest.raises(ValueError, match="unsupported media source"):
         web_readiness(tmp_path, media_source="stock_photo")
+
+
+@pytest.mark.parametrize("aspect_ratio", ["9:16", "16:9"])
+def test_optional_pollinations_readiness_supports_both_web_aspects(
+    aspect_ratio: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_ready(monkeypatch)
+    monkeypatch.setenv("POLLINATIONS_API_KEY", "test-pollinations-readiness")
+
+    request = _request().model_copy(update={"aspect_ratio": aspect_ratio})
+    result = web_readiness(tmp_path, request)
+
+    assert result["ready"] is True
+    assert result["checks"]["pollinations_fallback"] == {
+        "ready": True,
+        "required": False,
+        "code": "POLLINATIONS_FALLBACK_NOT_READY",
+        "missing_variables": [],
+        "guidance": "Optional fallback; configure POLLINATIONS_API_KEY server-side.",
+        "reason": "ready",
+        "model": "flux",
+    }
+
+
+def test_browser_cannot_submit_image_provider_or_sensitivity_authority() -> None:
+    payload = _request().model_dump()
+    for forbidden in (
+        "data_sensitivity",
+        "sensitivity",
+        "image_provider",
+        "pollinations_provider",
+        "provider_url",
+        "api_key",
+    ):
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+            WebRenderRequest.model_validate({**payload, forbidden: "caller-controlled"})
 
 
 def test_direct_post_rejects_unready_without_creating_or_executing(

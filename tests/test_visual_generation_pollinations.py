@@ -9,6 +9,7 @@ from PIL import Image
 from pydantic import ValidationError
 
 from tella.topic_production import SceneDataSensitivity
+from tella.visual_generation.providers import pollinations as pollinations_module
 from tella.visual_generation.providers import (
     PollinationsConfig,
     PollinationsError,
@@ -167,6 +168,36 @@ async def test_mock_success_is_one_sanitized_transport_call_and_atomic_artifact(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("width", "height", "aspect_ratio"),
+    [(576, 1024, "9:16"), (1024, 576, "16:9")],
+)
+async def test_web_portrait_and_landscape_geometry_are_exactly_validated(
+    width,
+    height,
+    aspect_ratio,
+    tmp_path,
+):
+    sender = Sender(Response(content=_png(width, height)))
+
+    metadata = await _provider(sender).generate_public_scene(
+        _request(width=width, height=height),
+        tmp_path / f"candidate-{width}.bin",
+    )
+
+    assert len(sender.calls) == 1
+    assert sender.calls[0]["params"]["width"] == width
+    assert sender.calls[0]["params"]["height"] == height
+    assert metadata.requested_aspect_ratio == aspect_ratio
+    assert (metadata.actual_width, metadata.actual_height) == (width, height)
+
+
+def test_non_web_geometry_is_rejected_before_transport_construction():
+    with pytest.raises(ValidationError, match="9:16 or 16:9"):
+        _request(width=1000, height=1000)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("error", "category"),
     [
         (TimeoutError("controlled timeout"), PollinationsErrorCategory.TIMEOUT),
@@ -204,6 +235,19 @@ async def test_empty_or_malformed_image_fails_closed(tmp_path, content):
     sender = Sender(Response(content=content))
     with pytest.raises(PollinationsError) as raised:
         await _provider(sender).generate_public_scene(_request(), tmp_path / "candidate.bin")
+    assert raised.value.category is PollinationsErrorCategory.MALFORMED_RESPONSE
+    assert len(sender.calls) == 1
+    assert not list(tmp_path.glob("candidate.*"))
+
+
+@pytest.mark.asyncio
+async def test_oversized_response_fails_before_image_decode(tmp_path, monkeypatch):
+    monkeypatch.setattr(pollinations_module, "MAX_IMAGE_BYTES", 8)
+    sender = Sender(Response(content=b"not-decoded-because-too-large"))
+
+    with pytest.raises(PollinationsError) as raised:
+        await _provider(sender).generate_public_scene(_request(), tmp_path / "candidate.bin")
+
     assert raised.value.category is PollinationsErrorCategory.MALFORMED_RESPONSE
     assert len(sender.calls) == 1
     assert not list(tmp_path.glob("candidate.*"))

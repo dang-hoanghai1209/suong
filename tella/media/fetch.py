@@ -53,6 +53,13 @@ from tella.planner.life_insight_visuals import build_life_insight_provider_promp
 from tella.planner.practical_life_steps_visuals import build_practical_provider_prompt
 from tella.planner.visual_bible import build_visual_bible, save_visual_bible
 from tella.planner.visual_prompts import build_scene_visual_plan, repair_prompt
+from tella.topic_production.strategy import SceneDataSensitivity
+from tella.web_image_fallback import (
+    generate_web_pollinations_fallback,
+    pollinations_failover_eligible,
+    pollinations_web_readiness,
+    validate_web_scene_sensitivity_authorities,
+)
 
 logger = logging.getLogger("tella.media.fetch")
 
@@ -2027,6 +2034,13 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
     body_scenes = [s for s in plan.scenes if s.kind == "scene"]
     if not body_scenes:
         return
+    required_sensitivity_policy = (
+        os.environ.get("TELLA_WEB_SENSITIVITY_POLICY") or ""
+    ).strip() or None
+    web_sensitivity = validate_web_scene_sensitivity_authorities(
+        plan,
+        required_policy_id=required_sensitivity_policy,
+    )
 
     if _asset_library_mode_enabled(plan):
         from tella.asset_library.background_renderer import resolve_background_mode
@@ -2161,18 +2175,77 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
         stage: str = "initial",
     ) -> None:
         _assert_provider_submission_allowed()
+        sensitivity = web_sensitivity.get(scene.scene_index)
+        if sensitivity is SceneDataSensitivity.LOCAL_ONLY:
+            raise RuntimeError("LOCAL_ONLY scene prohibits external image providers")
+        if sensitivity is not None:
+            scene.primary_image_provider_attempted = "cloudflare"
 
         async def _before_request() -> None:
             await request_budget.acquire(scene, prompt, stage)
 
-        with ai_image.cloudflare_request_hook(_before_request):
-            await ai_image.generate_image(
-                prompt,
-                out,
-                width=width,
-                height=height,
-                seed=seed,
+        try:
+            with ai_image.cloudflare_request_hook(_before_request):
+                await ai_image.generate_image(
+                    prompt,
+                    out,
+                    width=width,
+                    height=height,
+                    seed=seed,
+                )
+        except Exception as exc:
+            if sensitivity is None:
+                raise
+            readiness = pollinations_web_readiness(width=width, height=height)
+            eligible, classification = pollinations_failover_eligible(
+                sensitivity=sensitivity,
+                cloudflare_error=exc,
+                readiness=readiness,
             )
+            scene.image_failure_classification = classification
+            scene.image_fallback_eligible = eligible
+            if not eligible:
+                raise
+            if scene.pollinations_fallback_attempted:
+                raise RuntimeError(
+                    "Pollinations fallback was already attempted for this scene"
+                ) from exc
+            scene.pollinations_fallback_attempted = True
+            plan.pollinations_fallback_attempt_count += 1
+            try:
+                metadata = await generate_web_pollinations_fallback(
+                    plan=plan,
+                    scene=scene,
+                    sensitivity=sensitivity,
+                    output_path=out,
+                    width=width,
+                    height=height,
+                    seed=seed if seed is not None else _VIDEO_SEED,
+                )
+            except Exception:
+                scene.resolved_image_provider = ""
+                raise
+            scene.image_fallback_used = True
+            scene.resolved_image_provider = "pollinations"
+            scene.pollinations_request_sha256 = str(metadata["request_sha256"])
+            scene.generated_image_width = int(metadata["width"])
+            scene.generated_image_height = int(metadata["height"])
+            scene.generated_image_bytes = int(metadata["bytes"])
+            scene.generated_image_sha256 = str(metadata["sha256"])
+            plan.pollinations_fallback_used = True
+            if "pollinations" not in plan.resolved_image_providers:
+                plan.resolved_image_providers.append("pollinations")
+        else:
+            if sensitivity is not None:
+                scene.image_fallback_eligible = False
+                scene.image_fallback_used = False
+                scene.resolved_image_provider = "cloudflare"
+                scene.generated_image_width = width
+                scene.generated_image_height = height
+                scene.generated_image_bytes = out.stat().st_size
+                scene.generated_image_sha256 = hashlib.sha256(out.read_bytes()).hexdigest()
+                if "cloudflare" not in plan.resolved_image_providers:
+                    plan.resolved_image_providers.append("cloudflare")
         plan.ai_images_generated += 1
         scene.ai_images_generated += 1
 
@@ -2964,6 +3037,9 @@ async def fetch_assets(plan: TellaScenePlan, job_dir: Path) -> None:
                         )
                         _record_asset(scene, fallback_out)
                         return
+
+                    if web_sensitivity:
+                        raise
 
                     # Preserve the legacy Pexels fallback only when the
                     # caller's environment has not disabled it.

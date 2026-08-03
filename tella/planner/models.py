@@ -490,6 +490,9 @@ class Scene(BaseModel):
     step_badge_width: int = 0
     step_badge_height: int = 0
     render_motion_profile: str = Field("", max_length=80)
+    data_sensitivity: Literal["", "local_only", "private", "public_safe"] = ""
+    data_sensitivity_source_sha256: str = Field("", max_length=64)
+    data_sensitivity_authority_sha256: str = Field("", max_length=64)
 
     # 1-3 assets per scene. 1 = static Ken Burns; 2-3 = mini-montage with
     # crossfades inside the scene window.
@@ -535,6 +538,17 @@ class Scene(BaseModel):
     asset_hash: str = Field("", max_length=80)
     image_source: str = Field("", max_length=80)
     image_provider: str = Field("", max_length=80)
+    primary_image_provider_attempted: str = Field("", max_length=80)
+    image_fallback_eligible: bool = False
+    image_fallback_used: bool = False
+    image_failure_classification: str = Field("", max_length=80)
+    resolved_image_provider: str = Field("", max_length=80)
+    pollinations_fallback_attempted: bool = False
+    pollinations_request_sha256: str = Field("", max_length=64)
+    generated_image_width: int = Field(0, ge=0)
+    generated_image_height: int = Field(0, ge=0)
+    generated_image_bytes: int = Field(0, ge=0)
+    generated_image_sha256: str = Field("", max_length=64)
     used_local_fallback: bool = False
     asset_path: str = Field("", max_length=300)
     ai_provider_error_type: str = Field("", max_length=80)
@@ -750,6 +764,14 @@ class TellaScenePlan(BaseModel):
     overlap_failure_reasons: list[str] = Field(default_factory=list)
     practical_validation_status: str = Field("not_evaluated", max_length=40)
     practical_validation_errors: list[str] = Field(default_factory=list)
+    web_sensitivity_policy_id: str = Field("", max_length=80)
+    web_sensitivity_source_sha256: str = Field("", max_length=64)
+    web_sensitivity_authority_sha256: str = Field("", max_length=64)
+    primary_image_provider: str = Field("", max_length=80)
+    fallback_image_provider: str = Field("", max_length=80)
+    pollinations_fallback_used: bool = False
+    pollinations_fallback_attempt_count: int = Field(0, ge=0)
+    resolved_image_providers: list[str] = Field(default_factory=list)
 
     # Voice settings (resolved by CLI from theme + user overrides before
     # the planner runs — planner just receives these as inputs and echoes

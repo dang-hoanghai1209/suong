@@ -31,6 +31,12 @@ from tella.web_contract import (
     utc_now,
 )
 from tella.voice_profiles import get_voice_profile
+from tella.web_image_fallback import (
+    WEB_POLLINATIONS_FALLBACK_ENV,
+    WEB_SENSITIVITY_POLICY_ENV,
+    WEB_SENSITIVITY_POLICY_ID,
+    pollinations_web_readiness,
+)
 
 _JOB_ID = re.compile(r"^web-[0-9a-f]{24}$")
 _PHASES = {
@@ -113,6 +119,8 @@ _WEB_ENVIRONMENT = MappingProxyType(
         "TELLA_REQUIRE_REFERENCE_CONDITIONING": "0",
         "TELLA_USE_PREVIOUS_SCENE_REFERENCE": "0",
         "TELLA_DISABLE_STOCK_FALLBACK": "1",
+        WEB_POLLINATIONS_FALLBACK_ENV: "1",
+        WEB_SENSITIVITY_POLICY_ENV: WEB_SENSITIVITY_POLICY_ID,
         "TELLA_RENDER_MOTION_PROFILE": "practical_pull_back",
         "TELLA_SCENE_QC": "basic",
         "TELLA_SCENE_MAX_ATTEMPTS": "2",
@@ -277,6 +285,8 @@ def _safe_metadata(path: Path, keys: tuple[str, ...]) -> dict[str, object] | Non
         value = source[key]
         if isinstance(value, (str, int, float, bool)) or value is None:
             result[key] = value
+        elif isinstance(value, list) and all(isinstance(item, str) for item in value):
+            result[key] = list(value)
     if path.name == "plan.json" and isinstance(source.get("scenes"), list):
         result["scene_count"] = len(source["scenes"])
     return result
@@ -679,6 +689,11 @@ class JobManager:
                     "aspect_ratio",
                     "total_duration",
                     "tts_provider",
+                    "primary_image_provider",
+                    "fallback_image_provider",
+                    "pollinations_fallback_used",
+                    "pollinations_fallback_attempt_count",
+                    "resolved_image_providers",
                 ),
             )
             tts_metadata = _validated_web_tts_metadata(job_dir / "tts_metadata.json")
@@ -751,11 +766,20 @@ class JobManager:
             "total_duration",
             "tts_provider",
             "scene_count",
+            "primary_image_provider",
+            "fallback_image_provider",
+            "pollinations_fallback_used",
+            "pollinations_fallback_attempt_count",
+            "resolved_image_providers",
         }
         return {
             key: item
             for key, item in value.items()
-            if key in allowed and isinstance(item, (str, int, float, bool))
+            if key in allowed
+            and (
+                isinstance(item, (str, int, float, bool))
+                or (isinstance(item, list) and all(isinstance(value, str) for value in item))
+            )
         }
 
     @staticmethod
@@ -863,25 +887,48 @@ def web_readiness(
             "code": "IMAGE_ROUTE_NOT_CONFIGURED",
             "missing_variables": image_missing,
             "guidance": image_guidance,
+            "required": True,
         },
         "ffmpeg": {
             "ready": shutil.which("ffmpeg") is not None,
             "code": "FFMPEG_NOT_AVAILABLE",
             "missing_variables": [],
             "guidance": "Install ffmpeg and add it to PATH.",
+            "required": True,
         },
         "ffprobe": {
             "ready": shutil.which("ffprobe") is not None,
             "code": "FFPROBE_NOT_AVAILABLE",
             "missing_variables": [],
             "guidance": "Install ffprobe and add it to PATH.",
+            "required": True,
         },
         "output": {
             "ready": False,
             "code": "OUTPUT_NOT_WRITABLE",
             "missing_variables": ["TELLA_WEB_OUTPUT_DIR"],
             "guidance": "Make TELLA_WEB_OUTPUT_DIR writable.",
+            "required": True,
         },
+    }
+    pollinations_width, pollinations_height = (
+        (1344, 768) if request is not None and request.aspect_ratio == "16:9" else (768, 1344)
+    )
+    pollinations = pollinations_web_readiness(
+        width=pollinations_width,
+        height=pollinations_height,
+        policy_id=WEB_SENSITIVITY_POLICY_ID,
+    )
+    checks["pollinations_fallback"] = {
+        "ready": pollinations["eligible"],
+        "required": False,
+        "code": "POLLINATIONS_FALLBACK_NOT_READY",
+        "missing_variables": (
+            [] if pollinations["credential_present"] else ["POLLINATIONS_API_KEY"]
+        ),
+        "guidance": "Optional fallback; configure POLLINATIONS_API_KEY server-side.",
+        "reason": pollinations["reason"],
+        "model": pollinations["model"],
     }
     try:
         root.mkdir(parents=True, exist_ok=True)
@@ -898,11 +945,11 @@ def web_readiness(
             "missing_variables": list(item["missing_variables"]),
         }
         for item in checks.values()
-        if not bool(item["ready"])
+        if item.get("required", True) and not bool(item["ready"])
     ]
     return {
         "schema_version": 1,
-        "ready": all(bool(item["ready"]) for item in checks.values()),
+        "ready": all(bool(item["ready"]) for item in checks.values() if item.get("required", True)),
         "checks": checks,
         "tts_provider": "gemini",
         "strict_tts_provider": True,

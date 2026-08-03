@@ -23,6 +23,7 @@ from .kinds import ProviderKind
 DEFAULT_BASE_URL = "https://gen.pollinations.ai"
 DEFAULT_MODEL = "flux"
 DEFAULT_TIMEOUT_SECONDS = 120.0
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
 API_KEY_ENV = "POLLINATIONS_API_KEY"
 
 
@@ -116,9 +117,10 @@ class PollinationsExecutionRequest(BaseModel):
     consumes_ai_retry: bool = False
 
     @model_validator(mode="after")
-    def validate_portrait_dimensions(self) -> "PollinationsExecutionRequest":
-        if abs((self.width / self.height) - (9 / 16)) > 0.01:
-            raise ValueError("Pollinations production requests must use a 9:16 canvas")
+    def validate_web_dimensions(self) -> "PollinationsExecutionRequest":
+        ratio = self.width / self.height
+        if min(abs(ratio - (9 / 16)), abs(ratio - (16 / 9))) > 0.01:
+            raise ValueError("Pollinations production requests must use a 9:16 or 16:9 canvas")
         return self
 
 
@@ -173,11 +175,7 @@ def prepare_public_request(
         f"Setting: {', '.join(source.setting)}" if source.setting else "",
         f"Style: {source.style_description}",
         f"Composition: {', '.join(source.composition)}" if source.composition else "",
-        (
-            f"Avoid: {', '.join(source.negative_constraints)}"
-            if source.negative_constraints
-            else ""
-        ),
+        (f"Avoid: {', '.join(source.negative_constraints)}" if source.negative_constraints else ""),
     ]
     return PollinationsPublicImageRequest(
         scene_id=request.scene_id,
@@ -230,6 +228,7 @@ class PollinationsSceneImageProvider:
             supports_image_edit=False,
             supports_seed=True,
             supports_9_16=True,
+            supports_16_9=True,
             max_reference_images=0,
         )
 
@@ -294,10 +293,10 @@ class PollinationsSceneImageProvider:
                 response_received=True,
                 status_code=status,
             )
-        if not content:
+        if not content or len(content) > MAX_IMAGE_BYTES:
             raise PollinationsError(
                 PollinationsErrorCategory.MALFORMED_RESPONSE,
-                "provider returned empty image bytes",
+                "provider returned empty or oversized image bytes",
                 request_reached_provider=True,
                 response_received=True,
                 status_code=status,
@@ -346,7 +345,7 @@ class PollinationsSceneImageProvider:
             seed=public_request.seed,
             generation_attempt=request.attempt,
             output_path=artifact_path,
-            requested_aspect_ratio="9:16",
+            requested_aspect_ratio=("9:16" if width < height else "16:9"),
             requested_resolution=f"{public_request.width}x{public_request.height}",
             actual_width=width,
             actual_height=height,
@@ -406,6 +405,7 @@ __all__ = [
     "DEFAULT_BASE_URL",
     "DEFAULT_MODEL",
     "DEFAULT_TIMEOUT_SECONDS",
+    "MAX_IMAGE_BYTES",
     "PollinationsConfig",
     "PollinationsDataSensitivity",
     "PollinationsError",

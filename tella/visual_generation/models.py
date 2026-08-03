@@ -106,6 +106,7 @@ class ProviderCapabilities(StrictModel):
     supports_image_edit: bool
     supports_seed: bool
     supports_9_16: bool
+    supports_16_9: bool = False
     max_reference_images: int = Field(ge=0)
 
     @model_validator(mode="after")

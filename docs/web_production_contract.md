@@ -65,6 +65,8 @@ Progress advances only from emitted pipeline events:
 ## Required server environment
 
 - `GEMINI_API_KEY`, `GEMINI_API_KEYS`, or `GOOGLE_API_KEY`
+- Cloudflare credentials for the primary image route
+- optional `POLLINATIONS_API_KEY` for the safe image fallback
 - `ffmpeg` and `ffprobe` on `PATH`
 - writable `TELLA_WEB_OUTPUT_DIR`, default `out/web_jobs`
 
@@ -76,23 +78,26 @@ TTS is a terminal job error; Edge fallback is forbidden. The existing Google
 adapter remains available outside the web profile and does not support service
 accounts.
 
-The first web release uses Cloudflare as its only still-image provider. A
-Cloudflare failure terminates the job; Pexels, local/reused assets, placeholder
-sprites, and other fallback providers are disabled by the backend-owned web
-environment. Legacy CLI behavior remains unchanged. Pollinations is deferred
-because classic scenes lack authoritative public-safe sensitivity and the
-current adapter supports only 9:16 output. Renderer zoom-out alignment remains
-server-owned: every generated still uses the validated `practical_pull_back`
-profile. Typical 4.5–7 second scene and 32–38 second short-video ranges are
-advisory only. Continuous narration and existing composition determine timing,
-while FFprobe supplies the authoritative final duration. No provider, motion,
-or raw FFmpeg control is accepted from the browser. Real-production acceptance
-has validated a newly generated MP4, audio/video streams, preview, download,
-restart persistence, and serialized queue behavior end to end.
+Cloudflare is the primary still-image provider. Pollinations is an optional
+fallback only for scenes carrying a current backend-minted `PUBLIC_SAFE`
+authority and only after rate-limit, quota, provider-availability, or timeout
+failures. `PRIVATE` remains Cloudflare-only; `LOCAL_ONLY` prohibits external
+providers. Missing, malformed, or stale authority fails before provider work.
+Both 9:16 and 16:9 responses are decoded and dimension-checked without silent
+cropping. Pexels, local/reused assets, placeholder sprites, and AI-video remain
+disabled by the web environment. Legacy CLI behavior remains unchanged.
+Renderer zoom-out alignment remains server-owned: every generated still uses
+the validated `practical_pull_back` profile. Typical 4.5–7 second scene and
+32–38 second short-video ranges are advisory only. Continuous narration and
+existing composition determine timing, while FFprobe supplies the authoritative
+final duration. No provider, privacy, motion, or raw FFmpeg control is accepted
+from the browser.
 
 Readiness is a local configuration gate. It does not call providers and does
-not guarantee that an external provider, quota, or network will remain
-available when a queued job executes.
+not guarantee that an external provider, balance, quota, or network will remain
+available when a queued job executes. Pollinations readiness validates local
+configuration, geometry, and sensitivity policy only; it does not query live
+Pollen balance.
 
 ## Web execution isolation
 
@@ -129,9 +134,9 @@ messages.
 
 The UI exposes topic/exact-script input, supported language, aspect ratio,
 theme, duration, and music controls. It does not expose stock, AI-video,
-provider, credential, URL, model, or raw-voice controls. Gemini narration and
-Cloudflare still-image generation remain server-managed; Pollinations fallback
-is not claimed.
+provider, credential, URL, model, privacy, or raw-voice controls. Gemini
+narration, Cloudflare primary image generation, and eligible Pollinations
+fallback remain server-managed.
 
 On bootstrap the browser loads readiness and `GET /api/jobs`. It remembers at
 most one validated `web-...` job ID in local storage, never narration, logs,

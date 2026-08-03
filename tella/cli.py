@@ -85,6 +85,7 @@ from tella.recipes import (
 )
 from tella.render.pipeline import render
 from tella.tts.synth_all import synthesize_all
+from tella.web_image_fallback import apply_web_scene_sensitivity_authority
 from tella.tts.duration_fit import (
     reconcile_practical_narration_duration,
     validate_actual_video_duration,
@@ -1005,6 +1006,13 @@ async def _run_pipeline_unlocked(
             voice_resolution,
         )
     _apply_canonical_script_identity(plan, script_identity)
+    web_sensitivity_policy = (os.environ.get("TELLA_WEB_SENSITIVITY_POLICY") or "").strip()
+    if web_sensitivity_policy:
+        apply_web_scene_sensitivity_authority(
+            plan,
+            source_text=(user_script.strip() if use_script else topic_in_target),
+            policy_id=web_sensitivity_policy,
+        )
     plan_json.write_text(
         json.dumps(plan.model_dump(), ensure_ascii=False, indent=2),
         encoding="utf-8",

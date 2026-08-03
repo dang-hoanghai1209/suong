@@ -370,8 +370,10 @@ still-image-only: it always submits `media_source="ai_image"`; stock modes
 remain available to the CLI but are not exposed or accepted by the web API.
 `POST /api/jobs` applies readiness before queueing and returns `503
 PRODUCTION_NOT_READY` without creating a job when a prerequisite is missing.
-These local checks do not contact providers or guarantee later provider or
-network availability.
+These local checks do not contact providers or guarantee later provider,
+balance, quota, or network availability. In particular, Pollinations readiness
+confirms local configuration and authority compatibility, not live Pollen
+balance.
 
 The serialized web worker neutralizes inherited environment settings that
 could select another narrator, reuse/skip assets, allow local or placeholder
@@ -388,12 +390,14 @@ and explicitly reports an incomplete timeout rather than claiming the worker
 stopped. A failed or interrupted job can be inspected in the UI; only a
 validated successful MP4 is available through preview and download routes.
 
-The first production web release uses Cloudflare as its only still-image
-provider. A Cloudflare image failure fails the job; the web profile does not
-fall back to Pexels, local/reused assets, placeholder sprites, or another
-provider. Legacy CLI fallback behavior is unchanged. Pollinations is deferred
-because classic scenes do not yet carry authoritative public-safe sensitivity
-and the current Pollinations adapter supports only 9:16 output.
+The production web profile uses Cloudflare as its primary still-image provider.
+When `POLLINATIONS_API_KEY` is configured, Pollinations is an optional fallback
+for backend-authorized `PUBLIC_SAFE` scenes after Cloudflare rate-limit, quota,
+availability, or timeout failures. `PRIVATE` scenes remain Cloudflare-only and
+`LOCAL_ONLY` scenes never call an external provider. Missing or stale authority
+fails closed. Both 9:16 and 16:9 are validated without silent cropping. Pexels,
+local/reused assets, placeholder sprites, and AI-video remain disabled in the
+web profile; legacy CLI behavior is unchanged.
 
 Every generated still in the web profile receives the server-owned
 `practical_pull_back` motion. It starts slightly enlarged and moves gently
@@ -407,8 +411,8 @@ The UI loads persisted job history on startup, recovers the remembered or
 newest relevant job, supports queued-job cancellation, and retries failed or
 cancelled jobs as new IDs. Adaptive polling is based only on server state and
 stops at terminal states; it never simulates progress. Browser storage holds
-only the selected job ID. Pollinations fallback is not active in this web
-checkpoint.
+only the selected job ID. Provider selection, privacy classification, keys, and
+provider URLs remain server-owned.
 
 For a credential-gated real-render test:
 

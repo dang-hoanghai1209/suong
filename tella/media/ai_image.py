@@ -138,6 +138,10 @@ def classify_cloudflare_error(status_code: int, body: str) -> tuple[str, bool]:
         return "rate_limited", False
     if status_code in {401, 403}:
         return "auth_error", False
+    if status_code in {400, 404, 405, 422}:
+        return "invalid_request", False
+    if status_code in {502, 503, 504}:
+        return "provider_unavailable", False
     if status_code in {402, 4020} or "payment" in text or "billing" in text:
         return "payment_required", False
     return "provider_http_error", True
@@ -299,8 +303,19 @@ async def generate_image(
                     break
                 if resp.status_code in (401, 403):
                     break  # bad creds, try next account
-            except (httpx.HTTPError, httpx.ReadTimeout) as exc:
-                last_err = exc
+            except httpx.TimeoutException:
+                last_err = CloudflareAIError(
+                    "CF AI request timed out",
+                    error_type="timeout",
+                    recoverable=False,
+                )
+                logger.warning("cf-ai timeout attempt %d", attempt)
+            except httpx.HTTPError as exc:
+                last_err = CloudflareAIError(
+                    "CF AI transport unavailable",
+                    error_type="provider_unavailable",
+                    recoverable=False,
+                )
                 logger.warning("cf-ai network err attempt %d: %s", attempt, exc)
             if attempt < attempt_limit:
                 await asyncio.sleep(RETRY_BACKOFF_SECONDS * attempt)
